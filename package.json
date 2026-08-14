@@ -1,0 +1,45 @@
+{
+  "name": "affiliate-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP Server for Gemini/Veo video pipeline: upload to S3, save metadata, publish to TikTok",
+  "main": "build/server.js",
+  "type": "module",
+  "scripts": {
+    "dev": "npx nodemon --watch src -e ts --exec 'npx tsx src/server.ts'",
+    "build": "tsc",
+    "start": "node build/server.js",
+    "lint": "tsc --noEmit"
+  },
+  "keywords": [
+    "mcp",
+    "s3",
+    "tiktok",
+    "affiliate",
+    "gemini",
+    "veo"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.600.0",
+    "@aws-sdk/lib-storage": "^3.600.0",
+    "@aws-sdk/s3-request-presigner": "^3.1109.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "axios": "^1.18.1",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "localtunnel": "^2.0.2",
+    "puppeteer": "^25.6.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/localtunnel": "^2.0.4",
+    "@types/node": "^22.0.0",
+    "nodemon": "^3.1.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}
