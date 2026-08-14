@@ -59,7 +59,17 @@ export function getPipelineStatus() {
   };
 }
 
-async function mergeVideoSegments(segmentPaths: string[], outputPath: string): Promise<void> {
+function getFfmpegCmd(): string {
+  if (existsSync("/opt/homebrew/bin/ffmpeg")) {
+    return "/opt/homebrew/bin/ffmpeg";
+  }
+  if (existsSync("/usr/local/bin/ffmpeg")) {
+    return "/usr/local/bin/ffmpeg";
+  }
+  return "ffmpeg";
+}
+
+export async function mergeVideoSegments(segmentPaths: string[], outputPath: string): Promise<void> {
   const { writeFileSync, unlinkSync } = await import("fs");
   
   if (segmentPaths.length === 1) {
@@ -86,13 +96,14 @@ async function mergeVideoSegments(segmentPaths: string[], outputPath: string): P
     });
   });
 
+  const ffmpeg = getFfmpegCmd();
   try {
-    await execPromise(`ffmpeg -y -f concat -safe 0 -i "${listFilePath}" -c copy "${outputPath}"`);
+    await execPromise(`"${ffmpeg}" -y -f concat -safe 0 -i "${listFilePath}" -c copy "${outputPath}"`);
     console.log(`✅ [Merge] Concatenation completed successfully: ${outputPath}`);
   } catch (err: any) {
     console.warn(`⚠️ [Merge] Copy-concatenation failed: ${err.message}. Trying full re-encode merge...`);
     try {
-      await execPromise(`ffmpeg -y -f concat -safe 0 -i "${listFilePath}" "${outputPath}"`);
+      await execPromise(`"${ffmpeg}" -y -f concat -safe 0 -i "${listFilePath}" "${outputPath}"`);
       console.log(`✅ [Merge] Fallback concatenation completed successfully: ${outputPath}`);
     } catch (fallbackErr: any) {
       try { unlinkSync(listFilePath); } catch {}
@@ -103,10 +114,11 @@ async function mergeVideoSegments(segmentPaths: string[], outputPath: string): P
   try { unlinkSync(listFilePath); } catch {}
 }
 
-async function extractThumbnailWithFfmpeg(videoPath: string, outputPath: string): Promise<boolean> {
+export async function extractThumbnailWithFfmpeg(videoPath: string, outputPath: string): Promise<boolean> {
   console.log(`📸 [Thumbnail] Extracting thumbnail frame from ${videoPath} using FFmpeg...`);
+  const ffmpeg = getFfmpegCmd();
   return new Promise<boolean>((resolve) => {
-    exec(`ffmpeg -y -i "${videoPath}" -ss 00:00:01 -vframes 1 -q:v 2 "${outputPath}"`, (err) => {
+    exec(`"${ffmpeg}" -y -i "${videoPath}" -ss 00:00:03 -vframes 1 -q:v 2 "${outputPath}"`, (err) => {
       if (err) {
         console.warn(`⚠️ [Thumbnail] FFmpeg thumbnail extraction failed: ${err.message}`);
         resolve(false);
@@ -213,15 +225,17 @@ export async function runPipelineForProduct(
     const mergedThumbPath = path.join(downloadsDir, mergedThumbFilename);
     const thumbSuccess = await extractThumbnailWithFfmpeg(mergedVideoPath, mergedThumbPath);
 
-    // Clean up temporary individual segment files
-    for (const segmentFile of segmentFiles) {
-      if (segmentFile !== mergedVideoPath) {
-        try {
-          if (existsSync(segmentFile)) {
-            unlinkSync(segmentFile);
-            console.log(`🗑️  [Pipeline] Deleted temporary segment file: ${segmentFile}`);
-          }
-        } catch {}
+    // Clean up temporary individual segment files only if NOT uploading to S3
+    if (!uploadToS3) {
+      for (const segmentFile of segmentFiles) {
+        if (segmentFile !== mergedVideoPath) {
+          try {
+            if (existsSync(segmentFile)) {
+              unlinkSync(segmentFile);
+              console.log(`🗑️  [Pipeline] Deleted temporary segment file: ${segmentFile}`);
+            }
+          } catch {}
+        }
       }
     }
 
@@ -322,6 +336,18 @@ export async function runPipelineForProduct(
         console.warn(`⚠️  [Pipeline] Could not delete local file: ${veoResult.localPath}`);
       }
 
+      // Clean up temporary individual segment files AFTER successful S3 upload
+      for (const segmentFile of segmentFiles) {
+        if (segmentFile !== veoResult.localPath) {
+          try {
+            if (existsSync(segmentFile)) {
+              unlinkSync(segmentFile);
+              console.log(`🗑️  [Pipeline] Deleted temporary segment file after S3 upload: ${segmentFile}`);
+            }
+          } catch {}
+        }
+      }
+
       // Automatically update the product in products.json with the generated image
       if (s3ThumbUrl && product.id) {
         try {
@@ -358,6 +384,7 @@ export async function runPipelineForProduct(
         size_bytes: fileSize,
         tiktok_video_id: tiktokVideoId || undefined,
         tiktok_status: (tiktokStatus === "mock" ? "mock" : (tiktokStatus === "published" ? "published" : undefined)) as any,
+        images: product.images || [],
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -407,35 +434,8 @@ export async function runPipelineForProduct(
   } catch (err: any) {
     console.error(`\n❌ [Pipeline] FAILED for ${product.name}: ${err.message}`);
     
-    // Cleanup temporary segment files on failure
-    if (typeof segmentFiles !== "undefined" && Array.isArray(segmentFiles)) {
-      try {
-        const { unlinkSync, existsSync } = await import("fs");
-        for (const f of segmentFiles) {
-          if (existsSync(f)) {
-            unlinkSync(f);
-            console.log(`🗑️  [Pipeline] Cleaned up temporary segment file on failure: ${f}`);
-          }
-        }
-      } catch {}
-    }
-
-    // Cleanup local temp files if they were generated
-    if (veoResult) {
-      try {
-        const { unlinkSync, existsSync } = await import("fs");
-        if (veoResult.localPath && existsSync(veoResult.localPath)) {
-          unlinkSync(veoResult.localPath);
-          console.log(`🗑️  [Pipeline] Cleaned up local file on failure: ${veoResult.localPath}`);
-        }
-        if (veoResult.thumbnailPath && existsSync(veoResult.thumbnailPath)) {
-          unlinkSync(veoResult.thumbnailPath);
-          console.log(`🗑️  [Pipeline] Cleaned up local thumbnail on failure: ${veoResult.thumbnailPath}`);
-        }
-      } catch (cleanupErr: any) {
-        console.warn(`⚠️  [Pipeline] Failed to clean up files on pipeline failure: ${cleanupErr.message}`);
-      }
-    }
+    // Keep all generated segments and temp files on failure to allow manual recovery or troubleshooting
+    console.log("ℹ️  [Pipeline] Kept temporary files on failure for debugging/manual merge.");
     return {
       product_id: product.id,
       product_name: product.name,

@@ -968,10 +968,21 @@
         </div>
       </div>
 
-      <!-- Images row -->
-      <div id="crawlImagesRow" style="display:none;">
-        <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.4px;">Hình ảnh crawled</div>
+      <!-- Images Section (Always visible) -->
+      <div>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <span style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;">Hình ảnh sản phẩm *</span>
+          <button onclick="document.getElementById('crawlImageFileInput').click()" style="background:rgba(124,58,237,0.15);border:1px solid rgba(124,58,237,0.3);color:#a78bfa;cursor:pointer;font-size:11px;font-weight:600;outline:none;padding:5px 12px;border-radius:6px;transition:all 0.15s;" onmouseover="this.style.background='rgba(124,58,237,0.25)'" onmouseout="this.style.background='rgba(124,58,237,0.15)'">📤 Tải ảnh lên</button>
+        </div>
         <div id="crawlImagesGrid" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+        <div id="crawlImagesEmptyMsg" style="background:var(--bg3);border:1px dashed var(--border);border-radius:8px;padding:16px;text-align:center;color:var(--muted);font-size:12px;margin-bottom:8px;">
+          📷 Không tìm thấy ảnh. Vui lòng tải ảnh lên hoặc thêm link ảnh bên dưới.
+        </div>
+        <div style="display:flex;gap:8px;">
+          <input type="text" id="crawlInputImageUrl" placeholder="Hoặc dán URL hình ảnh..." style="flex:1;padding:8px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;outline:none;" />
+          <button onclick="appendCrawlImageUrl()" style="background:rgba(124,58,237,0.15);border:1px solid rgba(124,58,237,0.3);color:#a78bfa;padding:8px 14px;border-radius:8px;font-size:12px;cursor:pointer;font-weight:600;white-space:nowrap;transition:all 0.15s;" onmouseover="this.style.background='rgba(124,58,237,0.25)'" onmouseout="this.style.background='rgba(124,58,237,0.15)'">+ Thêm URL</button>
+        </div>
+        <input type="file" id="crawlImageFileInput" accept="image/*" style="display:none;" onchange="uploadCrawlImage(event)" />
       </div>
 
       <!-- AI Description -->
@@ -2115,8 +2126,12 @@
       if (!currentSrc || !d.images.includes(currentSrc)) {
         thumb.innerHTML = `<img src="${d.images[0]}" style="width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.innerHTML='📦'" />`;
       }
+      document.getElementById('crawlImagesEmptyMsg').style.display = 'none';
+      document.getElementById('crawlImagesGrid').style.display = 'flex';
     } else {
       thumb.innerHTML = '📦';
+      document.getElementById('crawlImagesEmptyMsg').style.display = 'block';
+      document.getElementById('crawlImagesGrid').style.display = 'none';
     }
 
     // Images grid
@@ -2131,12 +2146,71 @@
             onclick="event.stopPropagation(); removeCrawledImage('${src}')">×</div>
         </div>
       `).join('');
-      document.getElementById('crawlImagesRow').style.display = 'block';
     } else {
       imagesGrid.innerHTML = '';
-      document.getElementById('crawlImagesRow').style.display = 'none';
     }
   }
+
+  async function uploadCrawlImage(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    showFullscreenLoading('📤 Đang tải ảnh lên...');
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = e => resolve(e.target.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      const res = await fetch('/api/upload/image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataUrl, filename: file.name }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error);
+      
+      if (!_crawledData) {
+        _crawledData = { name: '', price: '', rating: '', ratingCount: '', category: 'tech', hashtags: [], images: [], rawDescription: '' };
+      }
+      if (!_crawledData.images) _crawledData.images = [];
+      _crawledData.images.push(data.url);
+      renderCrawledImages();
+      
+      // Auto-set as main thumbnail
+      document.getElementById('crawlImageThumb').innerHTML = `<img src="${data.url}" style="width:100%;height:100%;object-fit:cover;" />`;
+      
+      showToast('✅ Tải ảnh lên thành công!');
+    } catch (err) {
+      showToast(`❌ Lỗi upload: ${err.message}`);
+    } finally {
+      hideFullscreenLoading();
+    }
+  }
+
+  function appendCrawlImageUrl() {
+    const urlInput = document.getElementById('crawlInputImageUrl');
+    const url = urlInput.value.trim();
+    if (!url || !url.startsWith('http')) {
+      showToast('⚠️ Vui lòng nhập link ảnh hợp lệ!');
+      return;
+    }
+    if (!_crawledData) {
+      _crawledData = { name: '', price: '', rating: '', ratingCount: '', category: 'tech', hashtags: [], images: [], rawDescription: '' };
+    }
+    if (!_crawledData.images) _crawledData.images = [];
+    _crawledData.images.push(url);
+    renderCrawledImages();
+    
+    // Auto-set as main thumbnail
+    document.getElementById('crawlImageThumb').innerHTML = `<img src="${url}" style="width:100%;height:100%;object-fit:cover;" />`;
+    
+    urlInput.value = '';
+    showToast('✅ Đã thêm link ảnh!');
+  }
+
+  window.uploadCrawlImage = uploadCrawlImage;
+  window.appendCrawlImageUrl = appendCrawlImageUrl;
 
   async function startCrawl() {
     const url = document.getElementById('crawlUrlInput').value.trim();
@@ -2280,7 +2354,13 @@
       const category = document.getElementById('crawlEditCategory').value;
       const affiliateUrl = document.getElementById('crawlEditAffiliateUrl').value.trim();
       const hashtagsRaw = document.getElementById('crawlEditHashtags').value.trim();
-      const hashtags = hashtagsRaw.split(',').map(h => h.trim().replace(/^#/, '')).filter(Boolean);
+      const hashtags = hashtagsRaw.split(/[\s,]+/)
+        .map(h => {
+          let clean = h.trim();
+          if (clean.length === 0) return '';
+          return clean.startsWith('#') ? clean : `#${clean}`;
+        })
+        .filter(Boolean);
       const description = document.getElementById('crawlAiDescription').value.trim();
       const thumbEl = document.getElementById('crawlImageThumb').querySelector('img');
       const image_url = thumbEl ? thumbEl.src : '';
@@ -2414,10 +2494,13 @@
     // Process hashtags (clean & relevant, no full name concatenation)
     let hashtags = [];
     if (tagsInput) {
-      hashtags = tagsInput.split(',')
-        .map(t => t.trim().toLowerCase().replace(/[^a-z0-9]+/g, ''))
-        .filter(t => t.length > 0)
-        .map(t => t.startsWith('#') ? t : `#${t}`);
+      hashtags = tagsInput.split(/[\s,]+/)
+        .map(t => {
+          let clean = t.trim();
+          if (clean.length === 0) return '';
+          return clean.startsWith('#') ? clean : `#${clean}`;
+        })
+        .filter(Boolean);
     } else {
       // Auto-extract 2-3 clean key terms from name
       const words = name.toLowerCase().split(/[\s,\-\|_\/\+]+/).map(w => w.trim()).filter(Boolean);

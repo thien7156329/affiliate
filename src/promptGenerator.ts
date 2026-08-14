@@ -167,14 +167,14 @@ export async function generateThreeVideoPrompts(
 ): Promise<{ prompt1: string; prompt2: string; prompt3: string }> {
   const threePromptsSystemPrompt = `You are an expert AI Video Prompt Engineer specializing in Google Veo.
 Your goal is to write a highly detailed, cinematic 3-segment video prompt series in English for a single product.
-The 3 segments will be concatenated into a continuous video. Therefore, they MUST have high visual consistency:
-- The subject (product design, colors, materials) must be identical across all three prompts.
-- The environment (background setting, tabletop, room, outdoor location) must be identical.
-- The lighting style (e.g. golden hour, neon cyber, warm studio) and visual mood must be identical.
-- The camera movements and specific actions must differ to tell a short visual story:
-  * Segment 1 (Intro): Macro close-up shot revealing product textures, fine details, and branding. Slow pan or dolly-in.
-  * Segment 2 (Usage/Lifestyle): Wider shot demonstrating the product in use, or showing a hand interacting with it, or displaying its key functional design in action.
-  * Segment 3 (Outro/Showcase): A heroic rotation or dynamic wrap-around tracking shot showcasing the entire product in its environment.
+The 3 segments will be concatenated into a continuous video. Therefore, they MUST have extreme visual consistency and seamless transition flow:
+- Subject & Style Consistency: The subject (product design, colors, materials), environment (background, tabletop, ambient settings), and lighting (e.g. warm studio, golden hour) must be 100% identical.
+- Pacing & Motion Speed: Use consistent movement speeds (e.g. 'cinematic slow-motion' or 'slow, graceful motion') across all segments to avoid jarring tempo jumps.
+- Transition & Motion Continuity:
+  * Prompt 1 (Intro): Start with a macro close-up of product textures/branding. Slow dolly-in or camera pan. End with a description of a subtle camera motion.
+  * Prompt 2 (Lifestyle/Usage): Transition seamlessly from the previous shot. Describe a match-cut or motion continuity (e.g., 'Continuing the smooth motion from the previous scene, the camera gently dollies out to show...'). Show the product in use or hand interaction.
+  * Prompt 3 (Showcase): Transition smoothly with similar camera velocity into a heroic 360-degree rotation or wrap-around track, showcasing the product in its final presentation.
+- 100% English: The final prompts must be written entirely in descriptive English. You MUST translate any Vietnamese names, features, or details into English equivalents. Do not keep raw Vietnamese words or characters in the prompts.
 
 Each prompt must be 1 to 2 descriptive sentences in English.
 You MUST output ONLY a valid JSON object matching this schema:
@@ -192,7 +192,7 @@ Category: ${category}`;
       userMessage += `\nProduct Description / Attributes: "${productDescription}"`;
     }
 
-    userMessage += `\n\nRemember to translate any Vietnamese product details into English, and output ONLY valid JSON format.`;
+    userMessage += `\n\nCRITICAL: The product name and all attributes are in Vietnamese. You MUST translate them into high-quality descriptive English. Under no circumstances should the prompts contain untranslated Vietnamese words (like "ban chai", "ao thun", "dien thoai") or Vietnamese characters. Translate "Bàn Chải đánh Răng điện" to "electric toothbrush", "Kẹo Milo" to "Milo candy", etc. Output ONLY valid JSON format.`;
 
     const resJson = await callBedrock(threePromptsSystemPrompt, userMessage, imageUrl, true);
     const parsed = JSON.parse(resJson);
@@ -212,11 +212,12 @@ Category: ${category}`;
 }
 
 function buildFallbackThreePrompts(productName: string, category: string): { prompt1: string; prompt2: string; prompt3: string } {
-  const basePrompt = buildFallbackPrompt(productName, category);
+  const cleanName = removeVietnameseTones(productName);
+  const basePrompt = buildFallbackPrompt(cleanName, category);
   return {
-    prompt1: `Macro close-up shot revealing the premium textures and fine branding of ${productName}, slow dolly-in, soft shallow depth of field, cinematic 4K detail.`,
-    prompt2: `${basePrompt} showing the product in practical use, slow panning camera.`,
-    prompt3: `Heroic 360-degree rotating camera shot of the entire ${productName} showcasing its full design in the environment, dramatic studio lighting, cinematic 4K.`
+    prompt1: `Macro close-up shot revealing the premium textures and fine branding of ${cleanName}, slow and graceful dolly-in, soft shallow depth of field, cinematic 4K detail.`,
+    prompt2: `Continuing the smooth camera motion, a medium shot of ${cleanName} showing it in practical use, consistent warm lighting, cinematic slow-motion.`,
+    prompt3: `Seamlessly transitioning into a heroic wrap-around shot, a 360-degree rotating view of the entire ${cleanName} showcasing its full design in the environment, dramatic studio lighting.`
   };
 }
 
@@ -251,8 +252,9 @@ Rules:
 }
 
 function buildFallbackPrompt(productName: string, category: string): string {
+  const cleanName = removeVietnameseTones(productName);
   const templates: Record<string, string> = {
-    tech: `Cinematic 4K close-up shot of ${productName} on a clean minimalist desk with soft RGB backlighting, slow panning camera revealing intricate details, shallow depth of field with bokeh background, professional studio lighting, ultra-detailed product photography style.`,
+    tech: `Cinematic 4K close-up shot of ${cleanName} on a clean minimalist desk with soft RGB backlighting, slow panning camera revealing intricate details, shallow depth of field with bokeh background, professional studio lighting, ultra-detailed product photography style.`,
     beauty: `Luxurious close-up of ${productName} with golden liquid droplets falling in slow motion against a soft pastel background, warm diffused studio lighting, macro lens revealing smooth texture, elegant and aspirational aesthetic, 4K cinematic quality.`,
     fashion: `Stylish model confidently showcasing ${productName} on a vibrant urban street at golden hour, dynamic low-angle tracking shot, cinematic film grain, rich saturated colors, highly detailed fabric texture, lifestyle brand aesthetic.`,
     food: `Mouth-watering close-up of ${productName} with steam rising gently in a warm cozy kitchen setting, soft natural window lighting, shallow depth of field bokeh, food photography style, cinematic 4K slow motion.`,
@@ -324,6 +326,15 @@ function buildFallbackDescriptionVi(productName: string, category: string): stri
 👉 Săn ngay tại giỏ hàng bên dưới video để nhận deal hời!`,
   };
   return templates[category] || templates["tech"];
+}
+
+export function removeVietnameseTones(str: string): string {
+  return str
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D")
+    .replace(/[^a-zA-Z0-9\s-_]/g, "");
 }
 
 

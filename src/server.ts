@@ -35,6 +35,7 @@ import { Readable } from "stream";
 import { z } from "zod";
 import { generateVideoPrompt, generateVideoDescriptionVi, callBedrock } from "./promptGenerator.js";
 import { generateVeoVideo } from "./veoAutomation.js";
+import puppeteer from "puppeteer";
 import {
   runPipelineForProduct,
   runAllProducts,
@@ -948,6 +949,40 @@ app.delete("/api/products/:id", async (req: any, res: any) => {
 });
 
 
+function extractShopeeIds(url: string) {
+  let match = url.match(/[iI]\.(\d+)\.(\d+)/);
+  if (match) {
+    return { shopId: match[1], itemId: match[2] };
+  }
+  match = url.match(/product\/(\d+)\/(\d+)/);
+  if (match) {
+    return { shopId: match[1], itemId: match[2] };
+  }
+  return null;
+}
+
+function extractProductNameFromUrl(urlStr: string): string {
+  try {
+    const url = new URL(urlStr);
+    let pathname = decodeURIComponent(url.pathname);
+    const shopeeMatch = pathname.match(/^\/([^\/]+)-i\.\d+\.\d+/);
+    if (shopeeMatch) {
+      return shopeeMatch[1].replace(/-/g, " ").trim();
+    }
+    const lazadaMatch = pathname.match(/^\/products\/([^\/-]+)/);
+    if (lazadaMatch) {
+      return lazadaMatch[1].replace(/-/g, " ").trim();
+    }
+    const parts = pathname.split("/").filter(Boolean);
+    if (parts.length > 0) {
+      const last = parts[parts.length - 1];
+      const clean = last.split(".")[0].replace(/-i\.\d+\.\d+/, "").replace(/-/g, " ").trim();
+      if (clean.length > 3) return clean;
+    }
+  } catch {}
+  return "";
+}
+
 // ── REST: Universal Product Crawler (Shopee, Lazada, TikTok, Tiki, etc.) ───────
 app.post("/api/crawl/product", async (req: any, res: any) => {
   const { url } = req.body;
@@ -956,83 +991,234 @@ app.post("/api/crawl/product", async (req: any, res: any) => {
   }
 
   let browser: any = null;
+  let page: any = null;
+  let connected = false;
+  let tempProfileDir: string | null = null;
   try {
     console.log(`🕷️  Universal crawl: ${url}`);
-    const puppeteer = await import("puppeteer");
+    let raw: any = null;
+    const shopeeIds = extractShopeeIds(url);
 
-    browser = await puppeteer.default.launch({
-      headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-blink-features=AutomationControlled",
-        "--disable-web-security",
-        "--disable-features=VizDisplayCompositor",
-        "--lang=vi-VN,vi",
-        "--window-size=1440,900",
-        "--user-data-dir=/tmp/puppeteer-crawl",
-      ],
-    });
+    // Grab Shopee cookies from the user's running Chrome window on port 9222
+    let grabbedCookies: any[] = [];
+    try {
+      const debugPort = process.env.CHROME_DEBUG_PORT || "9222";
+      const debugUrl = `http://127.0.0.1:${debugPort}/json/version`;
+      const checkRes = await fetch(debugUrl).catch(() => null);
+      if (checkRes && checkRes.ok) {
+        console.log(`🔗 [Crawl] Grabbing active cookies from Chrome port ${debugPort}...`);
+        const tempBrowser = await puppeteer.connect({
+          browserURL: `http://127.0.0.1:${debugPort}`,
+        });
+        const pages = await tempBrowser.pages();
+        if (pages.length > 0) {
+          // Use CDP to grab ALL cookies in the user's browser, bypassing domain restrictions
+          const client = await pages[0].target().createCDPSession();
+          const { cookies } = await client.send("Network.getAllCookies");
+          grabbedCookies = cookies
+            .filter((c: any) => c.domain.includes("shopee.vn"))
+            .map((c: any) => ({
+              name: c.name,
+              value: c.value,
+              domain: c.domain,
+              path: c.path,
+              expires: c.expires,
+              httpOnly: c.httpOnly,
+              secure: c.secure,
+              sameSite: c.sameSite as any,
+            }));
+          console.log(`✅ [Crawl] Grabbed ${grabbedCookies.length} Shopee cookies successfully!`);
+        }
+        await tempBrowser.disconnect();
+      }
+    } catch (cookieErr: any) {
+      console.warn(`⚠️ [Crawl] Failed to grab active cookies: ${cookieErr.message}`);
+    }
 
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1440, height: 900 });
+    // Strategy 0: Direct Axios API fetch (using grabbed active session cookies!)
+    if (shopeeIds) {
+      const { shopId, itemId } = shopeeIds;
+      const apiUrl = `https://shopee.vn/api/v4/item/get?itemid=${itemId}&shopid=${shopId}`;
+      console.log(`📡 [Crawl] Attempting direct Axios API fetch with active cookies: ${apiUrl}`);
+      
+      const cookieHeader = grabbedCookies.map(c => `${c.name}=${c.value}`).join("; ");
+      const headers: any = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Referer": "https://shopee.vn/",
+        "X-Requested-With": "XMLHttpRequest"
+      };
+      if (cookieHeader) {
+        headers["Cookie"] = cookieHeader;
+      }
 
-    // Rotate through realistic user agents
-    const userAgents = [
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
-    ];
-    await page.setUserAgent(userAgents[Math.floor(Math.random() * userAgents.length)]);
-    await page.setExtraHTTPHeaders({
-      "accept-language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-      "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-      "sec-fetch-dest": "document",
-      "sec-fetch-mode": "navigate",
-      "sec-fetch-site": "none",
-      "upgrade-insecure-requests": "1",
-    });
+      try {
+        const apiRes = await axios.get(apiUrl, { headers, timeout: 10000 });
+        if (apiRes.data && apiRes.data.data && apiRes.data.data.name) {
+          const item = apiRes.data.data;
+          const priceMin = item.price_min || item.price || 0;
+          const displayPrice = priceMin > 0 ? (priceMin / 100000).toLocaleString("vi-VN") + " ₫" : "";
+          raw = {
+            name: item.name,
+            price: displayPrice,
+            rating: item.item_rating?.rating_star ? item.item_rating.rating_star.toFixed(1) : "",
+            ratingCount: item.item_rating?.rating_count ? item.item_rating.rating_count.reduce((a: number, b: number) => a + b, 0).toString() : "",
+            description: item.description || "",
+            images: (item.images || []).map((img: string) => `https://down-vn.img.susercontent.com/file/${img}`),
+            breadcrumb: item.categories?.map((c: any) => c.display_name).join(" > ") || "",
+            url: url,
+            jsonldFound: true
+          };
+          console.log(`✅ [Crawl] Direct Axios API fetch SUCCEEDED! Title: "${raw.name}"`);
+        }
+      } catch (apiErr: any) {
+        console.warn(`⚠️ [Crawl] Direct Axios API fetch failed: ${apiErr.message}`);
+      }
+    }
 
-    // Stealth: hide automation fingerprints
-    await page.evaluateOnNewDocument(`(function() {
-      // Hide webdriver
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-      // Fake plugins
-      Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
-      // Fake languages
-      Object.defineProperty(navigator, 'languages', { get: () => ['vi-VN', 'vi', 'en-US', 'en'] });
-      // Fake platform
-      Object.defineProperty(navigator, 'platform', { get: () => 'MacIntel' });
-      // Override chrome
-      window.chrome = { runtime: {} };
-    })()`);
+    if (!raw) {
+      console.log("🔄 [Crawl] Falling back to background Puppeteer scraper...");
+      const DATA_DIR = path.resolve(__dirname, "../data");
+      tempProfileDir = path.resolve(DATA_DIR, `crawler_profile_temp_${Date.now()}`);
+      
+      const debugPort = process.env.CHROME_DEBUG_PORT || "9222";
+      const debugUrl = `http://127.0.0.1:${debugPort}/json/version`;
+      const checkRes = await fetch(debugUrl).catch(() => null);
 
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 35000 });
+      if (checkRes && checkRes.ok) {
+        console.log(`🔗 [Crawl] Connecting to existing Chrome on port ${debugPort}...`);
+        browser = await puppeteer.connect({
+          browserURL: `http://127.0.0.1:${debugPort}`,
+          defaultViewport: null,
+        });
+        connected = true;
+      } else {
+        console.log("🔄 [Crawl] Existing Chrome not running. Launching new background Chrome...");
+        browser = await puppeteer.launch({
+          headless: false, // Must be false to bypass Shopee's Akamai bot blocker!
+          args: [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-web-security",
+            "--lang=vi-VN,vi",
+            "--window-position=-2000,-2000", // Positions the headful window off-screen so it's completely invisible to the user!
+            "--window-size=1440,900",
+            "--disable-backgrounding-occluded-windows", // Prevents Chrome from freezing off-screen windows
+            "--disable-renderer-backgrounding",
+            "--disable-background-timer-throttling",
+            "--disable-features=CalculatePageVisibilityState", // Forces page to remain active/visible off-screen
+            `--user-data-dir=${tempProfileDir}`,
+          ],
+        });
+        connected = false;
+      }
 
-    // Wait 4s for React to hydrate
-    await new Promise((r) => setTimeout(r, 4000));
+      page = await browser.newPage();
+      await page.setViewport({ width: 1440, height: 900 });
 
-    // Scroll through full page to trigger lazy-loaded content (description, gallery)
-    await page.evaluate(`
-      (function() {
-        var total = document.body.scrollHeight;
-        var step = Math.floor(total / 6);
-        var pos = 0;
-        var tid = setInterval(function() {
-          pos += step;
-          window.scrollTo(0, pos);
-          if (pos >= total) { clearInterval(tid); window.scrollTo(0, 0); }
-        }, 300);
-      })()
-    `);
-    await new Promise((r) => setTimeout(r, 2500));
+      if (grabbedCookies && grabbedCookies.length > 0) {
+        await page.setCookie(...grabbedCookies);
+      }
 
-    const pageTitle = await page.title();
-    console.log(`📄 Page: "${pageTitle}" | host: ${new URL(url).hostname}`);
+      // Rotate through realistic user agents (Chrome only)
+      const userAgents = [
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+      ];
+      await page.setUserAgent(userAgents[Math.floor(Math.random() * userAgents.length)]);
+      await page.setExtraHTTPHeaders({
+        "accept-language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "none",
+        "upgrade-insecure-requests": "1",
+      });
+
+      // Stealth: hide automation fingerprints
+      await page.evaluateOnNewDocument(`(function() {
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
+        Object.defineProperty(navigator, 'languages', { get: () => ['vi-VN', 'vi', 'en-US', 'en'] });
+        Object.defineProperty(navigator, 'platform', { get: () => 'MacIntel' });
+        window.chrome = { runtime: {} };
+      })()`);
+
+      console.log(`🌐 [Crawl] Navigating to product page: ${url}`);
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 35000 });
+
+      // Update shopeeIds based on the redirected URL (crucial for short URLs like shope.ee)
+      const currentUrl = page.url();
+      const activeShopeeIds = extractShopeeIds(currentUrl) || shopeeIds;
+
+      // Strategy 2: Browser-context API fetch inside product page context (inherits session & cookies)
+      if (activeShopeeIds) {
+        const { shopId, itemId } = activeShopeeIds;
+        try {
+          console.log(`📡 [Crawl] Attempting browser-context API fetch on shopee.vn (shopId: ${shopId}, itemId: ${itemId})...`);
+          const apiResult = await page.evaluate(async (sId: any, iId: any) => {
+            try {
+              const res = await fetch(`/api/v4/item/get?itemid=${iId}&shopid=${sId}`);
+              if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
+              const json = await res.json();
+              return { success: true, data: json.data };
+            } catch (err: any) {
+              return { success: false, error: err.message };
+            }
+          }, shopId, itemId);
+
+          if (apiResult.success && apiResult.data && apiResult.data.name) {
+            const item = apiResult.data;
+            const priceMin = item.price_min || item.price || 0;
+            const displayPrice = priceMin > 0 ? (priceMin / 100000).toLocaleString("vi-VN") + " ₫" : "";
+            raw = {
+              name: item.name,
+              price: displayPrice,
+              rating: item.item_rating?.rating_star ? item.item_rating.rating_star.toFixed(1) : "",
+              ratingCount: item.item_rating?.rating_count ? item.item_rating.rating_count.reduce((a: number, b: number) => a + b, 0).toString() : "",
+              description: item.description || "",
+              images: (item.images || []).map((img: string) => `https://down-vn.img.susercontent.com/file/${img}`),
+              breadcrumb: item.categories?.map((c: any) => c.display_name).join(" > ") || "",
+              url: url,
+              jsonldFound: true
+            };
+            console.log(`✅ [Crawl] Browser-context Shopee API fetch SUCCEEDED! Title: "${raw.name}", images: ${raw.images.length}`);
+          } else {
+            console.warn(`⚠️ [Crawl] Browser-context API fetch returned error: ${apiResult.error}`);
+          }
+        } catch (apiErr: any) {
+          console.warn(`⚠️ [Crawl] Browser-context API fetch failed: ${apiErr.message}`);
+        }
+      }
+
+      if (!raw) {
+        console.log("🔄 [Crawl] API fetch failed, falling back to standard DOM scraping...");
+        // Wait 4s for React to hydrate
+        await new Promise((r) => setTimeout(r, 4000));
+
+        // Scroll through full page to trigger lazy-loaded content (description, gallery)
+        await page.evaluate(`
+          (function() {
+            var total = document.body.scrollHeight;
+            var step = Math.floor(total / 6);
+            var pos = 0;
+            var tid = setInterval(function() {
+              pos += step;
+              window.scrollTo(0, pos);
+              if (pos >= total) { clearInterval(tid); window.scrollTo(0, 0); }
+            }, 300);
+          })()
+        `);
+        await new Promise((r) => setTimeout(r, 2500));
+
+        const pageTitle = await page.title();
+        console.log(`📄 Page: "${pageTitle}" | host: ${new URL(url).hostname}`);
 
     // ── Universal 4-layer extraction (as string to avoid esbuild __name) ─────
-    const raw = await page.evaluate(`(function() {
+    raw = await page.evaluate(`(function() {
 
       // ═══ LAYER 0: Window global state (Shopee/Lazada/TikTok embed full data here) ═══
       var windowData = {};
@@ -1274,6 +1460,12 @@ app.post("/api/crawl/product", async (req: any, res: any) => {
 
       function addImg(src) {
         if (imgs.length >= 10 || !src) return;
+        // Normalize protocol-relative and domain-relative URLs
+        if (src.indexOf('//') === 0) {
+          src = 'https:' + src;
+        } else if (src.indexOf('/') === 0) {
+          src = window.location.origin + src;
+        }
         var clean = src
           .replace(/_\\d{2,4}x\\d{2,4}(\\.(jpg|png|webp))/gi, '$1')
           .replace(/\\.(jpg|png|webp)_\\d+.*$/i, '.$1')
@@ -1345,18 +1537,75 @@ app.post("/api/crawl/product", async (req: any, res: any) => {
       };
     })()`);
 
-    // Debug: save page content & screenshot to help inspect why selectors or state might be missing
-    try {
-      const htmlContent = await page.content();
-      await fs.writeFile(path.join(DATA_DIR, "crawled_page.html"), htmlContent, "utf-8");
-      await page.screenshot({ path: path.join(DATA_DIR, "crawled_screenshot.png") });
-      console.log(`📸 Debug files saved: /data/crawled_page.html & /data/crawled_screenshot.png`);
-    } catch (debugErr: any) {
-      console.warn("⚠️ Failed to save debug files:", debugErr.message);
+      // Debug: save page content & screenshot to help inspect why selectors or state might be missing
+      try {
+        const DATA_DIR = path.resolve(__dirname, "../data");
+        const htmlContent = await page.content();
+        await fs.writeFile(path.join(DATA_DIR, "crawled_page.html"), htmlContent, "utf-8");
+        await page.screenshot({ path: path.join(DATA_DIR, "crawled_screenshot.png") });
+        console.log(`📸 Debug files saved: /data/crawled_page.html & /data/crawled_screenshot.png`);
+      } catch (debugErr: any) {
+        console.warn("⚠️ Failed to save debug files:", debugErr.message);
+      }
     }
 
-    await browser.close();
-    browser = null;
+    if (browser) {
+      if (connected) {
+        if (page) await page.close().catch(() => {});
+        browser.disconnect();
+      } else {
+        await browser.close().catch(() => {});
+        // Clean up temp profile dir to avoid disk pollution
+        try {
+          if (tempProfileDir && existsSync(tempProfileDir)) {
+            rmSync(tempProfileDir, { recursive: true, force: true });
+          }
+        } catch {}
+      }
+      browser = null;
+    }
+    } // Closes outer if (!raw) block
+
+    if (raw && (
+      raw.name.includes("Shopee Việt Nam") || 
+      raw.name.includes("Shopee Vietnam") || 
+      raw.name.includes("Login Required") ||
+      raw.name === "Shopee"
+    )) {
+      console.warn(`⚠️  [Crawl] Scraped title "${raw.name}" indicates a blocked state. Forcing fallback.`);
+      raw = null;
+    }
+
+    if (!raw || !raw.name || raw.name.trim().length === 0) {
+      const fallbackName = extractProductNameFromUrl(url);
+      if (fallbackName && !/^\d+$/.test(fallbackName)) {
+        raw = {
+          name: fallbackName,
+          price: "",
+          rating: "",
+          ratingCount: "",
+          description: "",
+          images: [],
+          breadcrumb: "",
+          url: url,
+          jsonldFound: false
+        };
+        console.log(`⚠️  [Crawl] Crawling blocked. Using URL slug fallback name: "${fallbackName}"`);
+      } else {
+        raw = {
+          name: "Sản phẩm Shopee",
+          price: "",
+          rating: "",
+          ratingCount: "",
+          description: "",
+          images: [],
+          breadcrumb: "",
+          url: url,
+          jsonldFound: false
+        };
+        console.log(`⚠️  [Crawl] Crawling blocked and no name slug in URL. Using generic name.`);
+      }
+    }
 
     const hostname = new URL(url).hostname.replace("www.", "");
     console.log(`✅ [${hostname}] name="${raw.name}" price="${raw.price}" imgs=${raw.images?.length} jsonld=${raw.jsonldFound}`);
@@ -1378,7 +1627,7 @@ app.post("/api/crawl/product", async (req: any, res: any) => {
         return "fashion";
       }
       // 4. Food
-      if (/thực phẩm|bánh kẹo|snack|cafe|cà phê|trà sữa|đồ uống|gạo|mì gói|nước ngọt/i.test(t)) {
+      if (/thực phẩm|bánh kẹo|snack|cafe|cà phê|trà sữa|đồ uống|gạo|mì gói|nước ngọt|ăn vặt|kẹo|milo|cacao|socola|chocolate|hạt|sữa|bánh/i.test(t)) {
         return "food";
       }
       // 5. Fitness
@@ -1395,7 +1644,7 @@ app.post("/api/crawl/product", async (req: any, res: any) => {
     // ── Gemini AI rewrite (Structured JSON Mode to extract caption + dynamic hashtags) ──
     let aiDescription = "";
     let hashtags: string[] = [];
-    const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+    const GEMINI_API_KEY = process.env.AWS_BEARER_TOKEN_BEDROCK || process.env.GEMINI_API_KEY || "";
 
     if (GEMINI_API_KEY && raw.name) {
       try {
@@ -1419,6 +1668,7 @@ CRITICAL RULES:
   "caption": "The rewritten full product description in Vietnamese (with all unique details and sections preserved, duplicate spam and SEO keyword lists completely removed).",
   "hashtags": ["An array of 3-8 relevant lowercase, alphanumeric-only hashtags starting with #, dynamically generated based on the brand, name, variant terms, and specific product benefits."]
 }
+5. IF the product description is empty or missing, you MUST write a highly detailed, persuasive product review description from scratch in Vietnamese based only on the name, brand, and category, describing its potential benefits, flavor/features, and appeal.
 
 Hashtags Rules (Extremely Strict):
 - Max count: Generate exactly 3 to 8 hashtags. Do not exceed 8.
@@ -1526,7 +1776,16 @@ Write a comprehensive Vietnamese affiliate caption and generate dynamic hashtags
       },
     });
   } catch (err: any) {
-    if (browser) { try { await browser.close(); } catch {} }
+    if (browser) {
+      try {
+        if (connected) {
+          if (page) await page.close().catch(() => {});
+          browser.disconnect();
+        } else {
+          await browser.close();
+        }
+      } catch {}
+    }
     console.error("❌ Crawl error:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
@@ -1541,9 +1800,9 @@ app.post("/api/crawl/regenerate-description", async (req: any, res: any) => {
       return res.status(400).json({ success: false, error: "Missing product name" });
     }
 
-    const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+    const GEMINI_API_KEY = process.env.AWS_BEARER_TOKEN_BEDROCK || process.env.GEMINI_API_KEY || "";
     if (!GEMINI_API_KEY) {
-      return res.status(500).json({ success: false, error: "GEMINI_API_KEY not configured" });
+      return res.status(500).json({ success: false, error: "GEMINI_API_KEY/AWS_BEARER_TOKEN_BEDROCK not configured" });
     }
 
     console.log(`🤖 [CrawlRegen] Regenerating AI description for: "${name}"`);

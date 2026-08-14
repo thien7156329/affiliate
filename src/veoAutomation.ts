@@ -371,29 +371,90 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
       }
     }
 
-    // Focus and type prompt
+    // Set text in the contenteditable div via DOM injection to prevent typing/clear lag
+    console.log("✏️  [VeoAuto] Typing prompt via DOM...");
     const inputSelector = 'rich-textarea [contenteditable="true"], textarea, [contenteditable="true"]';
-    await page.click(inputSelector).catch(() => {});
-    await new Promise(r => setTimeout(r, 500));
+    await page.evaluate((sel: string, text: string) => {
+      const el = document.querySelector(sel) as HTMLElement;
+      if (el) {
+        el.focus();
+        el.innerText = text;
+        // Dispatch input and change events to trigger Angular bindings
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        
+        // Dispatch dummy spaces to update any keyboard listener states
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true }));
+        el.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', code: 'Space', bubbles: true }));
+      }
+    }, inputSelector, prompt);
 
-    // Clear any existing text first
-    await page.keyboard.down("Meta");
-    await page.keyboard.press("a");
-    await page.keyboard.up("Meta");
-    await page.keyboard.press("Backspace");
-
-    const promptToType = prompt;
-
-    await page.type(inputSelector, promptToType, { delay: 15 });
-    console.log("✏️  [VeoAuto] Prompt typed successfully");
+    await new Promise(r => setTimeout(r, 1000));
 
     // Take screenshot to verify before submitting
     const debugDir = path.resolve(__dirname, "../data/debug");
     if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir, { recursive: true });
     await page.screenshot({ path: path.join(debugDir, "before_submit.png") }).catch(() => {});
 
-    await page.keyboard.press("Enter");
-    console.log("📤 [VeoAuto] Prompt submitted");
+    // Submit prompt using DOM click on Generate/Send button
+    const submitted = await page.evaluate(() => {
+      const selectors = [
+        'button[aria-label="Gửi tin nhắn"]',
+        'button[aria-label*="Gửi" i]',
+        'button[aria-label*="Generate" i]',
+        'button[aria-label*="Tạo" i]',
+        'button[aria-label*="Send" i]',
+        'button.send-button',
+        'mat-icon[fonticon="arrow_upward"]',
+        'button mat-icon[data-mat-icon-name="arrow_upward"]',
+      ];
+      for (const sel of selectors) {
+        const btn = document.querySelector(sel) as HTMLButtonElement;
+        // Verify button is not inside a menu, dialog list, or sidebar list
+        if (btn && !btn.disabled && !btn.closest('mat-menu-panel') && !btn.closest('navigation-list') && !btn.closest('.sidebar-list') && !btn.closest('[role="menu"]')) {
+          btn.click();
+          return true;
+        }
+      }
+      
+      const btns = Array.from(document.querySelectorAll('button'));
+      const targetBtn = btns.find(b => {
+        // Bypass buttons inside menus or sidebars to avoid misclicking menu options like "Ghim" / "Pin"
+        if (b.closest('mat-menu-panel') || b.closest('navigation-list') || b.closest('.sidebar-list') || b.closest('[role="menu"]') || b.closest('.context-menu')) {
+          return false;
+        }
+
+        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+        const text = (b.textContent || '').toLowerCase();
+        const html = (b.innerHTML || '').toLowerCase();
+
+        // Exclude menu options explicitly
+        const isMenuOption = aria.includes('ghim') || aria.includes('pin') || aria.includes('xóa') || aria.includes('delete') || 
+                             aria.includes('sổ') || aria.includes('note') || aria.includes('chia') || aria.includes('share') || 
+                             aria.includes('đổi') || aria.includes('rename') || text.includes('ghim') || text.includes('pin') ||
+                             text.includes('xóa') || text.includes('delete') || text.includes('chia') || text.includes('share') ||
+                             text.includes('đổi') || text.includes('rename');
+        if (isMenuOption) return false;
+
+        return aria.includes('generate') || aria.includes('tạo') || aria.includes('gửi') || aria.includes('send') ||
+               text.includes('generate') || text.includes('tạo') || text.includes('gửi') || text.includes('send') ||
+               html.includes('send') || html.includes('gửi') || html.includes('mat-icon-name="send"');
+      });
+      if (targetBtn) {
+        targetBtn.click();
+        return true;
+      }
+      return false;
+    });
+
+    if (submitted) {
+      console.log("📤 [VeoAuto] Prompt submitted via Generate/Send button");
+    } else {
+      console.log("⚠️  [VeoAuto] Generate button not found, falling back to keyboard Enter");
+      await page.focus(inputSelector).catch(() => {});
+      await page.keyboard.press("Enter");
+      console.log("📤 [VeoAuto] Prompt submitted via keyboard Enter");
+    }
 
     console.log("⏳ [VeoAuto] Waiting for Veo to generate video (up to 8 minutes)...");
     const screenshotDir = path.resolve(__dirname, "../data/debug");
@@ -629,12 +690,12 @@ export async function extractVideoFrame(
       </html>
     `);
     
-    // Seek to 1s to capture a meaningful frame (preventing black screen at 0.0s)
+    // Seek to 2.5s to capture a meaningful frame (preventing black screen at 0.0s/fade-in)
     await page.evaluate(async () => {
       const vid = document.getElementById("vid") as HTMLVideoElement;
       return new Promise<void>((resolve, reject) => {
         vid.onloadedmetadata = () => {
-          vid.currentTime = 1.0; // 1 second in
+          vid.currentTime = 2.5; // 2.5 seconds in
         };
         vid.onseeked = () => {
           resolve();
@@ -924,13 +985,14 @@ export async function generateVeoVideoParallel(
       ownsBrowser = true;
     }
 
-    // Run generations in parallel!
-    console.log(`🚀 [VeoAuto] Spawning ${prompts.length} pages/tabs in parallel...`);
-    const results = await Promise.all(
-      prompts.map((prompt, i) =>
-        runSingleVeoAutomation(browser, prompt, localImagePath, i, productSlug)
-      )
-    );
+    // Run generations sequentially (one by one) to respect Gemini account limits
+    console.log(`🚀 [VeoAuto] Spawning ${prompts.length} pages/tabs sequentially...`);
+    const results = [];
+    for (let i = 0; i < prompts.length; i++) {
+      console.log(`🎬 [VeoAuto] Starting segment ${i + 1}/${prompts.length}...`);
+      const res = await runSingleVeoAutomation(browser, prompts[i], localImagePath, i, productSlug);
+      results.push(res);
+    }
 
     const localPaths: string[] = [];
     const errors: string[] = [];
@@ -1090,20 +1152,84 @@ async function runSingleVeoAutomation(
       }
     }
 
-    // Type prompt
-    await page.click(inputSelector).catch(() => {});
-    await new Promise(r => setTimeout(r, 500));
+    // Set text in the contenteditable div via DOM injection to prevent typing and focus conflicts between tabs
+    console.log(`✏️  [VeoAuto-Tab ${index + 1}] Typing prompt via DOM...`);
+    await page.evaluate((sel: string, text: string) => {
+      const el = document.querySelector(sel) as HTMLElement;
+      if (el) {
+        el.focus();
+        el.innerText = text;
+        // Dispatch input and change events to trigger Angular bindings
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        
+        // Dispatch dummy spaces to update any keyboard listener states
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true }));
+        el.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', code: 'Space', bubbles: true }));
+      }
+    }, inputSelector, prompt);
 
-    await page.keyboard.down("Meta");
-    await page.keyboard.press("a");
-    await page.keyboard.up("Meta");
-    await page.keyboard.press("Backspace");
+    await new Promise(r => setTimeout(r, 1000));
 
-    await page.type(inputSelector, prompt, { delay: 15 });
-    console.log(`✏️  [VeoAuto-Tab ${index + 1}] Prompt typed`);
+    // Submit prompt using DOM click on Generate/Send button
+    const submitted = await page.evaluate(() => {
+      const selectors = [
+        'button[aria-label="Gửi tin nhắn"]',
+        'button[aria-label*="Gửi" i]',
+        'button[aria-label*="Generate" i]',
+        'button[aria-label*="Tạo" i]',
+        'button[aria-label*="Send" i]',
+        'button.send-button',
+        'mat-icon[fonticon="arrow_upward"]',
+        'button mat-icon[data-mat-icon-name="arrow_upward"]',
+      ];
+      for (const sel of selectors) {
+        const btn = document.querySelector(sel) as HTMLButtonElement;
+        // Verify button is not inside a menu, dialog list, or sidebar list
+        if (btn && !btn.disabled && !btn.closest('mat-menu-panel') && !btn.closest('navigation-list') && !btn.closest('.sidebar-list') && !btn.closest('[role="menu"]')) {
+          btn.click();
+          return true;
+        }
+      }
+      
+      const btns = Array.from(document.querySelectorAll('button'));
+      const targetBtn = btns.find(b => {
+        // Bypass buttons inside menus or sidebars to avoid misclicking menu options like "Ghim" / "Pin"
+        if (b.closest('mat-menu-panel') || b.closest('navigation-list') || b.closest('.sidebar-list') || b.closest('[role="menu"]') || b.closest('.context-menu')) {
+          return false;
+        }
 
-    await page.keyboard.press("Enter");
-    console.log(`📤 [VeoAuto-Tab ${index + 1}] Prompt submitted`);
+        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+        const text = (b.textContent || '').toLowerCase();
+        const html = (b.innerHTML || '').toLowerCase();
+
+        // Exclude menu options explicitly
+        const isMenuOption = aria.includes('ghim') || aria.includes('pin') || aria.includes('xóa') || aria.includes('delete') || 
+                             aria.includes('sổ') || aria.includes('note') || aria.includes('chia') || aria.includes('share') || 
+                             aria.includes('đổi') || aria.includes('rename') || text.includes('ghim') || text.includes('pin') ||
+                             text.includes('xóa') || text.includes('delete') || text.includes('chia') || text.includes('share') ||
+                             text.includes('đổi') || text.includes('rename');
+        if (isMenuOption) return false;
+
+        return aria.includes('generate') || aria.includes('tạo') || aria.includes('gửi') || aria.includes('send') ||
+               text.includes('generate') || text.includes('tạo') || text.includes('gửi') || text.includes('send') ||
+               html.includes('send') || html.includes('gửi') || html.includes('mat-icon-name="send"');
+      });
+      if (targetBtn) {
+        targetBtn.click();
+        return true;
+      }
+      return false;
+    });
+
+    if (submitted) {
+      console.log(`📤 [VeoAuto-Tab ${index + 1}] Prompt submitted via Generate/Send button`);
+    } else {
+      console.log(`⚠️  [VeoAuto-Tab ${index + 1}] Generate button not found, falling back to keyboard Enter`);
+      await page.focus(inputSelector).catch(() => {});
+      await page.keyboard.press("Enter");
+      console.log(`📤 [VeoAuto-Tab ${index + 1}] Prompt submitted via keyboard Enter`);
+    }
 
     // Poll for video generation
     const pollStart = Date.now();
