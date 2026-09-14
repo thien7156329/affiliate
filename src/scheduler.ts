@@ -30,6 +30,8 @@ export interface Product {
   description?: string;
   promptsObj?: any; // Saved prompt object (prompt1..6, dialogue1..6, story_title, etc.)
   enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface PipelineResult {
@@ -110,8 +112,19 @@ export function getFfmpegCmd(): string {
   return "ffmpeg";
 }
 
+export function getFfprobeCmd(): string {
+  if (existsSync("/opt/homebrew/bin/ffprobe")) {
+    return "/opt/homebrew/bin/ffprobe";
+  }
+  if (existsSync("/usr/local/bin/ffprobe")) {
+    return "/usr/local/bin/ffprobe";
+  }
+  return "ffprobe";
+}
+
 export async function mergeVideoSegments(segmentPaths: string[], outputPath: string): Promise<void> {
   const { writeFileSync, unlinkSync } = await import("fs");
+  const { execSync } = await import("child_process");
   
   if (segmentPaths.length === 1) {
     const { copyFileSync } = await import("fs");
@@ -120,14 +133,13 @@ export async function mergeVideoSegments(segmentPaths: string[], outputPath: str
     return;
   }
 
-  const listFilePath = outputPath + ".txt";
-  const listContent = segmentPaths.map(p => `file '${path.resolve(p)}'`).join("\n");
-  writeFileSync(listFilePath, listContent, "utf-8");
+  const ffmpeg = getFfmpegCmd();
+  const ffprobe = getFfprobeCmd();
 
-  console.log(`🎬 [Merge] Concatenating ${segmentPaths.length} video segments using FFmpeg...`);
+  console.log(`🎬 [Merge] Concatenating ${segmentPaths.length} video segments using FFmpeg filter_complex (auto resample 48kHz + 30fps)...`);
   
   const execPromise = (cmd: string) => new Promise<void>((resolve, reject) => {
-    exec(cmd, (err, stdout, stderr) => {
+    exec(cmd, { maxBuffer: 50 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
         console.error(`FFmpeg output stderr:\n${stderr}`);
         reject(new Error(stderr || err.message));
@@ -137,23 +149,73 @@ export async function mergeVideoSegments(segmentPaths: string[], outputPath: str
     });
   });
 
-  const ffmpeg = getFfmpegCmd();
-  // Perform smooth re-encode merge with consistent 30fps and PTS alignment to eliminate visual jumping/stuttering
-  try {
-    await execPromise(`"${ffmpeg}" -y -f concat -safe 0 -i "${listFilePath}" -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p -r 30 -c:a aac -b:a 192k -ar 44100 "${outputPath}"`);
-    console.log(`✅ [Merge] Seamless concatenation completed successfully: ${outputPath}`);
-  } catch (err: any) {
-    console.warn(`⚠️ [Merge] Re-encode concat failed: ${err.message}. Trying copy-concat fallback...`);
+  // Check audio and duration for each input segment
+  const checkHasAudio = (videoPath: string): boolean => {
     try {
-      await execPromise(`"${ffmpeg}" -y -f concat -safe 0 -i "${listFilePath}" -c copy "${outputPath}"`);
-      console.log(`✅ [Merge] Copy-concatenation completed: ${outputPath}`);
-    } catch (fallbackErr: any) {
+      const probeOut = execSync(`"${ffprobe}" -v error -show_streams -select_streams a -of json "${videoPath}"`, {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "ignore"],
+      });
+      const parsed = JSON.parse(probeOut);
+      return Array.isArray(parsed.streams) && parsed.streams.length > 0;
+    } catch {
+      return false;
+    }
+  };
+
+  const getVideoDuration = (videoPath: string): number => {
+    try {
+      const out = execSync(`"${ffprobe}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`, {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "ignore"],
+      });
+      const d = parseFloat(out.trim());
+      if (!isNaN(d) && d > 0) return d;
+    } catch {}
+    return 10;
+  };
+
+  try {
+    const inputArgs = segmentPaths.map(p => `-i "${path.resolve(p)}"`).join(" ");
+    const filterParts: string[] = [];
+    const concatInputs: string[] = [];
+
+    for (let i = 0; i < segmentPaths.length; i++) {
+      const p = path.resolve(segmentPaths[i]);
+      const hasAudio = checkHasAudio(p);
+
+      // Normalize video to 30fps and aligned PTS
+      filterParts.push(`[${i}:v]fps=30,setpts=PTS-STARTPTS[v${i}]`);
+
+      // Normalize audio to 48000Hz stereo fltp with aligned PTS
+      if (hasAudio) {
+        filterParts.push(`[${i}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS[a${i}]`);
+      } else {
+        const dur = getVideoDuration(p);
+        filterParts.push(`anullsrc=r=48000:cl=stereo,atrim=duration=${dur.toFixed(3)},asetpts=PTS-STARTPTS[a${i}]`);
+      }
+
+      concatInputs.push(`[v${i}][a${i}]`);
+    }
+
+    filterParts.push(`${concatInputs.join("")}concat=n=${segmentPaths.length}:v=1:a=1[outv][outa]`);
+    const filterComplex = filterParts.join("; ");
+
+    const cmd = `"${ffmpeg}" -y ${inputArgs} -filter_complex "${filterComplex}" -map "[outv]" -map "[outa]" -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p -c:a aac -b:a 192k -ar 48000 "${outputPath}"`;
+    await execPromise(cmd);
+    console.log(`✅ [Merge] Seamless concatenation completed successfully with perfect sync: ${outputPath}`);
+  } catch (err: any) {
+    console.warn(`⚠️ [Merge] Filter_complex concat failed: ${err.message}. Trying demuxer fallback...`);
+    const listFilePath = outputPath + ".txt";
+    const listContent = segmentPaths.map(p => `file '${path.resolve(p)}'`).join("\n");
+    writeFileSync(listFilePath, listContent, "utf-8");
+    try {
+      await execPromise(`"${ffmpeg}" -y -f concat -safe 0 -i "${listFilePath}" -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p -r 30 -c:a aac -b:a 192k -ar 48000 "${outputPath}"`);
+      console.log(`✅ [Merge] Fallback concatenation completed: ${outputPath}`);
+    } finally {
       try { unlinkSync(listFilePath); } catch {}
-      throw new Error(`FFmpeg concatenation failed: ${fallbackErr.message}`);
     }
   }
-
-  try { unlinkSync(listFilePath); } catch {}
 }
 
 export async function extractThumbnailWithFfmpeg(videoPath: string, outputPath: string): Promise<boolean> {
@@ -188,7 +250,30 @@ function slugify(text: string): string {
 export async function loadProducts(): Promise<Product[]> {
   if (!existsSync(PRODUCTS_FILE)) return [];
   const raw = await fs.readFile(PRODUCTS_FILE, "utf-8");
-  return (JSON.parse(raw) as Product[]).filter((p) => p.enabled !== false);
+  let parsedList: Product[] = [];
+  try {
+    parsedList = JSON.parse(raw) as Product[];
+  } catch (err: any) {
+    console.warn(`⚠️ [loadProducts] Direct JSON parse failed (${err.message}). Attempting recovery...`);
+    const lastBracket = raw.lastIndexOf("]");
+    if (lastBracket !== -1) {
+      try {
+        parsedList = JSON.parse(raw.slice(0, lastBracket + 1)) as Product[];
+        console.log(`✅ [loadProducts] Successfully recovered ${parsedList.length} products.`);
+      } catch (recoverErr: any) {
+        console.error(`❌ [loadProducts] Recovery failed: ${recoverErr.message}`);
+        return [];
+      }
+    } else {
+      return [];
+    }
+  }
+  const list = (Array.isArray(parsedList) ? parsedList : []).filter((p) => p && p.enabled !== false);
+  return list.sort((a, b) => {
+    const tA = a.created_at ? new Date(a.created_at).getTime() : 0;
+    const tB = b.created_at ? new Date(b.created_at).getTime() : 0;
+    return tB - tA;
+  });
 }
 
 export function parseTextPromptToObj(input: any): any {
@@ -910,7 +995,7 @@ export async function mergeJobVideoSegments(
   const partMap: Map<number, { filename: string; fullPath: string; mtimeMs: number }> = new Map();
 
   for (const file of allFiles) {
-    if (!file.endsWith(".mp4") || file.includes("_merged") || file.includes("_voiced")) continue;
+    if (!file.endsWith(".mp4") || file.includes("_merged") || file.includes("_voiced") || file.includes(".orig") || file.includes(".bak")) continue;
     const match = file.match(/_part(\d+)_/i);
     if (match) {
       const partNum = parseInt(match[1], 10);

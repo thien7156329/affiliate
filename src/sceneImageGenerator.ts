@@ -11,7 +11,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import axios from "axios";
 import { randomUUID } from "crypto";
-import { ensureChromeRunning, createBackgroundPage, getFrontmostApp, restoreUserFocus } from "./veoAutomation.js";
+import { ensureChromeRunning, createBackgroundPage, getFrontmostApp, restoreUserFocus, toHostPath } from "./veoAutomation.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DOWNLOADS_DIR = path.resolve(__dirname, "../data/downloads");
@@ -239,7 +239,8 @@ export async function generateSingleSceneImage(
         // Wait for file input and upload all reference files
         const fileInput = await page.waitForSelector('input[type="file"]', { timeout: 10000 });
         if (fileInput) {
-          await (fileInput as any).uploadFile(...pathsToUpload);
+          const hostPaths = pathsToUpload.map(toHostPath);
+          await (fileInput as any).uploadFile(...hostPaths);
           restoreUserFocus(prevApp);
           console.log(`✅ [SceneImgGen-Scene ${sceneIndex + 1}] Attached ${pathsToUpload.length} image(s). Waiting 4.5s for thumbnail preview...`);
           await new Promise((r) => setTimeout(r, 4500));

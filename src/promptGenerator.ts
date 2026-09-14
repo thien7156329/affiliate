@@ -144,9 +144,11 @@ export async function callBedrock(
   const region = process.env.AWS_REGION || "us-east-1";
 
   const isPreferredGlm = isGlmAudit;
-  const fallbackModels = preferredModel
+  const isGeminiModel = preferredModel?.toLowerCase().includes("gemini");
+  const bedrockPreferredModel = isGeminiModel ? undefined : preferredModel;
+  const fallbackModels = bedrockPreferredModel
     ? [
-        preferredModel,
+        bedrockPreferredModel,
         ...(isPreferredGlm
           ? ["zai.glm-5", "deepseek.v3.2", "xai.grok-4.3"]
           : ["zai.glm-5", "deepseek.v3.2"])
@@ -1341,16 +1343,25 @@ export async function reviseScenePrompts(
   sceneIndices: number[] = [2, 5], // 0-based index: 2 = Part 3, 5 = Part 6
   userFeedback: string = "",
   imageUrl?: string,
-  feedbackImageUrl?: string
+  feedbackImageUrl?: string,
+  onProgress?: (evt: { type: string; stage?: 'ai1' | 'ai2' | 'done'; message?: string; elapsedSec?: number; draft?: string; result?: any }) => void
 ): Promise<{
   promptsObj: Record<string, any>;
   revisionNote?: string;
   ai1Proposal?: string;
   ai2Audit?: string;
 }> {
+  const startTime = Date.now();
   const targetPartNames = sceneIndices.map(i => `Part ${i + 1}`).join(", ");
   console.log(`\n🎭 [PromptGen] 2-AI Debate Revising Scene Prompts for [${targetPartNames}]...`);
   console.log(`💬 User feedback: "${userFeedback}"${feedbackImageUrl ? " [Attached Image/Screenshot for Visual Audit]" : ""}`);
+
+  onProgress?.({
+    type: 'start',
+    stage: 'ai1',
+    message: `🎭 AI 1 (AGY 3.8) đang tiếp thu góp ý & sáng tác lại kịch bản ${targetPartNames}...`,
+    elapsedSec: 0,
+  });
 
   const activeVisualRef = feedbackImageUrl || imageUrl;
   const visualAuditNote = feedbackImageUrl
@@ -1392,13 +1403,41 @@ HUMAN DIRECTOR INSTRUCTIONS / FEEDBACK:
 
 Please provide your creative revision draft for [${targetPartNames}] explaining your artistic choices and writing out the revised visual prompts and Vietnamese dialogues.`;
 
+  onProgress?.({
+    type: 'ai1_start',
+    stage: 'ai1',
+    message: `🎭 AI 1 (AGY 3.8) đang sáng tác lại kịch bản & lời thoại cho ${targetPartNames}...`,
+    elapsedSec: Math.floor((Date.now() - startTime) / 1000),
+  });
+
+  const hb1 = setInterval(() => {
+    onProgress?.({
+      type: 'heartbeat',
+      stage: 'ai1',
+      message: `🎭 AI 1 (AGY 3.8) đang sáng tác lại kịch bản & lời thoại cho ${targetPartNames}...`,
+      elapsedSec: Math.floor((Date.now() - startTime) / 1000),
+    });
+  }, 1000);
+
   let ai1Draft = "";
   try {
-    ai1Draft = await callBedrock(ai1SystemPrompt, ai1UserPrompt, activeVisualRef, false, AGY_DEFAULT_MODEL);
-  } catch (err: any) {
-    console.warn(`⚠️ [PromptGen] AGY call failed for revise-scene, falling back to default model: ${err.message}`);
-    ai1Draft = await callBedrock(ai1SystemPrompt, ai1UserPrompt, activeVisualRef, false);
+    try {
+      ai1Draft = await callBedrock(ai1SystemPrompt, ai1UserPrompt, activeVisualRef, false, AGY_DEFAULT_MODEL);
+    } catch (err: any) {
+      console.warn(`⚠️ [PromptGen] AGY call failed for revise-scene, falling back to default model: ${err.message}`);
+      ai1Draft = await callBedrock(ai1SystemPrompt, ai1UserPrompt, activeVisualRef, false);
+    }
+  } finally {
+    clearInterval(hb1);
   }
+
+  onProgress?.({
+    type: 'ai1_done',
+    stage: 'ai2',
+    message: `✅ AI 1 đã hoàn thành bản nháp (${ai1Draft.length} ký tự). Đang chuyển cho AI 2 kiểm định...`,
+    elapsedSec: Math.floor((Date.now() - startTime) / 1000),
+    draft: ai1Draft,
+  });
 
   // Step 2: AI 2 (GLM-5 / Auditor) audits the revision, verifies compliance, and generates strict JSON
   const ai2SystemPrompt = `You are the Supreme Animation Auditor & Lead Prompt Engineer (GLM-5).
@@ -1437,6 +1476,22 @@ ${ai1Draft}
 
 Please audit AI 1's proposal, refine prompts/dialogues for perfection, and output the final 6-part screenplay JSON.`;
 
+  onProgress?.({
+    type: 'ai2_start',
+    stage: 'ai2',
+    message: `🧐 AI 2 (GLM-5) đang kiểm định tiêu chí nhân vật & bố cục 3 lớp cho ${targetPartNames}...`,
+    elapsedSec: Math.floor((Date.now() - startTime) / 1000),
+  });
+
+  const hb2 = setInterval(() => {
+    onProgress?.({
+      type: 'heartbeat',
+      stage: 'ai2',
+      message: `🧐 AI 2 (GLM-5) đang kiểm định tiêu chí nhân vật & bố cục 3 lớp cho ${targetPartNames}...`,
+      elapsedSec: Math.floor((Date.now() - startTime) / 1000),
+    });
+  }, 1000);
+
   try {
     const ai2ResJson = await callBedrock(ai2SystemPrompt, ai2UserPrompt, activeVisualRef, true, "zai.glm-5");
     let parsed: any;
@@ -1456,14 +1511,26 @@ Please audit AI 1's proposal, refine prompts/dialogues for perfection, and outpu
     }
     if (parsed.story_title) updatedPromptsObj.story_title = parsed.story_title;
 
-    return {
+    const finalResult = {
       promptsObj: updatedPromptsObj,
       revisionNote: parsed.revision_note || `Đã cập nhật ${targetPartNames} thành công`,
       ai1Proposal: ai1Draft,
       ai2Audit: parsed.ai2_audit_note || "Đã kiểm định 100% đạt chuẩn nhân vật và chỉ đạo đạo diễn.",
     };
+
+    onProgress?.({
+      type: 'complete',
+      stage: 'done',
+      message: `🎉 2 AI đã thống nhất 100% bản sửa cho ${targetPartNames}! (${Math.floor((Date.now() - startTime) / 1000)}s)`,
+      elapsedSec: Math.floor((Date.now() - startTime) / 1000),
+      result: finalResult,
+    });
+
+    return finalResult;
   } catch (err: any) {
     console.error(`❌ [PromptGen] Failed to revise scene prompts with 2-AI: ${err.message}`);
     throw err;
+  } finally {
+    clearInterval(hb2);
   }
 }

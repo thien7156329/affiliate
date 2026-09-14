@@ -38,7 +38,7 @@ import { Upload } from "@aws-sdk/lib-storage";
 import { Readable } from "stream";
 import { z } from "zod";
 import { generateVideoPrompt, generateVideoDescriptionVi, callBedrock, generatePromptsWithAiConsensus, sendSessionFeedback } from "./promptGenerator.js";
-import { generateVeoVideo, ensureChromeRunning } from "./veoAutomation.js";
+import { generateVeoVideo, ensureChromeRunning, toHostPath } from "./veoAutomation.js";
 import puppeteer from "puppeteer";
 import http2 from "http2";
 import { concatenateVideos } from "./subtitleGenerator.js";
@@ -54,6 +54,7 @@ import {
   startScheduler,
   parseTextPromptToObj,
 } from "./scheduler.js";
+import { startChromeBridge } from "./chromeBridge.js";
 // ─── Process Error Handlers (Prevents nodemon crashes on network ECONNRESET) ──
 process.on("uncaughtException", (err: any) => {
   if (err?.code === "ECONNRESET" || err?.message?.includes("aborted") || err?.message?.includes("socket")) {
@@ -96,6 +97,8 @@ interface VideoMetadata {
   tiktok_status?: "published" | "mock" | "failed";
   thumbnail_url?: string;
   images?: string[];
+  caption?: string;
+  description_vi?: string;
   created_at: string;
   updated_at: string;
 }
@@ -889,20 +892,60 @@ app.use(
 app.use(express.json({ limit: "500mb" }));
 app.use(express.urlencoded({ limit: "500mb", extended: true }));
 
-// Serve Web Dashboard from /public folder
+// Serve Web Dashboard: React app (client/dist) or legacy /public folder
+const CLIENT_DIST_DIR = path.resolve(__dirname, "../client/dist");
 const PUBLIC_DIR = path.resolve(__dirname, "../public");
-if (existsSync(PUBLIC_DIR)) {
-  app.use(express.static(PUBLIC_DIR, {
-    setHeaders: (res, filePath) => {
-      if (filePath.endsWith(".html") || filePath.endsWith(".js") || filePath.endsWith(".css")) {
-        res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-        res.setHeader("Pragma", "no-cache");
-        res.setHeader("Expires", "0");
+
+// Real-time development support: Proxy UI to Vite dev server (port 5173) if active, else serve client/dist
+app.use(async (req, res, next) => {
+  if (
+    req.path.startsWith("/api") ||
+    req.path.startsWith("/downloads") ||
+    req.path.startsWith("/health") ||
+    req.path.startsWith("/mcp") ||
+    req.path.startsWith("/sse")
+  ) {
+    return next();
+  }
+
+  // In development: check if Vite dev server is running on port 5173 for real-time HMR
+  if (process.env.NODE_ENV !== "production") {
+    try {
+      const viteUrl = `http://127.0.0.1:5173${req.originalUrl}`;
+      const viteResp = await fetch(viteUrl, {
+        method: req.method,
+        headers: { ...req.headers, host: "127.0.0.1:5173" } as any,
+      });
+      if (viteResp.ok || viteResp.status === 304) {
+        res.status(viteResp.status);
+        viteResp.headers.forEach((val, key) => {
+          if (key !== "content-encoding" && key !== "transfer-encoding") {
+            res.setHeader(key, val);
+          }
+        });
+        const arrayBuf = await viteResp.arrayBuffer();
+        return res.send(Buffer.from(arrayBuf));
       }
+    } catch {
+      // Vite dev server not running on 5173, continue to static dist
     }
-  }));
-  console.log(`🌐 Dashboard: http://localhost:${process.env.PORT || 3400}/`);
-}
+  }
+
+  const clientDistIndex = path.resolve(CLIENT_DIST_DIR, "index.html");
+  if (existsSync(clientDistIndex)) {
+    return express.static(CLIENT_DIST_DIR, {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith(".html") || filePath.endsWith(".js") || filePath.endsWith(".css")) {
+          res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+          res.setHeader("Pragma", "no-cache");
+          res.setHeader("Expires", "0");
+        }
+      }
+    })(req, res, next);
+  }
+  return express.static(PUBLIC_DIR)(req, res, next);
+});
+
 
 // Serve downloaded videos directly — stream via /downloads/:file
 const DOWNLOADS_DIR_STATIC = path.resolve(__dirname, "../data/downloads");
@@ -1024,9 +1067,11 @@ app.get("/api/videos", async (req: any, res: any) => {
     res.json({
       success: true,
       data: dataWithPresigned,
+      videos: dataWithPresigned,
       total: list.length,
       page,
       limit,
+      totalPages: Math.ceil(list.length / limit) || 1,
       has_more: start + limit < list.length,
     });
   } catch (err: any) {
@@ -1128,6 +1173,8 @@ app.put("/api/videos/:id", async (req: any, res: any) => {
     
     if (title !== undefined) list[idx].title = title;
     if (description !== undefined) list[idx].description = description;
+    if (req.body.caption !== undefined) list[idx].caption = req.body.caption;
+    if (req.body.description_vi !== undefined) list[idx].description_vi = req.body.description_vi;
     if (tags !== undefined) list[idx].tags = tags;
     if (images !== undefined) list[idx].images = images;
     if (thumbnail_url !== undefined) list[idx].thumbnail_url = thumbnail_url;
@@ -1207,15 +1254,33 @@ app.post("/api/upload/video", async (req: any, res: any) => {
 // ── REST: Concatenate multiple videos into a single video ───────────────────
 app.post("/api/videos/concat", async (req: any, res: any) => {
   try {
-    const { video_ids, video_paths, title } = req.body;
+    const { video_ids, video_paths, video_urls, title } = req.body;
+    const pathsInput = (Array.isArray(video_paths) && video_paths.length >= 2)
+      ? video_paths
+      : (Array.isArray(video_urls) && video_urls.length >= 2)
+      ? video_urls
+      : null;
     const videoPaths: string[] = [];
     const list = await loadMetadata();
     const downloadsDir = path.resolve(__dirname, "../data/downloads");
+    mkdirSync(downloadsDir, { recursive: true });
 
-    if (Array.isArray(video_paths) && video_paths.length >= 2) {
-      for (const p of video_paths) {
+    if (pathsInput) {
+      for (const p of pathsInput) {
         let resolvedPath = p;
-        if (p.startsWith("/downloads/")) {
+
+        if (p.startsWith("http://") || p.startsWith("https://")) {
+          // Download remote/s3 video to local temp file
+          try {
+            const tempFile = path.join(downloadsDir, `temp_concat_${Date.now()}_${randomUUID().slice(0, 6)}.mp4`);
+            const response = await axios.get(p, { responseType: "arraybuffer", timeout: 60000 });
+            await fs.writeFile(tempFile, Buffer.from(response.data));
+            resolvedPath = tempFile;
+          } catch (dlErr: any) {
+            console.error(`[Concat] Failed to download URL ${p}:`, dlErr.message);
+            return res.status(400).json({ success: false, error: `Failed to download video: ${dlErr.message}` });
+          }
+        } else if (p.startsWith("/downloads/")) {
           resolvedPath = path.resolve(__dirname, "..", p.replace(/^\//, ""));
         }
         
@@ -1686,6 +1751,13 @@ app.post("/api/videos/trim-start", async (req: any, res: any) => {
 app.get("/api/products", async (req: any, res: any) => {
   try {
     const products = await loadProducts();
+    // Sort strictly by created_at descending (newest first)
+    products.sort((a: any, b: any) => {
+      const tA = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const tB = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return tB - tA;
+    });
+
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
     const start = (page - 1) * limit;
@@ -1693,9 +1765,11 @@ app.get("/api/products", async (req: any, res: any) => {
     res.json({
       success: true,
       data: paginated,
+      products: paginated,
       total: products.length,
       page,
       limit,
+      totalPages: Math.ceil(products.length / limit) || 1,
       has_more: start + limit < products.length
     });
   } catch (err: any) {
@@ -1728,6 +1802,8 @@ app.post("/api/products", async (req: any, res: any) => {
       const raw = await fs.readFile(DATA_FILE, "utf-8");
       products = JSON.parse(raw);
     }
+
+    const nowIso = new Date().toISOString();
     const newProduct = {
       id: `prod_${randomUUID().split("-")[0]}`,
       name,
@@ -1738,11 +1814,16 @@ app.post("/api/products", async (req: any, res: any) => {
       images: finalImagesList.length > 0 ? finalImagesList : (finalImageUrl ? [finalImageUrl] : []),
       description,
       enabled: true,
+      created_at: req.body.created_at || nowIso,
+      updated_at: nowIso,
       promptsObj: req.body.promptsObj || undefined,
       scene_images: req.body.scene_images || undefined,
       scene_urls: req.body.scene_urls || undefined,
+      consensus_feedback: req.body.consensus_feedback || undefined,
+      debate_messages: req.body.debate_messages || undefined,
+      part_feedback: req.body.part_feedback || undefined,
     };
-    products.push(newProduct);
+    products.unshift(newProduct);
     await fs.writeFile(DATA_FILE, JSON.stringify(products, null, 2), "utf-8");
     res.json({ success: true, data: newProduct });
   } catch (err: any) {
@@ -1753,7 +1834,11 @@ app.post("/api/products", async (req: any, res: any) => {
 // ── REST: Cập nhật sản phẩm ───────────────────────────────────────────────────
 app.put("/api/products/:id", async (req: any, res: any) => {
   try {
-    const { name, category, affiliate_url, hashtags, enabled, image_url, description, images, promptsObj, scene_images, scene_urls } = req.body;
+    const {
+      name, category, affiliate_url, hashtags, enabled, image_url, description,
+      images, promptsObj, scene_images, scene_urls, consensus_feedback,
+      debate_messages, part_feedback
+    } = req.body;
     const DATA_FILE = path.resolve(__dirname, "../data/products.json");
     if (!existsSync(DATA_FILE)) {
       return res.status(404).json({ success: false, error: "Products file not found" });
@@ -1766,6 +1851,10 @@ app.put("/api/products/:id", async (req: any, res: any) => {
     }
     
     // Update fields if provided
+    products[idx].updated_at = new Date().toISOString();
+    if (!products[idx].created_at) {
+      products[idx].created_at = products[idx].updated_at;
+    }
     if (name !== undefined) products[idx].name = name;
     if (category !== undefined) products[idx].category = category;
     if (affiliate_url !== undefined) products[idx].affiliate_url = affiliate_url;
@@ -1775,6 +1864,9 @@ app.put("/api/products/:id", async (req: any, res: any) => {
     if (promptsObj !== undefined) products[idx].promptsObj = promptsObj;
     if (scene_images !== undefined) products[idx].scene_images = scene_images;
     if (scene_urls !== undefined) products[idx].scene_urls = scene_urls;
+    if (consensus_feedback !== undefined) products[idx].consensus_feedback = consensus_feedback;
+    if (debate_messages !== undefined) products[idx].debate_messages = debate_messages;
+    if (part_feedback !== undefined) products[idx].part_feedback = part_feedback;
 
     if (image_url !== undefined) {
       let finalImageUrl = image_url;
@@ -3081,6 +3173,78 @@ app.post("/api/prompts/revise-scene", async (req: any, res: any) => {
   }
 });
 
+// ── REST: Real-time SSE Stream 2-AI Sửa Kịch Bản theo Part ────────────────────
+app.post("/api/prompts/revise-scene-stream", async (req: any, res: any) => {
+  if (req.setTimeout) req.setTimeout(300000);
+  if (res.setTimeout) res.setTimeout(300000);
+  try {
+    req.socket?.setTimeout(0);
+    res.socket?.setTimeout(0);
+  } catch {}
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  const sendEvent = (event: any) => {
+    try {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+      res.flush?.();
+    } catch {}
+  };
+
+  const keepAliveInterval = setInterval(() => {
+    try {
+      res.write(": keepalive\n\n");
+      res.flush?.();
+    } catch {}
+  }, 3000);
+
+  try {
+    const {
+      product_name = "Sản phẩm",
+      category = "tech",
+      prompts_obj = {},
+      scene_indices = [2, 5],
+      feedback = "",
+      image_url,
+      feedback_image_url,
+    } = req.body || {};
+
+    if (!feedback || !String(feedback).trim()) {
+      sendEvent({ type: "error", error: "Nội dung yêu cầu chỉnh sửa (feedback) là bắt buộc" });
+      clearInterval(keepAliveInterval);
+      return res.end();
+    }
+
+    const { reviseScenePrompts } = await import("./promptGenerator.js");
+    const result = await reviseScenePrompts(
+      product_name,
+      category,
+      prompts_obj,
+      scene_indices,
+      feedback,
+      image_url,
+      feedback_image_url,
+      (evt) => {
+        sendEvent(evt);
+      }
+    );
+
+    sendEvent({ type: "complete", stage: "done", result });
+  } catch (err: any) {
+    console.error(`❌ [API /prompts/revise-scene-stream] Error: ${err.message}`);
+    sendEvent({ type: "error", error: err.message });
+  } finally {
+    clearInterval(keepAliveInterval);
+    try {
+      res.end();
+    } catch {}
+  }
+});
+
 // ── REST: Generate Prompts with 2-AI Consensus Debate ───────────────────────
 app.post("/api/prompts/consensus", async (req: any, res: any) => {
   // Allow multi-round unbounded debate without connection timeout (30 minutes)
@@ -3331,9 +3495,6 @@ app.post("/api/pipeline/generate-single-scene-image", async (req: any, res: any)
       redraw_instructions,
     } = req.body;
 
-    if (!image_url) {
-      return res.status(400).json({ success: false, error: "image_url là bắt buộc" });
-    }
     if (!prompt) {
       return res.status(400).json({ success: false, error: "prompt phân cảnh là bắt buộc" });
     }
@@ -3487,6 +3648,35 @@ app.post("/api/pipeline/generate-single-scene-video", async (req: any, res: any)
   }
 });
 
+// ── Helper: Lấy thời lượng video chính xác bằng ffprobe / ffmpeg ────────────
+function getVideoDurationWithFfmpeg(videoPath: string, defaultDur: number = 0): number {
+  try {
+    const { execSync } = require("child_process");
+    for (const probe of ["/opt/homebrew/bin/ffprobe", "/usr/local/bin/ffprobe", "ffprobe"]) {
+      try {
+        const out = execSync(`"${probe}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`, { encoding: "utf-8", stdio: ["pipe", "pipe", "ignore"] });
+        const d = parseFloat(out.trim());
+        if (!isNaN(d) && d > 0) return d;
+      } catch {}
+    }
+    const { getFfmpegCmd } = require("./scheduler.js");
+    const ffmpeg = getFfmpegCmd();
+    try {
+      execSync(`"${ffmpeg}" -i "${videoPath}"`, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+    } catch (e: any) {
+      const match = (e.stderr || "").toString().match(/Duration:\s*(\d+):(\d+):([\d.]+)/);
+      if (match) {
+        const hours = parseFloat(match[1]) || 0;
+        const mins = parseFloat(match[2]) || 0;
+        const secs = parseFloat(match[3]) || 0;
+        const total = hours * 3600 + mins * 60 + secs;
+        if (total > 0) return total;
+      }
+    }
+  } catch {}
+  return defaultDur;
+}
+
 // ── REST: Cắt / Trim Video của Part cụ thể ──────────────────────────────────
 app.post("/api/pipeline/trim-part-video", async (req: any, res: any) => {
   try {
@@ -3496,6 +3686,7 @@ app.post("/api/pipeline/trim-part-video", async (req: any, res: any) => {
       scene_index = 0,
       start_sec = 0,
       end_sec,
+      from_original = false,
     } = req.body || {};
 
     const productSlug = product_name
@@ -3516,7 +3707,7 @@ app.post("/api/pipeline/trim-part-video", async (req: any, res: any) => {
     const partNum = scene_index + 1;
     const files = await fs.readdir(downloadsDir);
     const partVideoFile = files.find(
-      f => f.endsWith(".mp4") && f.includes(`_part${partNum}_`) && !f.includes("_merged") && !f.includes(".orig.mp4")
+      f => f.endsWith(".mp4") && f.includes(`_part${partNum}_`) && !f.includes("_merged") && !f.includes(".orig") && !f.includes(".bak")
     );
 
     if (!partVideoFile) {
@@ -3524,11 +3715,16 @@ app.post("/api/pipeline/trim-part-video", async (req: any, res: any) => {
     }
 
     const inputVideoPath = path.join(downloadsDir, partVideoFile);
-    const backupPath = path.join(downloadsDir, `${partVideoFile}.orig.mp4`);
+    const backupPath = path.join(downloadsDir, `${partVideoFile}.orig.bak`);
+    const legacyBackupPath = path.join(downloadsDir, `${partVideoFile}.orig.mp4`);
 
     // Create backup of original before first trim if not already existing
     if (!existsSync(backupPath)) {
-      await fs.copyFile(inputVideoPath, backupPath);
+      if (existsSync(legacyBackupPath)) {
+        await fs.rename(legacyBackupPath, backupPath);
+      } else {
+        await fs.copyFile(inputVideoPath, backupPath);
+      }
       console.log(`💾 [TrimVideo] Created backup of original video: ${backupPath}`);
     }
 
@@ -3536,18 +3732,35 @@ app.post("/api/pipeline/trim-part-video", async (req: any, res: any) => {
     const ffmpeg = getFfmpegCmd();
     const tempTrimmed = path.join(downloadsDir, `temp_trim_${Date.now()}.mp4`);
 
+    const sourceVideoPath = (from_original && existsSync(backupPath)) ? backupPath : inputVideoPath;
     const startSec = Math.max(0, parseFloat(String(start_sec)) || 0);
+    
     let durationArg = "";
+    let expectedDuration = 0;
     if (end_sec !== undefined && end_sec !== null && String(end_sec).trim() !== "") {
       const endSec = parseFloat(String(end_sec));
       if (endSec > startSec) {
-        durationArg = `-to ${endSec}`;
+        const dur = endSec - startSec;
+        expectedDuration = dur;
+        durationArg = `-t ${dur.toFixed(3)}`;
       }
     }
 
     const { exec, execSync } = await import("child_process");
-    const trimCmd = `"${ffmpeg}" -y -ss ${startSec} ${durationArg} -i "${backupPath}" -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p -r 30 -c:a aac -b:a 192k -ar 44100 "${tempTrimmed}"`;
-    console.log(`✂️ [TrimVideo] Cutting Part ${partNum} (start: ${startSec}s, to: ${end_sec || 'end'})...`);
+
+    // Check if source video has audio
+    let hasAudio = false;
+    try {
+      const probeOut = execSync(`"/opt/homebrew/bin/ffprobe" -v error -show_streams -select_streams a -of json "${sourceVideoPath}"`, { encoding: "utf-8", stdio: ["pipe", "pipe", "ignore"] });
+      const parsed = JSON.parse(probeOut);
+      hasAudio = Array.isArray(parsed.streams) && parsed.streams.length > 0;
+    } catch {
+      hasAudio = true; // Default to keep audio if probe fails
+    }
+
+    const audioCodec = hasAudio ? "-c:a aac -b:a 192k -ar 48000" : "-an";
+    const trimCmd = `"${ffmpeg}" -y -ss ${startSec} -i "${sourceVideoPath}" ${durationArg} -avoid_negative_ts make_zero -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p -r 30 ${audioCodec} "${tempTrimmed}"`;
+    console.log(`✂️ [TrimVideo] Cutting Part ${partNum} (start: ${startSec}s, ${durationArg || 'to: end'})...`);
 
     await new Promise<void>((resolve, reject) => {
       exec(trimCmd, (err, _stdout, stderr) => {
@@ -3559,20 +3772,15 @@ app.post("/api/pipeline/trim-part-video", async (req: any, res: any) => {
     // Replace the active part file with the trimmed file
     await fs.rename(tempTrimmed, inputVideoPath);
 
-    // Read new duration
-    let newDuration = 0;
-    try {
-      const ffprobe = ffmpeg.replace(/ffmpeg(["']?)$/, "ffprobe$1");
-      const durOut = execSync(`"${ffprobe}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${inputVideoPath}"`, { encoding: "utf-8" });
-      newDuration = parseFloat(durOut.trim()) || 0;
-    } catch {}
+    // Read new duration reliably
+    const newDuration = getVideoDurationWithFfmpeg(inputVideoPath, expectedDuration || 0);
 
     const webUrl = `/downloads/${activeJobFolder}/${partVideoFile}?t=${Date.now()}`;
     console.log(`✅ [TrimVideo] Trimmed Part ${partNum} successfully! New duration: ${newDuration.toFixed(2)}s`);
 
     res.json({
       success: true,
-      message: `Đã cắt video Part ${partNum} thành công (thời lượng mới: ${newDuration.toFixed(2)}s)`,
+      message: `Đã cắt video Part ${partNum} thành công (thời lượng mới: ${newDuration.toFixed(1)}s)`,
       part_number: partNum,
       video_url: webUrl,
       duration_sec: newDuration,
@@ -3609,7 +3817,7 @@ app.post("/api/pipeline/restore-part-video", async (req: any, res: any) => {
 
     const files = await fs.readdir(downloadsDir);
     const partVideoFile = files.find(
-      f => f.endsWith(".mp4") && f.includes(`_part${partNum}_`) && !f.includes("_merged") && !f.includes(".orig.mp4")
+      f => f.endsWith(".mp4") && f.includes(`_part${partNum}_`) && !f.includes("_merged") && !f.includes(".orig") && !f.includes(".bak")
     );
 
     if (!partVideoFile) {
@@ -3617,7 +3825,13 @@ app.post("/api/pipeline/restore-part-video", async (req: any, res: any) => {
     }
 
     const inputVideoPath = path.join(downloadsDir, partVideoFile);
-    const backupPath = path.join(downloadsDir, `${partVideoFile}.orig.mp4`);
+    let backupPath = path.join(downloadsDir, `${partVideoFile}.orig.bak`);
+    if (!existsSync(backupPath)) {
+      const legacyBackup = path.join(downloadsDir, `${partVideoFile}.orig.mp4`);
+      if (existsSync(legacyBackup)) {
+        backupPath = legacyBackup;
+      }
+    }
 
     if (!existsSync(backupPath)) {
       return res.status(400).json({ success: false, error: `Không có bản video gốc nào được lưu cho Part ${partNum}` });
@@ -3627,16 +3841,7 @@ app.post("/api/pipeline/restore-part-video", async (req: any, res: any) => {
     await fs.copyFile(backupPath, inputVideoPath);
     console.log(`🔄 [RestoreVideo] Restored original video for Part ${partNum}`);
 
-    const { getFfmpegCmd } = await import("./scheduler.js");
-    const ffmpeg = getFfmpegCmd();
-    const { execSync } = await import("child_process");
-    let origDuration = 0;
-    try {
-      const ffprobe = ffmpeg.replace(/ffmpeg(["']?)$/, "ffprobe$1");
-      const durOut = execSync(`"${ffprobe}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${inputVideoPath}"`, { encoding: "utf-8" });
-      origDuration = parseFloat(durOut.trim()) || 0;
-    } catch {}
-
+    const origDuration = getVideoDurationWithFfmpeg(inputVideoPath, 0);
     const webUrl = `/downloads/${activeJobFolder}/${partVideoFile}?t=${Date.now()}`;
 
     res.json({
@@ -3747,7 +3952,7 @@ app.get("/api/pipeline/job-parts-status", async (req: any, res: any) => {
       if (existsSync(downloadsDir)) {
         const files = await fs.readdir(downloadsDir);
         for (const f of files) {
-          if (!f.endsWith(".mp4") || f.includes("_merged") || f.includes("_voiced")) continue;
+          if (!f.endsWith(".mp4") || f.includes("_merged") || f.includes("_voiced") || f.includes(".orig") || f.includes(".bak")) continue;
           const match = f.match(new RegExp(`_part${i}_`, "i"));
           if (match) {
             const fullP = path.join(downloadsDir, f);
@@ -4114,7 +4319,7 @@ app.post("/api/chrome/download", async (_req: any, res: any) => {
     const client = await geminiPage.createCDPSession();
     const downloadDir = path.join(process.cwd(), "data/downloads");
     mkdirSync(downloadDir, { recursive: true });
-    await client.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloadDir });
+    await client.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: toHostPath(downloadDir) });
 
     // Take screenshot for debug
     const ssPath = path.join(process.cwd(), "data/debug/before_download.png");
@@ -4381,9 +4586,30 @@ app.delete("/mcp", async (req: any, res: any) => {
   await transport.handleRequest(req, res);
 });
 
+// ── SPA Fallback Routing ───────────────────────────────────────────────────
+app.use((req: any, res: any, next: any) => {
+  if (req.method !== "GET") return next();
+  if (
+    req.path.startsWith("/api") ||
+    req.path.startsWith("/downloads") ||
+    req.path.startsWith("/health") ||
+    req.path.startsWith("/mcp") ||
+    req.path.startsWith("/sse")
+  ) {
+    return next();
+  }
+  const clientDistIndex = path.resolve(CLIENT_DIST_DIR, "index.html");
+  if (existsSync(clientDistIndex)) {
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    return res.sendFile(clientDistIndex);
+  }
+  next();
+});
+
 // ─── Start Server ─────────────────────────────────────────────────────────────
 async function main() {
   await ensureDataDir();
+  startChromeBridge();
 
   // Check S3 connectivity (non-blocking warning)
   if (S3_BUCKET) {

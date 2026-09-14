@@ -1,0 +1,12 @@
+node_modules
+client/node_modules
+client/dist
+build
+.git
+.gitignore
+.env.local
+.agents
+scratch
+*.log
+.DS_Store
+data/downloads

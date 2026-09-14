@@ -99,6 +99,24 @@ if (!fs.existsSync(DOWNLOADS_DIR)) {
   fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
 }
 
+/**
+ * Resolves container path to host machine path when running in Docker with host Chrome.
+ */
+export function toHostPath(containerPath: string): string {
+  if (!containerPath) return containerPath;
+  const isDocker = fs.existsSync("/.dockerenv") || process.env.DOCKER === "true";
+  if (!isDocker) return containerPath;
+
+  const hostWorkspace = process.env.HOST_WORKSPACE_DIR || "/Users/letrongthien/Downloads/projects/affiliate";
+  if (containerPath.startsWith("/app/")) {
+    return path.join(hostWorkspace, containerPath.slice(5));
+  }
+  if (containerPath.startsWith("/app")) {
+    return path.join(hostWorkspace, containerPath.slice(4));
+  }
+  return containerPath;
+}
+
 const CHROME_USER_DATA_DIR =
   process.env.CHROME_USER_DATA_DIR ||
   `${process.env.HOME}/Library/Application Support/Google/Chrome`;
@@ -253,7 +271,7 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
     if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir, { recursive: true });
     await client.send("Browser.setDownloadBehavior", {
       behavior: "allow",
-      downloadPath: downloadDir,
+      downloadPath: toHostPath(downloadDir),
     }).catch(() => {});
 
     // Intercept network responses to capture video URLs
@@ -424,7 +442,7 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
           }, fileInputHandle);
 
           // Upload the file path
-          await (fileInputHandle as any).uploadFile(localImagePath);
+          await (fileInputHandle as any).uploadFile(toHostPath(localImagePath));
           console.log("✅ [VeoAuto] Image uploaded to Gemini file input");
           
           // Wait 4.5s for upload progress to complete and display thumbnail preview
@@ -544,6 +562,34 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
         break;
       }
 
+      // Proactive check: look for video elements directly (even without "ready" text)
+      if (!found) {
+        const proactiveVideoSrc = await page.evaluate(() => {
+          const videos = Array.from(document.querySelectorAll("video")) as HTMLVideoElement[];
+          for (let i = videos.length - 1; i >= 0; i--) {
+            const src = videos[i].src || videos[i].currentSrc;
+            if (src && !src.startsWith("blob:") && (src.includes("google") || src.includes(".mp4") || src.includes("usercontent"))) {
+              return src;
+            }
+          }
+          return null;
+        }).catch(() => null);
+
+        if (proactiveVideoSrc) {
+          capturedVideoUrl = proactiveVideoSrc;
+          found = true;
+          console.log(`🎯 [VeoAuto] Proactive video detection at ${elapsed}s: ${proactiveVideoSrc.slice(0, 80)}...`);
+          break;
+        }
+      }
+
+      // Periodic debug screenshots
+      if (elapsed % 60 === 0 || elapsed === 10) {
+        const ssPath = path.join(screenshotDir, `gemini_${elapsed}s.png`);
+        await page.screenshot({ path: ssPath, fullPage: false }).catch(() => {});
+        console.log(`📸 [VeoAuto] Debug screenshot at ${elapsed}s: ${ssPath}`);
+      }
+
       // ── After 5 minutes (300s) → reload ONCE ────────────────────────────────
       if (!hasRefreshed && elapsed >= 300) {
         hasRefreshed = true;
@@ -555,14 +601,19 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
 
       // Check DOM: video ready text + download button
       const pageResult = await page.evaluate(() => {
-        // Detect "Your video is ready!" message
+        // Detect "Your video is ready!" message (English + Vietnamese)
         const bodyText = document.body?.innerText || "";
         const videoReady = bodyText.includes("Your video is ready") ||
-                           bodyText.includes("video is ready");
+                           bodyText.includes("video is ready") ||
+                           bodyText.includes("Video của bạn đã sẵn sàng") ||
+                           bodyText.includes("video đã sẵn sàng") ||
+                           bodyText.includes("video đã được tạo") ||
+                           bodyText.includes("video đã xong");
 
-        // Find download button (exact from Gemini video player)
+        // Find download button (English + Vietnamese labels)
         const downloadBtn = document.querySelector(
           'button[aria-label*="Download" i], button[aria-label*="download" i], ' +
+          'button[aria-label*="Tải" i], button[aria-label*="tải" i], ' +
           'a[download], [data-mat-icon-name="download"]'
         );
 
@@ -576,7 +627,7 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
       if (pageResult.videoReady || pageResult.hasDownload) {
         // Try to get video source directly first to avoid navigation-inducing clicks
         const videoSrc = await page.evaluate(() => {
-          const downloadBtns = Array.from(document.querySelectorAll('button[aria-label*="Download" i], button[aria-label*="download" i], a[download]'));
+          const downloadBtns = Array.from(document.querySelectorAll('button[aria-label*="Download" i], button[aria-label*="download" i], button[aria-label*="Tải" i], button[aria-label*="tải" i], a[download]'));
           if (downloadBtns.length > 0) {
             const latestBtn = downloadBtns[downloadBtns.length - 1];
             let parent = latestBtn.parentElement;
@@ -604,7 +655,7 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
           }
           // Fallback: If multiple videos are on the page, get the last one
           const videos = Array.from(document.querySelectorAll("video")) as HTMLVideoElement[];
-          if (videos.length > 1) {
+          if (videos.length > 0) {
             const latestVideo = videos[videos.length - 1];
             if (latestVideo && (latestVideo.src || latestVideo.currentSrc)) {
               return latestVideo.src || latestVideo.currentSrc;
@@ -628,7 +679,10 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
             const buttons = Array.from(document.querySelectorAll("button, a")).filter(el => {
               const aria = el.getAttribute("aria-label")?.toLowerCase() || "";
               const title = el.getAttribute("title")?.toLowerCase() || "";
-              return aria.includes("download") || title.includes("download");
+              const text = (el.textContent || "").toLowerCase();
+              return aria.includes("download") || title.includes("download") ||
+                     aria.includes("tải") || title.includes("tải") ||
+                     text.includes("tải video") || text.includes("tải về") || text.includes("tải xuống");
             });
             if (buttons.length > 0) {
               const latestBtn = buttons[buttons.length - 1] as HTMLElement;
@@ -669,13 +723,6 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
 
       const refreshNote = !hasRefreshed ? ` | auto-reload in ${Math.max(0, 480 - elapsed)}s` : "";
       console.log(`⏳ [VeoAuto] Still waiting... ${elapsed}s elapsed${refreshNote}`);
-
-      // Screenshot at 5s, 30s, 60s, after reload
-      if ([5, 30, 60, 485].includes(elapsed) || elapsed % 60 === 0) {
-        const ssPath = path.join(screenshotDir, `gemini_${elapsed}s.png`);
-        await page.screenshot({ path: ssPath, fullPage: false }).catch(() => {});
-        console.log(`📸 [VeoAuto] Screenshot: ${ssPath}`);
-      }
     }
 
     if (!found && !capturedVideoUrl) {
@@ -743,7 +790,7 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
       console.log(`⬇️  [VeoAuto] Downloading via Chrome session (has cookies)...`);
       await client.send("Browser.setDownloadBehavior", {
         behavior: "allow",
-        downloadPath: DOWNLOADS_DIR,
+        downloadPath: toHostPath(DOWNLOADS_DIR),
       });
 
       // Navigate to the video URL in a new tab — Chrome will download it
@@ -1399,7 +1446,7 @@ async function runSingleVeoAutomation(
 
     await client.send("Browser.setDownloadBehavior", {
       behavior: "allow",
-      downloadPath: tabDownloadDir,
+      downloadPath: toHostPath(tabDownloadDir),
     }).catch(() => {});
 
     // Intercept network responses to capture video URL
@@ -1559,7 +1606,8 @@ async function runSingleVeoAutomation(
 
         if (fileInputHandle) {
           await page.evaluate((input: any) => { if (input) input.focus(); }, fileInputHandle);
-          await (fileInputHandle as any).uploadFile(...pathsToUpload);
+          const hostPaths = pathsToUpload.map(toHostPath);
+          await (fileInputHandle as any).uploadFile(...hostPaths);
           restoreUserFocus(prevApp);
           
           // Wait for upload processing (images are fast: 4.5s vs 35s for videos)
@@ -1595,7 +1643,7 @@ async function runSingleVeoAutomation(
     // Count existing videos and download buttons on page before submitting prompt
     const initialVideoCount = await page.evaluate(() => document.querySelectorAll("video").length).catch(() => 0);
     const initialDownloadCount = await page.evaluate(() => 
-      document.querySelectorAll('button[aria-label*="Download" i], button[aria-label*="download" i], a[download]').length
+      document.querySelectorAll('button[aria-label*="Download" i], button[aria-label*="download" i], button[aria-label*="Tải" i], button[aria-label*="tải" i], a[download]').length
     ).catch(() => 0);
     console.log(`📊 [VeoAuto-Tab ${index + 1}] Initial counts before submit: videos=${initialVideoCount}, downloads=${initialDownloadCount}`);
 
@@ -1678,6 +1726,39 @@ async function runSingleVeoAutomation(
         break;
       }
 
+      // Proactive check: look for new video elements even before "video ready" text appears
+      if (!found) {
+        const proactiveVideoSrc = await page.evaluate((initCount: number) => {
+          const videos = Array.from(document.querySelectorAll("video")) as HTMLVideoElement[];
+          // Only check if there are NEW video elements since we submitted
+          if (videos.length > initCount) {
+            for (let i = videos.length - 1; i >= initCount; i--) {
+              const src = videos[i].src || videos[i].currentSrc;
+              if (src && !src.startsWith("blob:") && (src.includes("google") || src.includes(".mp4") || src.includes("usercontent"))) {
+                return src;
+              }
+            }
+          }
+          return null;
+        }, initialVideoCount).catch(() => null);
+
+        if (proactiveVideoSrc) {
+          capturedVideoUrl = proactiveVideoSrc;
+          found = true;
+          console.log(`🎯 [VeoAuto-Tab ${index + 1}] Proactive video detection! Found new video at ${elapsed}s: ${proactiveVideoSrc.slice(0, 80)}...`);
+          break;
+        }
+      }
+
+      // Periodic screenshots for debugging (every 60s)
+      if (elapsed % 60 === 0 || elapsed === 10) {
+        const ssDir = path.resolve(__dirname, "../data/debug");
+        if (!fs.existsSync(ssDir)) fs.mkdirSync(ssDir, { recursive: true });
+        const ssPath = path.join(ssDir, `veo_tab${index + 1}_${elapsed}s.png`);
+        await page.screenshot({ path: ssPath, fullPage: false }).catch(() => {});
+        console.log(`📸 [VeoAuto-Tab ${index + 1}] Debug screenshot: ${ssPath}`);
+      }
+
       if (!hasRefreshed && elapsed >= 300) {
         hasRefreshed = true;
         console.log(`🔄 [VeoAuto-Tab ${index + 1}] Reloading page to fix freeze...`);
@@ -1687,49 +1768,32 @@ async function runSingleVeoAutomation(
 
       const pageResult = await page.evaluate((initialDownloadCount: number) => {
         const bodyText = document.body?.innerText || "";
-        const videoReady = bodyText.includes("Your video is ready") || bodyText.includes("video is ready");
-        const downloadBtns = document.querySelectorAll('button[aria-label*="Download" i], button[aria-label*="download" i], a[download]');
+        const videoReady = bodyText.includes("Your video is ready") || bodyText.includes("video is ready") ||
+                           bodyText.includes("Video của bạn đã sẵn sàng") ||
+                           bodyText.includes("video đã sẵn sàng") ||
+                           bodyText.includes("video đã được tạo") ||
+                           bodyText.includes("video đã xong");
+        const downloadBtns = document.querySelectorAll('button[aria-label*="Download" i], button[aria-label*="download" i], button[aria-label*="Tải" i], button[aria-label*="tải" i], a[download]');
         const hasDownload = downloadBtns.length > initialDownloadCount;
         const errorText = document.querySelector('.error-container, [class*="error-message"]')?.textContent?.trim().slice(0, 100);
         return { videoReady, hasDownload, errorText };
       }, initialDownloadCount).catch(() => ({ videoReady: false, hasDownload: false, errorText: null }));
 
       if (pageResult.videoReady || pageResult.hasDownload) {
-        // Try to get video source directly first to avoid navigation-inducing clicks
+        // Try to get video source directly from DOM
         const videoSrc = await page.evaluate((initialVideoCount: number) => {
-          const downloadBtns = Array.from(document.querySelectorAll('button[aria-label*="Download" i], button[aria-label*="download" i], a[download]'));
-          if (downloadBtns.length > 0) {
-            const latestBtn = downloadBtns[downloadBtns.length - 1];
-            let parent = latestBtn.parentElement;
-            let cardContainer = null;
-            for (let depth = 0; depth < 12 && parent; parent = parent.parentElement, depth++) {
-              if (parent.tagName === 'MESSAGE-CONTENT' || 
-                  parent.tagName === 'MS-MESSAGE-CONTENT' || 
-                  parent.classList.contains('message-content') || 
-                  parent.classList.contains('model-response') ||
-                  parent.querySelector('video')) {
-                cardContainer = parent;
-                break;
-              }
-            }
-            if (cardContainer) {
-              const video = cardContainer.querySelector('video') as HTMLVideoElement | null;
-              if (video && (video.src || video.currentSrc)) {
-                return video.src || video.currentSrc;
-              }
-              const source = cardContainer.querySelector('video source') as HTMLSourceElement | null;
-              if (source && source.src) {
-                return source.src;
-              }
+          // Check all video tags directly
+          const videos = Array.from(document.querySelectorAll("video")) as HTMLVideoElement[];
+          for (let i = videos.length - 1; i >= 0; i--) {
+            const src = videos[i].src || videos[i].currentSrc;
+            if (src && (src.includes("google") || src.includes("blob:") || src.includes(".mp4") || src.includes("videoplayback"))) {
+              return src;
             }
           }
-          // Fallback: If multiple videos are on the page, get the last one (if it's new)
-          const videos = Array.from(document.querySelectorAll("video")) as HTMLVideoElement[];
-          if (videos.length > initialVideoCount) {
-            const latestVideo = videos[videos.length - 1];
-            if (latestVideo && (latestVideo.src || latestVideo.currentSrc)) {
-              return latestVideo.src || latestVideo.currentSrc;
-            }
+          // Also check <source> tags
+          const sources = Array.from(document.querySelectorAll("video source")) as HTMLSourceElement[];
+          for (let i = sources.length - 1; i >= 0; i--) {
+            if (sources[i].src) return sources[i].src;
           }
           return null;
         }, initialVideoCount).catch(() => null);
@@ -1737,7 +1801,7 @@ async function runSingleVeoAutomation(
         if (videoSrc) {
           capturedVideoUrl = videoSrc;
           found = true;
-          console.log(`🎯 [VeoAuto-Tab ${index + 1}] Found video element src directly: ${videoSrc.slice(0, 60)}...`);
+          console.log(`🎯 [VeoAuto-Tab ${index + 1}] Found video element src directly: ${videoSrc.slice(0, 80)}...`);
           break;
         }
 
@@ -1745,11 +1809,18 @@ async function runSingleVeoAutomation(
           console.log(`⬇️  [VeoAuto-Tab ${index + 1}] Video ready. Clicking download as fallback...`);
           const clicked = await page.evaluate((initialDownloadCount: number) => {
             const buttons = Array.from(document.querySelectorAll("button, a")).filter(el => {
-              const aria = el.getAttribute("aria-label")?.toLowerCase() || "";
-              const title = el.getAttribute("title")?.toLowerCase() || "";
-              return aria.includes("download") || title.includes("download");
+              const aria = (el.getAttribute("aria-label") || "").toLowerCase();
+              const title = (el.getAttribute("title") || "").toLowerCase();
+              const text = (el.textContent || "").toLowerCase();
+              const html = el.outerHTML.toLowerCase();
+              return (
+                aria.includes("download") || aria.includes("tải") ||
+                title.includes("download") || title.includes("tải") ||
+                text.includes("download") || text.includes("tải") ||
+                html.includes("download") || html.includes("tải video")
+              );
             });
-            if (buttons.length > initialDownloadCount) {
+            if (buttons.length > 0) {
               const latestBtn = buttons[buttons.length - 1] as HTMLElement;
               latestBtn.click();
               return true;
@@ -1844,7 +1915,7 @@ async function runSingleVeoAutomation(
       const dlClient = await dlPage.createCDPSession();
       await dlClient.send("Browser.setDownloadBehavior", {
         behavior: "allow",
-        downloadPath: tabDownloadDir!,
+        downloadPath: toHostPath(tabDownloadDir!),
       }).catch(() => {});
 
       await dlPage.goto(capturedVideoUrl, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
@@ -1956,39 +2027,76 @@ export async function generateSingleVeoSegment(
     } catch {}
   }
 
-  if (prevEndFrame && sceneImagePath && fs.existsSync(sceneImagePath)) {
-    localImagePath = [prevEndFrame, sceneImagePath];
-  } else if (prevEndFrame) {
-    localImagePath = prevEndFrame;
-  } else if (sceneImagePath && fs.existsSync(sceneImagePath)) {
-    localImagePath = sceneImagePath;
-    console.log(`📸 [VeoAuto-Single] Using pre-generated scene keyframe: ${path.basename(sceneImagePath)}`);
-  } else if (imageUrl) {
-    try {
-      console.log(`📥 [VeoAuto-Single] Downloading product image for Part ${sceneIndex + 1}...`);
-      let fetchUrl = imageUrl;
-      if (imageUrl.includes(".amazonaws.com/")) {
-        const parts = imageUrl.split(".amazonaws.com/");
-        if (parts.length > 1) {
-          const key = parts[1];
-          const port = process.env.PORT || "3400";
-          fetchUrl = `http://127.0.0.1:${port}/api/products/image-proxy?key=${encodeURIComponent(key)}`;
+  // Always pair ending frame with scene image so Veo gets both continuity + correct content
+  if (prevEndFrame) {
+    const directScenePng = path.join(outputDir, "scenes", `scene_${sceneIndex + 1}.png`);
+    const directSceneJpg = path.join(outputDir, "scenes", `scene_${sceneIndex + 1}.jpg`);
+    if (sceneImagePath && fs.existsSync(sceneImagePath)) {
+      localImagePath = [prevEndFrame, sceneImagePath];
+      console.log(`📸 [VeoAuto-Single] Uploading: prev end-frame + specified scene keyframe for Part ${sceneIndex + 1}`);
+    } else if (fs.existsSync(directScenePng)) {
+      localImagePath = [prevEndFrame, directScenePng];
+      console.log(`📸 [VeoAuto-Single] Uploading: prev end-frame + scene_${sceneIndex + 1}.png for Part ${sceneIndex + 1}`);
+    } else if (fs.existsSync(directSceneJpg)) {
+      localImagePath = [prevEndFrame, directSceneJpg];
+      console.log(`📸 [VeoAuto-Single] Uploading: prev end-frame + scene_${sceneIndex + 1}.jpg for Part ${sceneIndex + 1}`);
+    } else {
+      localImagePath = prevEndFrame;
+      console.log(`⚠️ [VeoAuto-Single] Only uploading prev end-frame (no scene image found for Part ${sceneIndex + 1})`);
+    }
+  } else {
+    const directScenePng = path.join(outputDir, "scenes", `scene_${sceneIndex + 1}.png`);
+    const directSceneJpg = path.join(outputDir, "scenes", `scene_${sceneIndex + 1}.jpg`);
+
+    if (sceneImagePath && fs.existsSync(sceneImagePath)) {
+      localImagePath = sceneImagePath;
+      console.log(`📸 [VeoAuto-Single] Using specified scene keyframe: ${path.basename(sceneImagePath)}`);
+    } else if (fs.existsSync(directScenePng)) {
+      localImagePath = directScenePng;
+      console.log(`📸 [VeoAuto-Single] Using local Part ${sceneIndex + 1} scene image: ${path.basename(directScenePng)}`);
+    } else if (fs.existsSync(directSceneJpg)) {
+      localImagePath = directSceneJpg;
+      console.log(`📸 [VeoAuto-Single] Using local Part ${sceneIndex + 1} scene image: ${path.basename(directSceneJpg)}`);
+    } else if (imageUrl) {
+      let localFound = false;
+      if (imageUrl.startsWith("/downloads/")) {
+        const cleanRel = imageUrl.split("?")[0].replace("/downloads/", "");
+        const fullLocal = path.resolve(DOWNLOADS_DIR, cleanRel);
+        if (fs.existsSync(fullLocal)) {
+          localImagePath = fullLocal;
+          localFound = true;
+          console.log(`📸 [VeoAuto-Single] Using local file for Part ${sceneIndex + 1}: ${path.basename(fullLocal)}`);
         }
-      } else if (imageUrl.startsWith("/")) {
-        const port = process.env.PORT || "3400";
-        fetchUrl = `http://127.0.0.1:${port}${imageUrl}`;
       }
 
-      const response = await axios.get(fetchUrl, { responseType: "arraybuffer", timeout: 15000 });
-      const contentType = String(response.headers["content-type"] ?? "image/jpeg");
-      const ext = contentType.split("/")[1] || "jpg";
-      const tempFilename = `gemini_upload_single_${randomUUID().split("-")[0]}.${ext}`;
-      downloadedTempImage = path.join(DOWNLOADS_DIR, tempFilename);
-      fs.writeFileSync(downloadedTempImage, response.data);
-      localImagePath = downloadedTempImage;
-      console.log(`✅ [VeoAuto-Single] Downloaded image: ${downloadedTempImage}`);
-    } catch (err: any) {
-      console.warn(`⚠️  [VeoAuto-Single] Failed to download image: ${err.message}`);
+      if (!localFound) {
+        try {
+          console.log(`📥 [VeoAuto-Single] Downloading image for Part ${sceneIndex + 1}...`);
+          let fetchUrl = imageUrl;
+          if (imageUrl.includes(".amazonaws.com/")) {
+            const parts = imageUrl.split(".amazonaws.com/");
+            if (parts.length > 1) {
+              const key = parts[1];
+              const port = process.env.PORT || "3400";
+              fetchUrl = `http://127.0.0.1:${port}/api/products/image-proxy?key=${encodeURIComponent(key)}`;
+            }
+          } else if (imageUrl.startsWith("/")) {
+            const port = process.env.PORT || "3400";
+            fetchUrl = `http://127.0.0.1:${port}${imageUrl}`;
+          }
+
+          const response = await axios.get(fetchUrl, { responseType: "arraybuffer", timeout: 15000 });
+          const contentType = String(response.headers["content-type"] ?? "image/jpeg");
+          const ext = contentType.split("/")[1] || "jpg";
+          const tempFilename = `scene_${sceneIndex + 1}_reference.${ext}`;
+          downloadedTempImage = path.join(DOWNLOADS_DIR, tempFilename);
+          fs.writeFileSync(downloadedTempImage, response.data);
+          localImagePath = downloadedTempImage;
+          console.log(`✅ [VeoAuto-Single] Downloaded image: ${downloadedTempImage}`);
+        } catch (err: any) {
+          console.warn(`⚠️  [VeoAuto-Single] Failed to download image: ${err.message}`);
+        }
+      }
     }
   }
 

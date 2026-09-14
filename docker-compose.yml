@@ -1,0 +1,35 @@
+services:
+  affiliate-studio:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: affiliate-studio
+    restart: unless-stopped
+    ports:
+      - "3400:3400"
+      - "5173:5173"
+    env_file:
+      - .env
+    environment:
+      - PORT=3400
+      - NODE_ENV=development
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+      - HOST_WORKSPACE_DIR=${PWD}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Mount toàn bộ source code để sửa code là nhận Real-Time Hot-Reload ngay lập tức
+      - .:/app
+      # Giữ nguyên node_modules trong container (tránh xung đột binary Linux/Mac)
+      - /app/node_modules
+      - /app/client/node_modules
+      # Lưu trữ video, ảnh và database bền vững
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3400/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

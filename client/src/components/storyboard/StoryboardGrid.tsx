@@ -1,0 +1,742 @@
+import React, { useState, useEffect } from 'react';
+import { StoryboardCard } from './StoryboardCard';
+import { useToast } from '../../context/ToastContext';
+
+interface StoryboardGridProps {
+  productName: string;
+  promptsObj: Record<string, string>;
+  sceneImages: string[];
+  sceneUrls: string[];
+  drawingParts: boolean[];
+  renderingParts: boolean[];
+  pipelineStatusText: string;
+  isPipelineRunning: boolean;
+  batchFeedback?: string;
+  onChangeBatchFeedback?: (val: string) => void;
+  onBlurBatchFeedback?: (val: string) => void;
+  isRevisingPrompts?: boolean;
+  revisingStage?: 'ai1' | 'ai2' | 'done' | null;
+  revisingElapsedSec?: number;
+  revisingStatusText?: string;
+  revisingTargetParts?: number[];
+  onOpenPartEditor: (partNum: number) => void;
+  onRedrawSingleImage: (partNum: number, refSource: number, notes?: string, promptOverride?: string, dialogueOverride?: string) => Promise<void>;
+  onRenderSingleVideo: (partNum: number, promptOverride?: string, dialogueOverride?: string) => Promise<boolean | void>;
+  onBatchRevisePrompts: (selectedIndices: number[], feedback: string, attachedImg?: string) => Promise<void>;
+  onBatchRenderImages: (selectedIndices: number[], refSource: number, feedback: string) => Promise<void>;
+  onBatchRenderVideos: (selectedIndices: number[]) => Promise<void>;
+  onRunAllFlow: (feedback: string, refSource: number) => Promise<void>;
+  onStopPipeline: () => void;
+  onZoomImage: (partIndex: number) => void;
+}
+
+export const StoryboardGrid: React.FC<StoryboardGridProps> = ({
+  productName,
+  promptsObj,
+  sceneImages,
+  sceneUrls,
+  drawingParts,
+  renderingParts,
+  pipelineStatusText,
+  isPipelineRunning,
+  batchFeedback: batchFeedbackProp,
+  onChangeBatchFeedback,
+  onBlurBatchFeedback,
+  isRevisingPrompts = false,
+  revisingStage = null,
+  revisingElapsedSec = 0,
+  revisingStatusText = '',
+  revisingTargetParts = [],
+  onOpenPartEditor,
+  onRedrawSingleImage,
+  onRenderSingleVideo,
+  onBatchRevisePrompts,
+  onBatchRenderImages,
+  onBatchRenderVideos,
+  onRunAllFlow,
+  onStopPipeline,
+  onZoomImage,
+}) => {
+  const { showToast } = useToast();
+  const [selectedParts, setSelectedParts] = useState<boolean[]>([false, false, false, false, false, false]);
+  const [batchRefSource, setBatchRefSource] = useState<number>(-99);
+  const [localBatchFeedback, setLocalBatchFeedback] = useState('');
+  const [attachedImage, setAttachedImage] = useState<string | null>(null);
+
+  const batchFeedback = batchFeedbackProp !== undefined ? batchFeedbackProp : localBatchFeedback;
+  const handleBatchFeedbackChange = (val: string) => {
+    if (onChangeBatchFeedback) {
+      onChangeBatchFeedback(val);
+    } else {
+      setLocalBatchFeedback(val);
+    }
+  };
+
+  // Clipboard paste support (Ctrl+V / Cmd+V)
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.indexOf('image') !== -1) {
+          const blob = items[i].getAsFile();
+          if (blob) {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+              const base64 = event.target?.result as string;
+              setAttachedImage(base64);
+              showToast('📎 Đã dán ảnh minh họa lỗi từ Clipboard!');
+            };
+            reader.readAsDataURL(blob);
+            break;
+          }
+        }
+      }
+    };
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [showToast]);
+
+  const handleTogglePart = (partNum: number) => {
+    const idx = partNum - 1;
+    setSelectedParts((prev) => {
+      const copy = [...prev];
+      copy[idx] = !copy[idx];
+      return copy;
+    });
+  };
+
+  const handleSelectAll = (select: boolean) => {
+    setSelectedParts([select, select, select, select, select, select]);
+  };
+
+  const getSelectedIndices = () => {
+    return selectedParts
+      .map((selected, idx) => (selected ? idx : -1))
+      .filter((idx) => idx !== -1);
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const base64 = event.target?.result as string;
+      setAttachedImage(base64);
+      showToast('📎 Đã đính kèm ảnh minh họa lỗi!');
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const triggerReviseClick = () => {
+    const indices = getSelectedIndices();
+    if (indices.length === 0) {
+      showToast('⚠️ Vui lòng tick chọn ít nhất 1 Part cần sửa (VD: Part 3, Part 6)!');
+      return;
+    }
+    if (!batchFeedback.trim() && !attachedImage) {
+      showToast('⚠️ Vui lòng nhập nội dung chỉ đạo/góp ý hoặc đính kèm ảnh để AI biết cần sửa những gì!');
+      return;
+    }
+    onBatchRevisePrompts(indices, batchFeedback.trim(), attachedImage || undefined);
+  };
+
+  const triggerRenderImagesClick = () => {
+    const indices = getSelectedIndices();
+    if (indices.length === 0) {
+      showToast('⚠️ Vui lòng tick chọn ít nhất 1 Part để vẽ lại ảnh!');
+      return;
+    }
+    onBatchRenderImages(indices, batchRefSource, batchFeedback.trim());
+  };
+
+  const triggerRenderVideosClick = () => {
+    const indices = getSelectedIndices();
+    if (indices.length === 0) {
+      showToast('⚠️ Vui lòng tick chọn ít nhất 1 Part để render video!');
+      return;
+    }
+    onBatchRenderVideos(indices);
+  };
+
+  const formatTimer = (sec: number = 0) => {
+    const m = Math.floor(sec / 60).toString().padStart(2, '0');
+    const s = (sec % 60).toString().padStart(2, '0');
+    return `${m}:${s}s`;
+  };
+
+  return (
+    <div id="storyboardGridContainer" style={{ marginTop: '6px' }}>
+      {/* Batch Part Assistant Box */}
+      <div
+        style={{
+          background: 'var(--bg2)',
+          border: isRevisingPrompts ? '1px solid rgba(236,72,153,0.5)' : '1px solid rgba(139,92,246,0.35)',
+          borderRadius: '10px',
+          padding: '10px 12px',
+          marginBottom: '10px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '8px',
+          boxShadow: isRevisingPrompts ? '0 0 16px rgba(236,72,153,0.2)' : 'none',
+          transition: 'all 0.3s ease',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+          <div style={{ fontSize: '12px', fontWeight: 700, color: '#c084fc', display: 'flex', alignItems: 'center', gap: '5px' }}>
+            <span>🤖 Trợ Lý Sửa Part Theo Yêu Cầu (Chọn Part & Ra Lệnh)</span>
+          </div>
+          <span
+            id="storyboardStatusBadge"
+            style={{
+              fontSize: '11px',
+              color: isRevisingPrompts ? '#ec4899' : isPipelineRunning ? '#38bdf8' : '#10b981',
+              background: isRevisingPrompts
+                ? 'rgba(236,72,153,0.18)'
+                : isPipelineRunning
+                ? 'rgba(56,189,248,0.15)'
+                : 'rgba(16,185,129,0.15)',
+              border: isRevisingPrompts ? '1px solid rgba(236,72,153,0.4)' : '1px solid transparent',
+              padding: '2px 8px',
+              borderRadius: '10px',
+              fontWeight: isRevisingPrompts ? 700 : 500,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '5px',
+            }}
+          >
+            {isRevisingPrompts ? (
+              <>
+                <span
+                  style={{
+                    width: '6px',
+                    height: '6px',
+                    borderRadius: '50%',
+                    background: '#ec4899',
+                    animation: 'livePulse 1s infinite',
+                    display: 'inline-block',
+                  }}
+                />
+                <span>🔄 2 AI Đang Thảo Luận • ⏱️ {formatTimer(revisingElapsedSec)}</span>
+              </>
+            ) : (
+              pipelineStatusText || 'Sẵn sàng'
+            )}
+          </span>
+        </div>
+
+        {/* Quick Part Selector Pills */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', fontSize: '11px' }}>
+          <span style={{ color: 'var(--muted)', fontWeight: 600 }}>Chọn Part:</span>
+          {[1, 2, 3, 4, 5, 6].map((num) => (
+            <label
+              key={num}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '3px',
+                cursor: 'pointer',
+                background: 'var(--bg3)',
+                padding: '3px 8px',
+                borderRadius: '6px',
+                border: '1px solid var(--border)',
+              }}
+            >
+              <input
+                type="checkbox"
+                className="part-select-chk"
+                checked={selectedParts[num - 1]}
+                onChange={() => handleTogglePart(num)}
+                style={{ accentColor: '#8b5cf6' }}
+              />
+              <span>Part {num}</span>
+            </label>
+          ))}
+          <button
+            type="button"
+            onClick={() => handleSelectAll(true)}
+            style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--muted)', borderRadius: '4px', padding: '2px 6px', fontSize: '10px', cursor: 'pointer' }}
+          >
+            Chọn tất cả
+          </button>
+          <button
+            type="button"
+            onClick={() => handleSelectAll(false)}
+            style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--muted)', borderRadius: '4px', padding: '2px 6px', fontSize: '10px', cursor: 'pointer' }}
+          >
+            Bỏ chọn
+          </button>
+        </div>
+
+        {/* Instruction & Reference Row */}
+        <div style={{ display: 'flex', gap: '8px', flexDirection: 'column' }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: '6px',
+              background: 'var(--bg3)',
+              padding: '6px 10px',
+              borderRadius: '6px',
+              border: '1px solid var(--border)',
+              fontSize: '11px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span style={{ color: '#f472b6', fontWeight: 700 }}>🎯 Ảnh Mẫu Chuẩn Cho Bot:</span>
+              <select
+                id="selectBatchRefSource"
+                value={batchRefSource}
+                onChange={(e) => setBatchRefSource(parseInt(e.target.value, 10))}
+                style={{
+                  background: 'var(--bg2)',
+                  border: '1px solid rgba(244,114,182,0.35)',
+                  color: 'var(--text)',
+                  padding: '3px 8px',
+                  borderRadius: '5px',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  outline: 'none',
+                  cursor: 'pointer',
+                }}
+              >
+                <option value={-99}>⚡ Tự động (Part 1 / Ảnh Gốc)</option>
+                <option value={-1}>🖼️ Ảnh Gốc Sản Phẩm</option>
+                <option value={0}>🎬 Part 1 (Cảnh 1)</option>
+                <option value={1}>🎬 Part 2 (Cảnh 2)</option>
+                <option value={2}>🎬 Part 3 (Cảnh 3)</option>
+                <option value={3}>🎬 Part 4 (Cảnh 4)</option>
+                <option value={4}>🎬 Part 5 (Cảnh 5)</option>
+                <option value={5}>🎬 Part 6 (Cảnh 6)</option>
+              </select>
+            </div>
+            <span style={{ color: 'var(--muted)', fontSize: '10.5px' }}>(Bot sẽ nhân bản 100% nhân vật từ Part mẫu đã chọn)</span>
+          </div>
+
+          <textarea
+            id="inputPartReviseFeedback"
+            rows={2}
+            value={batchFeedback}
+            onChange={(e) => handleBatchFeedbackChange(e.target.value)}
+            onBlur={(e) => onBlurBatchFeedback?.(e.target.value)}
+            placeholder="💬 Nhập yêu cầu chỉnh sửa / Note vẽ lại hoặc DÁN ẢNH (Ctrl+V)... (VD: Lấy mẫu nhân vật từ Part 2 để vẽ lại Part 1; cho nhảy múa vui nhộn và quay cận cảnh sản phẩm...)"
+            style={{
+              width: '100%',
+              padding: '7px 10px',
+              background: 'var(--bg3)',
+              border: '1px solid var(--border)',
+              borderRadius: '6px',
+              color: 'var(--text)',
+              fontSize: '12px',
+              outline: 'none',
+              resize: 'vertical',
+              minHeight: '42px',
+              fontFamily: 'inherit',
+              lineHeight: 1.4,
+              boxSizing: 'border-box',
+            }}
+          />
+
+          {/* Attached Image Preview */}
+          {attachedImage && (
+            <div
+              style={{
+                background: 'rgba(124,58,237,0.1)',
+                border: '1px dashed rgba(124,58,237,0.45)',
+                borderRadius: '8px',
+                padding: '6px 10px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '8px',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                <img
+                  src={attachedImage}
+                  alt="Attached preview"
+                  style={{ width: '40px', height: '40px', objectFit: 'cover', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.25)', flexShrink: 0 }}
+                />
+                <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
+                  <span style={{ fontSize: '11px', fontWeight: 700, color: '#c084fc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    📸 Đã đính kèm ảnh minh họa lỗi cho AI
+                  </span>
+                  <span style={{ fontSize: '10px', color: 'var(--muted)' }}>AI sẽ phân tích trực tiếp ảnh này</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAttachedImage(null)}
+                style={{ background: 'rgba(239,68,68,0.2)', border: '1px solid rgba(239,68,68,0.4)', color: '#f87171', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', cursor: 'pointer', fontWeight: 700, flexShrink: 0 }}
+              >
+                &times; Xóa
+              </button>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
+            <label
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                fontSize: '10.5px',
+                color: '#a78bfa',
+                cursor: 'pointer',
+                background: 'rgba(124,58,237,0.12)',
+                padding: '4px 8px',
+                borderRadius: '5px',
+                border: '1px solid rgba(124,58,237,0.3)',
+                fontWeight: 600,
+              }}
+              title="Bấm để chọn file ảnh hoặc nhấn Ctrl+V / Cmd+V vào ô trên"
+            >
+              <span>📎 Dán (Ctrl+V) / Chọn Ảnh Minh Họa Lỗi</span>
+              <input type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFileUpload} />
+            </label>
+          </div>
+        </div>
+
+        {/* Batch Action Buttons */}
+        <div style={{ display: 'flex', gap: '7px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <button
+            type="button"
+            onClick={triggerReviseClick}
+            disabled={isPipelineRunning || isRevisingPrompts}
+            id="btnBatchRevisePrompt"
+            style={{
+              background: isRevisingPrompts
+                ? 'linear-gradient(135deg, #7c3aed 0%, #db2777 100%)'
+                : '#6d28d9',
+              color: '#fff',
+              border: isRevisingPrompts ? '1px solid #f472b6' : 'none',
+              padding: isRevisingPrompts ? '6px 13px' : '6px 11px',
+              borderRadius: '6px',
+              fontSize: '11px',
+              fontWeight: 700,
+              cursor: isPipelineRunning || isRevisingPrompts ? 'not-allowed' : 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              boxShadow: isRevisingPrompts ? '0 0 12px rgba(236,72,153,0.45)' : 'none',
+              transition: 'all 0.25s ease',
+            }}
+          >
+            {isRevisingPrompts ? (
+              <>
+                <span
+                  style={{
+                    display: 'inline-block',
+                    width: '11px',
+                    height: '11px',
+                    border: '2px solid rgba(255,255,255,0.35)',
+                    borderTopColor: '#fff',
+                    borderRadius: '50%',
+                    animation: 'spin 0.8s linear infinite',
+                  }}
+                />
+                <span>⏳ 2 AI Đang Thảo Luận... ({formatTimer(revisingElapsedSec)})</span>
+                <div style={{ display: 'flex', gap: '2px', marginLeft: '2px' }}>
+                  <span style={{ width: '3px', height: '3px', borderRadius: '50%', background: '#fff', animation: 'bounceDot 1s infinite 0ms' }} />
+                  <span style={{ width: '3px', height: '3px', borderRadius: '50%', background: '#fff', animation: 'bounceDot 1s infinite 200ms' }} />
+                  <span style={{ width: '3px', height: '3px', borderRadius: '50%', background: '#fff', animation: 'bounceDot 1s infinite 400ms' }} />
+                </div>
+              </>
+            ) : (
+              <>🤖 AI Sửa Kịch Bản</>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={triggerRenderImagesClick}
+            disabled={isPipelineRunning}
+            id="btnBatchRenderImages"
+            style={{
+              background: '#db2777',
+              color: '#fff',
+              border: 'none',
+              padding: '6px 11px',
+              borderRadius: '6px',
+              fontSize: '11px',
+              fontWeight: 600,
+              cursor: isPipelineRunning ? 'not-allowed' : 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px',
+            }}
+          >
+            🎨 Vẽ lại Ảnh
+          </button>
+
+          <button
+            type="button"
+            onClick={triggerRenderVideosClick}
+            disabled={isPipelineRunning}
+            id="btnBatchRenderVideos"
+            style={{
+              background: '#2563eb',
+              color: '#fff',
+              border: 'none',
+              padding: '6px 11px',
+              borderRadius: '6px',
+              fontSize: '11px',
+              fontWeight: 600,
+              cursor: isPipelineRunning ? 'not-allowed' : 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px',
+            }}
+          >
+            🎬 Render lại Video
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onRunAllFlow(batchFeedback, batchRefSource)}
+            disabled={isPipelineRunning}
+            id="btnBatchFullPipeline"
+            style={{
+              background: 'linear-gradient(135deg, #ec4899 0%, #8b5cf6 50%, #3b82f6 100%)',
+              color: '#fff',
+              border: 'none',
+              padding: '6px 14px',
+              borderRadius: '7px',
+              fontSize: '11.5px',
+              fontWeight: 700,
+              cursor: isPipelineRunning ? 'not-allowed' : 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '5px',
+              boxShadow: '0 2px 8px rgba(139,92,246,0.35)',
+            }}
+          >
+            🚀 Run All Flow Tạo Video (Full 6 Part)
+          </button>
+
+          {isPipelineRunning && (
+            <button
+              type="button"
+              onClick={onStopPipeline}
+              id="btnBatchStopPipeline"
+              style={{
+                background: 'rgba(239,68,68,0.15)',
+                border: '1px solid rgba(239,68,68,0.45)',
+                color: '#f87171',
+                padding: '6px 12px',
+                borderRadius: '7px',
+                fontSize: '11.5px',
+                fontWeight: 700,
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+              }}
+              title="Dừng ngay lập tức quy trình đang chạy"
+            >
+              ⛔ Dừng Quy Trình
+            </button>
+          )}
+        </div>
+
+        {/* Live 2-AI Debate / Discussion Interactive Banner */}
+        {(isRevisingPrompts || (revisingStatusText && revisingStage === 'done')) && (
+          <div
+            id="liveAiRevisionBanner"
+            style={{
+              marginTop: '4px',
+              padding: '10px 14px',
+              borderRadius: '8px',
+              background: isRevisingPrompts
+                ? 'linear-gradient(135deg, rgba(124,58,237,0.14) 0%, rgba(236,72,153,0.16) 100%)'
+                : 'rgba(16,185,129,0.12)',
+              border: isRevisingPrompts ? '1px solid rgba(236,72,153,0.45)' : '1px solid rgba(16,185,129,0.35)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '8px',
+              animation: isRevisingPrompts ? 'pulseBorder 2.5s infinite ease-in-out' : 'none',
+              boxShadow: isRevisingPrompts ? '0 0 16px rgba(236,72,153,0.18)' : 'none',
+            }}
+          >
+            {/* Header row: Status title + Live Stopwatch Timer */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span
+                  style={{
+                    width: '9px',
+                    height: '9px',
+                    borderRadius: '50%',
+                    background: isRevisingPrompts ? (revisingStage === 'ai2' ? '#f59e0b' : '#ec4899') : '#10b981',
+                    animation: isRevisingPrompts ? 'livePulse 1s infinite' : 'none',
+                    display: 'inline-block',
+                    flexShrink: 0,
+                  }}
+                />
+                <span style={{ fontSize: '12px', fontWeight: 700, color: isRevisingPrompts ? '#f472b6' : '#10b981' }}>
+                  {isRevisingPrompts
+                    ? `🔥 2 AI Đang Trực Tiếp Thảo Luận Kịch Bản (Part ${revisingTargetParts.map(p => p + 1).join(', ')})`
+                    : '🎉 2 AI Đã Thống Nhất Kịch Bản Hoàn Tất!'}
+                </span>
+              </div>
+
+              <div
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  background: 'var(--bg3)',
+                  border: isRevisingPrompts ? '1px solid rgba(236,72,153,0.4)' : '1px solid var(--border)',
+                  borderRadius: '20px',
+                  padding: '3px 10px',
+                  fontSize: '11px',
+                  fontWeight: 700,
+                  color: isRevisingPrompts ? '#38bdf8' : '#10b981',
+                }}
+              >
+                <span>⏱️ Thời gian tương tác:</span>
+                <span style={{ fontFamily: 'monospace', fontSize: '12.5px', color: isRevisingPrompts ? '#f472b6' : '#10b981' }}>
+                  {formatTimer(revisingElapsedSec)}
+                </span>
+              </div>
+            </div>
+
+            {/* Dual-AI Visual Stage Cards with Soundwave */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
+              {/* AI 1 Card */}
+              <div
+                style={{
+                  flex: 1,
+                  minWidth: '160px',
+                  background: 'var(--bg2)',
+                  border: revisingStage === 'ai1' ? '1.5px solid #a855f7' : '1px solid var(--border)',
+                  borderRadius: '7px',
+                  padding: '7px 11px',
+                  boxShadow: revisingStage === 'ai1' ? '0 0 12px rgba(168,85,247,0.35)' : 'none',
+                  transition: 'all 0.3s ease',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '3px' }}>
+                  <span style={{ fontSize: '11px', fontWeight: 700, color: '#c084fc' }}>🎭 AI 1 (AGY 3.8)</span>
+                  {revisingStage === 'ai1' && (
+                    <span style={{ fontSize: '9px', background: '#a855f7', color: '#fff', padding: '1px 6px', borderRadius: '4px', fontWeight: 700 }}>
+                      ĐANG SÁNG TÁC
+                    </span>
+                  )}
+                  {revisingStage === 'ai2' && <span style={{ fontSize: '11px', color: '#10b981', fontWeight: 700 }}>✓ Đã cập nhật</span>}
+                  {revisingStage === 'done' && <span style={{ fontSize: '11px', color: '#10b981', fontWeight: 700 }}>✓ Hoàn tất</span>}
+                </div>
+                <div style={{ fontSize: '10.5px', color: 'var(--muted)' }}>Tái cấu trúc prompt theo yêu cầu Đạo diễn</div>
+              </div>
+
+              {/* Center Soundwave Animation */}
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', padding: '0 6px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '3px', height: '18px' }}>
+                  {[0, 1, 2, 3, 4].map((bar) => (
+                    <span
+                      key={bar}
+                      style={{
+                        width: '3.5px',
+                        background: isRevisingPrompts ? 'linear-gradient(to top, #8b5cf6, #ec4899)' : '#10b981',
+                        borderRadius: '2px',
+                        height: isRevisingPrompts ? '16px' : '6px',
+                        animation: isRevisingPrompts ? `soundWave 0.8s ease-in-out infinite alternate ${bar * 0.15}s` : 'none',
+                      }}
+                    />
+                  ))}
+                </div>
+                <span style={{ fontSize: '9.5px', fontWeight: 700, color: isRevisingPrompts ? '#f472b6' : 'var(--muted)' }}>
+                  {isRevisingPrompts ? '⚡ Phản biện qua lại' : '✓ Đã đồng thuận'}
+                </span>
+              </div>
+
+              {/* AI 2 Card */}
+              <div
+                style={{
+                  flex: 1,
+                  minWidth: '160px',
+                  background: 'var(--bg2)',
+                  border: revisingStage === 'ai2' ? '1.5px solid #f59e0b' : '1px solid var(--border)',
+                  borderRadius: '7px',
+                  padding: '7px 11px',
+                  boxShadow: revisingStage === 'ai2' ? '0 0 12px rgba(245,158,11,0.35)' : 'none',
+                  transition: 'all 0.3s ease',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '3px' }}>
+                  <span style={{ fontSize: '11px', fontWeight: 700, color: '#fbbf24' }}>🧐 AI 2 (GLM-5)</span>
+                  {revisingStage === 'ai2' && (
+                    <span style={{ fontSize: '9px', background: '#f59e0b', color: '#000', padding: '1px 6px', borderRadius: '4px', fontWeight: 700 }}>
+                      ĐANG KIỂM ĐỊNH
+                    </span>
+                  )}
+                  {revisingStage === 'done' && <span style={{ fontSize: '11px', color: '#10b981', fontWeight: 700 }}>✓ Đạt 100%</span>}
+                </div>
+                <div style={{ fontSize: '10.5px', color: 'var(--muted)' }}>Thẩm định tính logic & góc quay nhất quán</div>
+              </div>
+            </div>
+
+            {/* Live Status text description */}
+            <div
+              style={{
+                fontSize: '11.5px',
+                color: isRevisingPrompts ? 'var(--text)' : '#10b981',
+                background: 'var(--bg3)',
+                padding: '6px 11px',
+                borderRadius: '6px',
+                border: '1px solid var(--border)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '7px',
+              }}
+            >
+              <span>💬</span>
+              <span style={{ flex: 1, fontWeight: 500 }}>{revisingStatusText || '2 AI đang kết nối và phân tích kịch bản...'}</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 6 Storyboard Cards Grid */}
+      <div
+        id="storyboardGrid"
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(3, 1fr)',
+          gap: '10px',
+        }}
+      >
+        {[1, 2, 3, 4, 5, 6].map((partNum) => {
+          const idx = partNum - 1;
+          const prompt = promptsObj[`prompt${partNum}`] || (partNum === 1 ? promptsObj.prompt : '') || '';
+          const dialogue = promptsObj[`dialogue${partNum}`] || '';
+          const imgUrl = sceneImages[idx] || null;
+          const vidUrl = sceneUrls[idx] || null;
+
+          return (
+            <StoryboardCard
+              key={partNum}
+              partNum={partNum}
+              prompt={prompt}
+              dialogue={dialogue}
+              imageUrl={imgUrl}
+              videoUrl={vidUrl}
+              isSelected={selectedParts[idx]}
+              isDrawing={drawingParts[idx]}
+              isRendering={renderingParts[idx]}
+              onToggleSelect={handleTogglePart}
+              onOpenEditor={() => onOpenPartEditor(partNum)}
+              onRedrawImage={() => {
+                const customRef = batchRefSource === -99 ? (idx === 0 ? -1 : 0) : batchRefSource;
+                onRedrawSingleImage(partNum, customRef, batchFeedback);
+              }}
+              onRenderVideo={() => onRenderSingleVideo(partNum)}
+              onZoomImage={() => onZoomImage(idx)}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+};

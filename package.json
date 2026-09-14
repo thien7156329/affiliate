@@ -5,10 +5,18 @@
   "main": "build/server.js",
   "type": "module",
   "scripts": {
-    "dev": "npx nodemon --watch src -e ts --exec 'npx tsx src/server.ts'",
+    "dev": "concurrently -k -p \"[{name}]\" -n \"BACKEND,FRONTEND\" -c \"cyan.bold,magenta.bold\" \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "npx nodemon --watch src -e ts --exec 'npx tsx src/server.ts'",
+    "dev:client": "npm --prefix client run dev",
+    "client:dev": "npm --prefix client run dev",
+    "client:build": "npm --prefix client run build",
     "build": "tsc",
     "start": "node build/server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "docker:up": "docker compose up",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f",
+    "docker:prod": "docker compose -f docker-compose.prod.yml up --build -d"
   },
   "keywords": [
     "mcp",
@@ -42,6 +50,7 @@
     "@types/express": "^5.0.6",
     "@types/localtunnel": "^2.0.4",
     "@types/node": "^22.0.0",
+    "concurrently": "^10.0.5",
     "nodemon": "^3.1.0",
     "tsx": "^4.7.0",
     "typescript": "^5.4.0"
