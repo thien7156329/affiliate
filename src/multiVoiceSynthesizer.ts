@@ -12,6 +12,7 @@ import { execSync } from "child_process";
 import { fileURLToPath } from "url";
 import { getCharacter, loadCharacters, CharacterDefinition } from "./characterRegistry.js";
 import { DialogueSegment } from "./videoAnalyzer.js";
+import { generateVietnameseTts } from "./ttsHelper.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TEMP_DIR = path.resolve(__dirname, "../data/downloads");
@@ -39,44 +40,20 @@ export async function generateSegmentAudio(
   character: CharacterDefinition,
   outWavPath: string
 ): Promise<string> {
-  const elevenlabsKey = process.env.ELEVENLABS_API_KEY;
   const ffmpeg = getFfmpeg();
 
-  // ─── Option A: ElevenLabs Multi-Voice API ──────────────────────────────
-  if (elevenlabsKey && character.voice_settings?.elevenlabs_voice_id) {
-    try {
-      console.log(`🎙️ [VoiceSynth] Calling ElevenLabs for ${character.name} (Voice: ${character.voice_settings.elevenlabs_voice_id})...`);
-      const voiceId = character.voice_settings.elevenlabs_voice_id;
-      const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`;
-      
-      const response = await axios.post(
-        url,
-        {
-          text: segment.text,
-          model_id: "eleven_multilingual_v2",
-          voice_settings: {
-            stability: character.voice_settings.stability ?? 0.75,
-            similarity_boost: character.voice_settings.similarity_boost ?? 0.85
-          }
-        },
-        {
-          headers: {
-            "xi-api-key": elevenlabsKey,
-            "Content-Type": "application/json"
-          },
-          responseType: "arraybuffer"
-        }
-      );
-
-      fs.writeFileSync(outWavPath, Buffer.from(response.data));
-      console.log(`✅ [VoiceSynth] ElevenLabs TTS generated: ${path.basename(outWavPath)}`);
-      return outWavPath;
-    } catch (err: any) {
-      console.warn(`⚠️ [VoiceSynth] ElevenLabs TTS failed: ${err.message}. Falling back to character pitch synthesis.`);
-    }
+  // ─── Option A: Agy Gemini TTS (Default & Primary) ──────────────────────
+  try {
+    const cleanText = segment.text.replace(/🐶|👔|🐱|❤️|✨|🐻|\"/g, "").trim();
+    const voiceTarget = character.voice_id || character.id || "Puck";
+    console.log(`🔊 [VoiceSynth-Agy] Generating speech for "${character.name}" (Voice target: ${voiceTarget}) via Gemini...`);
+    await generateVietnameseTts(cleanText, outWavPath, voiceTarget);
+    return outWavPath;
+  } catch (err: any) {
+    console.warn(`⚠️ [VoiceSynth-Agy] Gemini TTS failed: ${err.message}. Falling back to local character pitch synthesis.`);
   }
 
-  // ─── Option B: Character Pitch Synthesis (macOS say + FFmpeg pitch filter) ─
+  // ─── Option B: Local Character Pitch Synthesis (macOS say + FFmpeg) ────
   const tempAiff = outWavPath.replace(/\.wav$/, ".aiff");
   const tempRawWav = outWavPath.replace(/\.wav$/, "_raw.wav");
   const cleanText = segment.text.replace(/🐶|👔|🐱|❤️|✨|\"/g, "").trim();
@@ -88,15 +65,11 @@ export async function generateSegmentAudio(
   execSync(`"${ffmpeg}" -y -i "${tempAiff}" -ar 44100 -ac 2 "${tempRawWav}"`);
   try { fs.unlinkSync(tempAiff); } catch {}
 
-  // Apply character pitch ratio
-  const pitchRatio = character.voice_settings?.pitch_shift ?? 1.0;
-  const atempo = (1.0 / pitchRatio).toFixed(3);
-  const pitchFilter = `asetrate=44100*${pitchRatio},aresample=44100,atempo=${atempo}`;
-
-  execSync(`"${ffmpeg}" -y -i "${tempRawWav}" -af "${pitchFilter}" -ar 44100 -ac 2 "${outWavPath}"`);
+  // Giữ nguyên chất giọng tự nhiên, tuyệt đối KHÔNG bóp méo tần số (no pitch warping/chipmunk effect)
+  fs.copyFileSync(tempRawWav, outWavPath);
   try { fs.unlinkSync(tempRawWav); } catch {}
 
-  console.log(`🔊 [VoiceSynth] Character pitched TTS generated for ${character.name} (Pitch: ${pitchRatio}): ${path.basename(outWavPath)}`);
+  console.log(`🔊 [VoiceSynth] Pure natural audio generated for ${character.name}: ${path.basename(outWavPath)}`);
   return outWavPath;
 }
 

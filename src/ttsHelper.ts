@@ -5,211 +5,55 @@ import * as path from "path";
 import { execSync, exec } from "child_process";
 
 /**
- * Generates Vietnamese speech audio directly using Gemini 2.5 Flash TTS.
- *
+ * High-level Vietnamese TTS generator.
  * Priority:
- * 1. Gemini 2.5 Flash TTS (using GEMINI_API_KEY) — supports prebuilt voices (Puck, Charon, Kore, Fenrir, Aoede)
+ * 1. VieNeu TTS (Voice clone cho DuDu_NamChinh & Mai Bé Phương)
  * 2. macOS built-in `say` command with voice "Linh" (vi_VN) — ZERO config, offline
- * 3. Google Cloud TTS (if GOOGLE_CLOUD_TTS_KEY is set)
- * 4. Google Translate TTS (unofficial free fallback)
  */
 export async function generateVietnameseTts(text: string, targetPath: string, voiceIdOrName?: string): Promise<string> {
-  const geminiKey = process.env.GEMINI_API_KEY;
-  if (!geminiKey) {
-    throw new Error("❌ [Gemini TTS Error] GEMINI_API_KEY is missing in .env!");
-  }
-
   const wavPath = targetPath.replace(/\.(mp3|m4a|aac)$/i, ".wav");
+  const vLower = (voiceIdOrName || "").toLowerCase();
 
-  try {
-    await generateWithGeminiTts(text, wavPath, geminiKey, voiceIdOrName);
-    console.log(`🔊 [Gemini TTS] Generated speech for voice "${voiceIdOrName || 'Puck'}": ${path.basename(wavPath)}`);
-    return wavPath;
-  } catch (err: any) {
-    console.warn(`⚠️ [Gemini TTS] Failed (${err.message}). Trying macOS say fallback...`);
+  // 1. Priority 1: VieNeu TTS for Main Characters (Nữ chính Mai Bé Phương & Nam chính DuDu)
+  const isVieneu = vLower.includes("mai") || vLower.includes("phương") || vLower.includes("vieneu") || vLower.includes("dudu") || vLower.includes("bubu");
+  if (isVieneu) {
     try {
-      const aiffPath = targetPath.replace(/\.(mp3|wav|m4a|aac)$/i, ".aiff");
-      const ffmpegCmd = findFfmpeg();
-      execSync(`say -v "Linh" -o "${aiffPath}" "${text.replace(/"/g, '\\"')}"`, { timeout: 15000 });
-      if (fs.existsSync(aiffPath)) {
-        execSync(`"${ffmpegCmd}" -y -i "${aiffPath}" -ar 44100 -ac 2 "${wavPath}"`, { timeout: 15000 });
-        fs.unlinkSync(aiffPath);
-        return wavPath;
+      const { generateSpeechWithVieneu } = await import("./vieneuClient.js");
+      let voiceName = "Mai Bé Phương";
+      if (vLower.includes("dudu")) {
+        voiceName = "DuDu_NamChinh";
+      } else if (vLower.includes("bubu") || vLower.includes("part4")) {
+        voiceName = "BuBu_Part4";
       }
-    } catch {}
-    throw new Error(`TTS Generation failed for text: "${text}": ${err.message}`);
-  }
-}
-
-// Track last call time globally to throttle requests and avoid 429 Rate Limit
-let lastGeminiCallTime = 0;
-
-// Provider 2: Gemini 2.5 Flash TTS with Smart Rate-Limiter & Exponential Backoff
-async function generateWithGeminiTts(text: string, wavPath: string, apiKey: string, voiceIdOrName?: string): Promise<void> {
-  // Support key rotation if multiple keys are provided via GEMINI_API_KEYS or GEMINI_API_KEY (separated by comma)
-  const rawKeys = (process.env.GEMINI_API_KEYS || apiKey || "").split(",").map(k => k.trim()).filter(Boolean);
-  let keyIndex = 0;
-
-  // 1. Proactive Rate Limiting (Throttle): Ensure 10 seconds gap between consecutive calls
-  const now = Date.now();
-  const timeSinceLastCall = now - lastGeminiCallTime;
-  const minIntervalMs = 10000; // 10s delay proactively prevents 429
-  if (timeSinceLastCall < minIntervalMs) {
-    const waitMs = minIntervalMs - timeSinceLastCall;
-    console.log(`⏳ [Smart Rate Limiter] Throttling request for ${(waitMs / 1000).toFixed(1)}s to stay under Gemini RPM limit...`);
-    await new Promise(r => setTimeout(r, waitMs));
-  }
-  lastGeminiCallTime = Date.now();
-
-  // Map voice names to valid Gemini 2.5 Flash TTS prebuilt voices
-  const validVoices = [
-    "Puck", "Charon", "Kore", "Fenrir", "Aoede",
-    "Zephyr", "Achernar", "Achird", "Orpheus", "Callisto",
-    "Despina", "Enceladus", "Laomedeia", "Rasalgethi", "Alnilam", "Orus"
-  ];
-  // Core 4 Voices selected by User:
-  // - Achernar: Nữ chính 1 (Dịu êm, truyền cảm, tâm sự, Mẹ/Nữ 1)
-  // - Enceladus: Nữ chính 2 (Trong trẻo, biểu cảm nhẹ nhàng, Bé gái/Nữ 2)
-  // - Puck: Nam chính 1 (Nhí nhảnh, vui tươi 3D Pixar, Mèo Trắng/Bé trai)
-  // - Charon: Nam chính 2 (Trầm ấm, tình cảm, đĩnh đạc, Mèo Nâu/Bố)
-  let chosenVoice = "Puck";
-  if (voiceIdOrName) {
-    const matched = validVoices.find(v => v.toLowerCase() === voiceIdOrName.toLowerCase());
-    if (matched) {
-      chosenVoice = matched;
-    } else if (
-      voiceIdOrName.toLowerCase().includes("gai2") ||
-      voiceIdOrName.toLowerCase().includes("female2") ||
-      voiceIdOrName.toLowerCase().includes("nu2")
-    ) {
-      chosenVoice = "Enceladus";
-    } else if (
-      voiceIdOrName.toLowerCase().includes("gai") ||
-      voiceIdOrName.toLowerCase().includes("female") ||
-      voiceIdOrName.toLowerCase().includes("me") ||
-      voiceIdOrName.toLowerCase().includes("nu")
-    ) {
-      chosenVoice = "Achernar";
-    } else if (
-      voiceIdOrName.toLowerCase().includes("bo") ||
-      voiceIdOrName.toLowerCase().includes("nau") ||
-      voiceIdOrName.toLowerCase().includes("male2") ||
-      voiceIdOrName.toLowerCase().includes("nam2")
-    ) {
-      chosenVoice = "Charon";
-    } else if (
-      voiceIdOrName.toLowerCase().includes("trai") ||
-      voiceIdOrName.toLowerCase().includes("trang") ||
-      voiceIdOrName.toLowerCase().includes("male") ||
-      voiceIdOrName.toLowerCase().includes("nam")
-    ) {
-      chosenVoice = "Puck";
-    }
-  }
-
-  const payload = {
-    contents: [
-      {
-        role: "user",
-        parts: [
-          {
-            text: `Đọc bằng tiếng Việt với giọng lồng tiếng phim hoạt hình 3D Pixar rực rỡ, ngắt nghỉ vô cùng tự nhiên và cảm xúc: "${text}"`
-          }
-        ]
-      }
-    ],
-    generationConfig: {
-      responseModalities: ["audio"],
-      speechConfig: {
-        voiceConfig: {
-          prebuiltVoiceConfig: { voiceName: chosenVoice.toLowerCase() }
-        }
-      }
-    }
-  };
-
-  // 2. Exponential Backoff Retry Loop for 429 Rate Limits
-  let attempts = 0;
-  const maxAttempts = 4;
-
-  while (attempts < maxAttempts) {
-    attempts++;
-    const currentKey = rawKeys[keyIndex % rawKeys.length];
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${currentKey}`;
-
-    try {
-      const response = await axios.post(url, payload, {
-        headers: { "Content-Type": "application/json" },
-        timeout: 30000,
+      await generateSpeechWithVieneu({
+        text,
+        outputPath: wavPath,
+        voice: voiceName,
+        temperature: 0.4,
+        topP: 0.9,
+        applyWatermark: false,
       });
-
-      const candidate = response.data?.candidates?.[0];
-      const audioPart = candidate?.content?.parts?.find((p: any) => p.inlineData?.mimeType?.startsWith("audio/"));
-
-      if (!audioPart?.inlineData?.data) {
-        throw new Error(`Gemini TTS: No audio data in response.`);
-      }
-
-      const mimeType: string = audioPart.inlineData.mimeType;
-      const audioBuffer = Buffer.from(audioPart.inlineData.data, "base64");
-      const rateMatch = mimeType.match(/rate=(\d+)/);
-      const sampleRate = rateMatch ? parseInt(rateMatch[1], 10) : 24000;
-      const wavBuffer = buildWavBuffer(audioBuffer, sampleRate, 1, 16);
-      fs.writeFileSync(wavPath, wavBuffer);
-      return; // Success!
-
-    } catch (err: any) {
-      const is429 = err.response?.status === 429 || err.message?.includes("429");
-      if (is429 && attempts < maxAttempts) {
-        // If we have multiple keys, try rotating to the next key immediately
-        if (rawKeys.length > 1) {
-          keyIndex++;
-          console.warn(`🔄 [Smart Rate Limiter] Key #${keyIndex} rate limited (429). Rotating to Key #${(keyIndex % rawKeys.length) + 1}...`);
-          await new Promise(r => setTimeout(r, 2000));
-        } else {
-          // Exponential backoff delay: 15s -> 30s -> 45s
-          const backoffDelayMs = attempts * 15000;
-          console.warn(`⏳ [Smart Rate Limiter 429] Gemini RPM window full. Retrying attempt ${attempts}/${maxAttempts} in ${backoffDelayMs / 1000}s...`);
-          await new Promise(r => setTimeout(r, backoffDelayMs));
-        }
-      } else {
-        throw err;
-      }
+      const roleLabel = voiceName === "DuDu_NamChinh" ? "Nam Chính" : "Nữ Chính";
+      console.log(`🔊 [VieNeu TTS (${roleLabel})] Generated clean speech for "${voiceName}": ${path.basename(wavPath)}`);
+      return wavPath;
+    } catch (viErr: any) {
+      console.warn(`⚠️ [VieNeu TTS] Failed (${viErr.message}). Falling back to local offline say...`);
     }
   }
-}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Provider 3: Google Cloud TTS
-// ─────────────────────────────────────────────────────────────────────────────
-async function generateWithGoogleCloudTts(text: string, targetPath: string, apiKey: string): Promise<void> {
-  const url = `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`;
-  const payload = {
-    input: { text },
-    voice: { languageCode: "vi-VN", ssmlGender: "NEUTRAL", name: "vi-VN-Chirp3-HD-Aoede" },
-    audioConfig: { audioEncoding: "MP3", speakingRate: 1.05, pitch: 2.0 }
-  };
-  const response = await axios.post(url, payload, { headers: { "Content-Type": "application/json" }, timeout: 20000 });
-  if (!response.data?.audioContent) throw new Error("Google Cloud TTS: No audioContent in response.");
-  fs.writeFileSync(targetPath, Buffer.from(response.data.audioContent, "base64"));
-}
+  // 2. Fallback: macOS say
+  try {
+    const aiffPath = targetPath.replace(/\.(mp3|wav|m4a|aac)$/i, ".aiff");
+    const ffmpegCmd = findFfmpeg();
+    execSync(`say -v "Linh" -o "${aiffPath}" "${text.replace(/"/g, '\\"')}"`, { timeout: 15000 });
+    if (fs.existsSync(aiffPath)) {
+      execSync(`"${ffmpegCmd}" -y -i "${aiffPath}" -ar 44100 -ac 2 "${wavPath}"`, { timeout: 15000 });
+      fs.unlinkSync(aiffPath);
+      return wavPath;
+    }
+  } catch {}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Provider 4: Google Translate TTS
-// ─────────────────────────────────────────────────────────────────────────────
-async function generateWithGoogleTranslateTts(text: string, targetPath: string): Promise<void> {
-  const chunks = chunkText(text, 200);
-  const buffers: Buffer[] = [];
-  for (const chunk of chunks) {
-    const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(chunk)}&tl=vi&client=tw-ob`;
-    const response = await axios.get(url, {
-      responseType: "arraybuffer",
-      headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" },
-      timeout: 10000,
-    });
-    buffers.push(Buffer.from(response.data));
-  }
-  fs.writeFileSync(targetPath, Buffer.concat(buffers));
+  throw new Error(`TTS Generation failed for text: "${text}"`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

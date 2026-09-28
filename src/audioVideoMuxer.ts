@@ -63,15 +63,32 @@ export async function muxTimestampedAudioSegments(
   const numAudioInputs = mixInputs.length;
   let filterComplex = "";
 
-  if (numAudioInputs === 1) {
-    filterComplex = `${delayFilters[0]}; ${mixInputs[0]}apad[aout]`;
+  // Check if original video has an audio stream
+  let hasOrigAudio = false;
+  try {
+    const probe = execSync(`"${ffmpeg}" -i "${videoPath}" 2>&1`, { encoding: "utf8" });
+    hasOrigAudio = probe.includes("Audio:");
+  } catch {}
+
+  if (hasOrigAudio) {
+    // Preserve original Gemini audio track (ambient sound, suối, nhạc nền) at 35% volume under dialogue
+    if (numAudioInputs === 1) {
+      filterComplex = `${delayFilters[0]}; [0:a]volume=0.35[bg]; [bg]${mixInputs[0]}amix=inputs=2:duration=first:dropout_transition=0[aout]`;
+    } else {
+      filterComplex = `${delayFilters.join("; ")}; ${mixInputs.join("")}amix=inputs=${numAudioInputs}:normalize=0:dropout_transition=0[dialogue_mix]; [0:a]volume=0.35[bg]; [bg][dialogue_mix]amix=inputs=2:duration=first:dropout_transition=0[aout]`;
+    }
   } else {
-    filterComplex = `${delayFilters.join("; ")}; ${mixInputs.join("")}amix=inputs=${numAudioInputs}:normalize=0,apad[aout]`;
+    // Video has no audio track, use dialogue mix directly
+    if (numAudioInputs === 1) {
+      filterComplex = `${delayFilters[0]}; ${mixInputs[0]}anull[aout]`;
+    } else {
+      filterComplex = `${delayFilters.join("; ")}; ${mixInputs.join("")}amix=inputs=${numAudioInputs}:normalize=0:dropout_transition=0[aout]`;
+    }
   }
 
   const cmd = `"${ffmpeg}" -y -i "${videoPath}" ${inputArgs} ` +
     `-filter_complex "${filterComplex}" ` +
-    `-map 0:v -map "[aout]" -c:v copy -c:a aac -b:a 192k -ar 44100 "${outputPath}"`;
+    `-map 0:v -map "[aout]" -c:v copy -c:a aac -b:a 192k -ar 44100 -shortest "${outputPath}"`;
 
   console.log(`🎬 [AudioVideoMuxer] Muxing ${numAudioInputs} dialogue audio clips onto video...`);
 
@@ -81,7 +98,7 @@ export async function muxTimestampedAudioSegments(
         // Fallback: If video copy fails (e.g. keyframe offset), re-encode video
         const fallbackCmd = `"${ffmpeg}" -y -i "${videoPath}" ${inputArgs} ` +
           `-filter_complex "${filterComplex}" ` +
-          `-map 0:v -map "[aout]" -c:v libx264 -pix_fmt yuv420p -c:a aac -b:a 192k -ar 44100 "${outputPath}"`;
+          `-map 0:v -map "[aout]" -c:v libx264 -pix_fmt yuv420p -c:a aac -b:a 192k -ar 44100 -shortest "${outputPath}"`;
         
         exec(fallbackCmd, { maxBuffer: 15 * 1024 * 1024 }, (fErr, _fOut, fStderr) => {
           if (fErr) reject(new Error(fStderr || fErr.message));

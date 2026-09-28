@@ -10,6 +10,7 @@ interface StoryboardCardProps {
   isSelected?: boolean;
   isDrawing?: boolean;
   isRendering?: boolean;
+  isRevising?: boolean;
   onToggleSelect: (partNum: number) => void;
   onOpenEditor: () => void;
   onRedrawImage: () => void;
@@ -26,6 +27,7 @@ export const StoryboardCard: React.FC<StoryboardCardProps> = memo(({
   isSelected = false,
   isDrawing = false,
   isRendering = false,
+  isRevising = false,
   onToggleSelect,
   onOpenEditor,
   onRedrawImage,
@@ -75,6 +77,25 @@ export const StoryboardCard: React.FC<StoryboardCardProps> = memo(({
           <span>Part {partNum}</span>
         </label>
         <div style={{ display: 'flex', gap: '5px', fontSize: '10px' }}>
+          {isRevising && (
+            <span
+              style={{
+                background: 'rgba(236,72,153,0.2)',
+                border: '1px solid #ec4899',
+                color: '#f472b6',
+                padding: '2px 7px',
+                borderRadius: '6px',
+                fontWeight: 700,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                boxShadow: '0 0 8px rgba(236,72,153,0.3)',
+              }}
+            >
+              <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#ec4899', animation: 'livePulse 0.8s infinite' }} />
+              <span>🤖 2 AI đang sửa...</span>
+            </span>
+          )}
           <span
             style={{
               background: isDrawing
@@ -232,9 +253,9 @@ export const StoryboardCard: React.FC<StoryboardCardProps> = memo(({
         {imgExists ? (
           <>
             <img
-              key={displayImg}
               src={displayImg}
               alt={`Part ${partNum}`}
+              loading="lazy"
               style={{ width: '100%', height: '100%', objectFit: 'cover', transition: 'transform 0.2s' }}
               onMouseOver={(e) => (e.currentTarget.style.transform = 'scale(1.03)')}
               onMouseOut={(e) => (e.currentTarget.style.transform = 'scale(1)')}
@@ -449,9 +470,9 @@ export const StoryboardCard: React.FC<StoryboardCardProps> = memo(({
             gap: '5px',
             transition: 'all 0.15s',
           }}
-          title={`Mở popup sửa kịch bản, xem trước và cắt video Part ${partNum}`}
+          title={`Mở popup sửa kịch bản chi tiết, xem trước và 2-AI phản biện Part ${partNum}`}
         >
-          {vidExists ? '🎬 Xem Trước & Cắt Video (Trimmer)' : '📝 Sửa & 2-AI Thảo Luận'}
+          {vidExists ? '🎬 Xem Trước, Cắt & Sửa Chi Tiết' : '📝 Sửa Kịch Bản & 2-AI Thảo Luận'}
         </button>
       </div>
     </div>

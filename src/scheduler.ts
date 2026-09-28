@@ -40,6 +40,9 @@ export interface PipelineResult {
   success: boolean;
   prompt?: string;
   local_path?: string;
+  video_url?: string;
+  voiced_path?: string | null;
+  voiced_url?: string | null;
   scene_images?: string[];
   s3_url?: string;
   s3_key?: string;
@@ -255,16 +258,21 @@ export async function loadProducts(): Promise<Product[]> {
     parsedList = JSON.parse(raw) as Product[];
   } catch (err: any) {
     console.warn(`⚠️ [loadProducts] Direct JSON parse failed (${err.message}). Attempting recovery...`);
-    const lastBracket = raw.lastIndexOf("]");
-    if (lastBracket !== -1) {
+    let recovered = false;
+    let searchPos = raw.length;
+    while (!recovered && searchPos > 0) {
+      const bracketIdx = raw.lastIndexOf("]", searchPos - 1);
+      if (bracketIdx === -1) break;
       try {
-        parsedList = JSON.parse(raw.slice(0, lastBracket + 1)) as Product[];
-        console.log(`✅ [loadProducts] Successfully recovered ${parsedList.length} products.`);
-      } catch (recoverErr: any) {
-        console.error(`❌ [loadProducts] Recovery failed: ${recoverErr.message}`);
-        return [];
+        parsedList = JSON.parse(raw.slice(0, bracketIdx + 1)) as Product[];
+        console.log(`✅ [loadProducts] Successfully recovered ${parsedList.length} products (at offset ${bracketIdx}).`);
+        recovered = true;
+      } catch {
+        searchPos = bracketIdx;
       }
-    } else {
+    }
+    if (!recovered) {
+      console.error(`❌ [loadProducts] Recovery failed: Could not find valid JSON array.`);
       return [];
     }
   }
@@ -567,6 +575,65 @@ export async function runPipelineForProduct(
     }
 
     const dialogues = [1, 2, 3, 4, 5, 6].map((i) => (promptsObj && promptsObj[`dialogue${i}`]) ? promptsObj[`dialogue${i}`] : "");
+
+    // ── Auto-generate dialogues if custom prompts lack them ──────────────
+    const hasDialogues = dialogues.some(d => d && d.trim().length > 0);
+    if (!hasDialogues && promptsObj) {
+      console.log(`⚠️  [Pipeline] Custom prompts detected WITHOUT dialogues (dialogue1-6 missing). Auto-generating Vietnamese dialogues...`);
+      try {
+        const { callAgy, isAgyEnabled } = await import("./agyClient.js");
+        if (!isAgyEnabled()) throw new Error("AGY is disabled");
+
+        const promptSummary = [1, 2, 3, 4, 5, 6]
+          .map(i => `Scene ${i}: ${promptsObj[`prompt${i}`] || ""}`)
+          .filter(s => !s.endsWith(": "))
+          .join("\n");
+
+        const systemPrompt = `You are a Vietnamese dialogue writer for animated children's videos featuring two cute chibi 3D bears: BuBu (brown bear, playful, energetic) and DuDu (white bear, gentle, sweet).
+Write natural, heartwarming Vietnamese dialogue for each scene.
+RULES:
+- Each scene gets 2-4 lines of dialogue between BuBu and DuDu
+- Format each line as: CharacterName: "Spoken text"
+- Vietnamese must be colloquial, cute, natural — how real Vietnamese friends talk
+- NOT advertising copy, NOT formal
+- Include cute reactions like "Waaaa!", "Hihi", "Ê ê!"`;
+
+        const userPrompt = `SCENES:\n${promptSummary}\n\nPRODUCT/TOPIC: ${product.name}\n\nReply in STRICT JSON:\n{"dialogue1":"BuBu: \\"...\\"\\nDuDu: \\"...\\"","dialogue2":"...","dialogue3":"...","dialogue4":"...","dialogue5":"...","dialogue6":"..."}`;
+
+        const raw = await callAgy(systemPrompt, userPrompt, true);
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          for (let i = 1; i <= 6; i++) {
+            const d = parsed[`dialogue${i}`];
+            if (d && typeof d === "string" && d.trim()) {
+              dialogues[i - 1] = d.trim();
+              promptsObj[`dialogue${i}`] = d.trim();
+            }
+          }
+          console.log(`✅ [Pipeline] Auto-generated Vietnamese dialogues for ${dialogues.filter(d => d).length} scenes`);
+
+          // Persist the newly generated dialogues back to products.json
+          if (product.id && existsSync(PRODUCTS_FILE)) {
+            try {
+              const raw = await fs.readFile(PRODUCTS_FILE, "utf-8");
+              const allProducts = JSON.parse(raw);
+              const pIdx = allProducts.findIndex((p: any) => p.id === product.id);
+              if (pIdx !== -1) {
+                allProducts[pIdx].promptsObj = promptsObj;
+                product.promptsObj = promptsObj;
+                await fs.writeFile(PRODUCTS_FILE, JSON.stringify(allProducts, null, 2), "utf-8");
+                console.log(`💾 [Pipeline] Saved auto-generated dialogues into products.json for product: ${product.id}`);
+              }
+            } catch (saveErr: any) {
+              console.warn(`⚠️ [Pipeline] Could not persist auto-generated dialogues to products.json: ${saveErr.message}`);
+            }
+          }
+        }
+      } catch (dialogueErr: any) {
+        console.warn(`⚠️  [Pipeline] Dialogue auto-generation failed: ${dialogueErr.message}. Videos will have no dialogue.`);
+      }
+    }
 
     if (activeSceneImages.length === 0 && product.image_url && autoGenerateSceneImages) {
       console.log(`\n🎨 [Pipeline 2/4] Generating 6 detailed 3D Pixar scene images via Gemini before video creation...`);
@@ -994,13 +1061,22 @@ export async function mergeJobVideoSegments(
   const allFiles = await fs.readdir(downloadsDir);
   const partMap: Map<number, { filename: string; fullPath: string; mtimeMs: number }> = new Map();
 
+  const voicedPartMap: Map<number, { filename: string; fullPath: string; mtimeMs: number }> = new Map();
+
   for (const file of allFiles) {
-    if (!file.endsWith(".mp4") || file.includes("_merged") || file.includes("_voiced") || file.includes(".orig") || file.includes(".bak")) continue;
+    if (!file.endsWith(".mp4") || file.includes("_merged") || file.includes(".orig") || file.includes(".bak")) continue;
     const match = file.match(/_part(\d+)_/i);
-    if (match) {
-      const partNum = parseInt(match[1], 10);
-      const fullPath = path.join(downloadsDir, file);
-      const stat = statSync(fullPath);
+    if (!match) continue;
+    const partNum = parseInt(match[1], 10);
+    const fullPath = path.join(downloadsDir, file);
+    const stat = statSync(fullPath);
+
+    if (file.includes("_voiced")) {
+      const existing = voicedPartMap.get(partNum);
+      if (!existing || stat.mtimeMs > existing.mtimeMs) {
+        voicedPartMap.set(partNum, { filename: file, fullPath, mtimeMs: stat.mtimeMs });
+      }
+    } else {
       const existing = partMap.get(partNum);
       if (!existing || stat.mtimeMs > existing.mtimeMs) {
         partMap.set(partNum, { filename: file, fullPath, mtimeMs: stat.mtimeMs });
@@ -1014,14 +1090,30 @@ export async function mergeJobVideoSegments(
   }
 
   const segmentFiles = sortedParts.map(p => partMap.get(p)!.fullPath);
-  console.log(`\n🎬 [MergeJob] Found ${segmentFiles.length} part video(s) for ${productSlug}:`, sortedParts.map(p => `Part ${p}`));
+  console.log(`\n🎬 [MergeJob] Found ${segmentFiles.length} original Gemini part video(s) for ${productSlug}:`, sortedParts.map(p => `Part ${p}`));
 
-  // 2. Merged Video Path
+  // 2. Merged Video Path: BẢN GỐC (Giữ trọn vẹn 100% giọng & âm thanh do Gemini tạo)
   const mergedFilename = `${productSlug}_merged.mp4`;
   const mergedVideoPath = path.join(downloadsDir, mergedFilename);
-  console.log(`🎬 [MergeJob] Concatenating ${segmentFiles.length} segments with FFmpeg into: ${mergedVideoPath}`);
+  console.log(`🎬 [MergeJob] Concatenating ${segmentFiles.length} original Gemini segments with FFmpeg into: ${mergedVideoPath}`);
   await mergeVideoSegments(segmentFiles, mergedVideoPath);
-  console.log(`✅ [MergeJob] Created Merged Video: ${mergedVideoPath}`);
+  console.log(`✅ [MergeJob] Created Merged Video (Bản gốc Gemini): ${mergedVideoPath}`);
+
+  // 2.5. Merged Voiced Path: BẢN LỒNG TIẾNG ĐI KÈM
+  const voicedFilename = `${productSlug}_voiced.mp4`;
+  const potentialVoicedPath = path.join(downloadsDir, voicedFilename);
+  let voicedVideoPath: string | null = null;
+
+  if (voicedPartMap.size > 0) {
+    const voicedSegmentFiles = sortedParts.map(p => voicedPartMap.get(p)?.fullPath || partMap.get(p)!.fullPath);
+    console.log(`🎙️ [MergeJob] Ghép ${voicedSegmentFiles.length} phân cảnh lồng tiếng đi kèm vào: ${potentialVoicedPath}`);
+    await mergeVideoSegments(voicedSegmentFiles, potentialVoicedPath);
+    voicedVideoPath = potentialVoicedPath;
+    console.log(`✅ [MergeJob] Đã tạo Bản Lồng Tiếng Đi Kèm: ${potentialVoicedPath}`);
+  } else if (existsSync(potentialVoicedPath)) {
+    voicedVideoPath = potentialVoicedPath;
+    console.log(`ℹ️ [MergeJob] Đã tìm thấy Bản Lồng Tiếng Đi Kèm có sẵn: ${potentialVoicedPath}`);
+  }
 
   // 3. Extract thumbnail
   const mergedThumbFilename = `${productSlug}_thumb.jpg`;
@@ -1034,6 +1126,7 @@ export async function mergeJobVideoSegments(
   let s3Url = "";
   let s3Key = "";
   let s3ThumbUrl = "";
+  let voicedS3Url = "";
   let metadataId = `vid_${Date.now()}`;
   let tiktokVideoId = "";
   let tiktokStatus = "skipped";
@@ -1074,6 +1167,31 @@ export async function mergeJobVideoSegments(
       s3Url = `https://${bucket}.s3.${process.env.AWS_REGION || "ap-southeast-1"}.amazonaws.com/${s3Key}`;
       console.log(`✅ [MergeJob] Uploaded to S3: ${s3Url}`);
 
+      // Upload voiced video to S3 if present
+      if (voicedVideoPath && existsSync(voicedVideoPath)) {
+        try {
+          const voicedKey = `${prefix}/${path.basename(voicedVideoPath)}`;
+          const voicedStream = createReadStream(voicedVideoPath);
+          const voicedSize = statSync(voicedVideoPath).size;
+          await s3.send(new PutObjectCommand({
+            Bucket: bucket,
+            Key: voicedKey,
+            Body: voicedStream,
+            ContentType: "video/mp4",
+            ContentLength: voicedSize,
+            Metadata: {
+              product_id: prodId,
+              product_name: encodeURIComponent(prodName),
+              type: "voiced",
+            },
+          }));
+          voicedS3Url = `https://${bucket}.s3.${process.env.AWS_REGION || "ap-southeast-1"}.amazonaws.com/${voicedKey}`;
+          console.log(`✅ [MergeJob] Uploaded Voiced Video to S3: ${voicedS3Url}`);
+        } catch (voicedErr: any) {
+          console.warn(`⚠️ [MergeJob] Voiced video S3 upload warning: ${voicedErr.message}`);
+        }
+      }
+
       if (thumbSuccess && existsSync(mergedThumbPath)) {
         const s3ThumbKey = `${prefix}/${mergedThumbFilename}`;
         const thumbStream = createReadStream(mergedThumbPath);
@@ -1100,6 +1218,9 @@ export async function mergeJobVideoSegments(
   const localStreamUrl = `/downloads/${activeJobFolder}/${mergedFilename}`;
   const finalVideoUrl = s3Url || localStreamUrl;
 
+  const localVoicedStreamUrl = voicedVideoPath ? `/downloads/${activeJobFolder}/${path.basename(voicedVideoPath)}` : null;
+  const finalVoicedUrl = voicedS3Url || localVoicedStreamUrl;
+
   // 6. Save metadata
   const metaFile = path.resolve(__dirname, "../data/metadata.json");
   const entry = {
@@ -1113,6 +1234,8 @@ export async function mergeJobVideoSegments(
     s3_key: s3Key,
     s3_bucket: process.env.S3_BUCKET_NAME || "",
     local_path: mergedVideoPath,
+    voiced_path: voicedVideoPath || undefined,
+    voiced_url: finalVoicedUrl || undefined,
     thumbnail_url: s3ThumbUrl || product?.image_url || `/downloads/${activeJobFolder}/${mergedThumbFilename}`,
     size_bytes: fileSize,
     tiktok_video_id: tiktokVideoId || undefined,
@@ -1141,7 +1264,10 @@ export async function mergeJobVideoSegments(
     product_id: prodId,
     product_name: prodName,
     success: true,
-    local_path: mergedVideoPath,
+    local_path: mergedVideoPath,      // Bản gốc giữ 100% âm thanh & giọng do Gemini tạo
+    video_url: finalVideoUrl,
+    voiced_path: voicedVideoPath,     // Bản lồng tiếng đi kèm
+    voiced_url: finalVoicedUrl,
     s3_url: s3Url,
     s3_key: s3Key,
     metadata_id: metadataId,

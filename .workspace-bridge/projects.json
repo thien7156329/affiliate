@@ -1,0 +1,98 @@
+[
+  {
+    "id": "all-projects",
+    "name": "all-projects",
+    "root": "/Users/letrongthien/Downloads/projects",
+    "createdAt": "2026-09-14T04:00:31.611Z"
+  },
+  {
+    "id": "affiliate-01d57c6a",
+    "name": "affiliate",
+    "root": "/Users/letrongthien/Downloads/projects/affiliate",
+    "createdAt": "2026-09-14T01:48:37.430Z"
+  },
+  {
+    "id": "agent-skills-main-bb51b3bf",
+    "name": "agent-skills-main",
+    "root": "/Users/letrongthien/Downloads/projects/agent-skills-main",
+    "createdAt": "2026-09-14T04:00:31.613Z"
+  },
+  {
+    "id": "arstate-03b9a5cf",
+    "name": "arstate",
+    "root": "/Users/letrongthien/Downloads/projects/arstate",
+    "createdAt": "2026-09-14T04:00:31.613Z"
+  },
+  {
+    "id": "auc-amweb-aucnetcars-frontend-dfb5aba5",
+    "name": "auc_amweb_aucnetcars_frontend",
+    "root": "/Users/letrongthien/Downloads/projects/auc_amweb_aucnetcars_frontend",
+    "createdAt": "2026-09-14T04:00:31.613Z"
+  },
+  {
+    "id": "bot-bot-25bdc800",
+    "name": "bot_bot",
+    "root": "/Users/letrongthien/Downloads/projects/bot_bot",
+    "createdAt": "2026-09-14T04:00:31.613Z"
+  },
+  {
+    "id": "demo-3d-reactjs-06ed5503",
+    "name": "demo-3d-reactjs",
+    "root": "/Users/letrongthien/Downloads/projects/demo-3d-reactjs",
+    "createdAt": "2026-09-14T04:00:31.613Z"
+  },
+  {
+    "id": "flutter-ci-8b10a4d4",
+    "name": "flutter_ci",
+    "root": "/Users/letrongthien/Downloads/projects/flutter_ci",
+    "createdAt": "2026-09-14T04:00:31.613Z"
+  },
+  {
+    "id": "github-f246a8eb",
+    "name": "github",
+    "root": "/Users/letrongthien/Downloads/projects/github",
+    "createdAt": "2026-09-14T04:00:31.613Z"
+  },
+  {
+    "id": "phongkhamnhantamsaigon-com-caa58f18",
+    "name": "phongkhamnhantamsaigon.com",
+    "root": "/Users/letrongthien/Downloads/projects/phongkhamnhantamsaigon.com",
+    "createdAt": "2026-09-14T04:00:31.613Z"
+  },
+  {
+    "id": "pvt-middle-app-d504ea1f",
+    "name": "pvt_middle-app",
+    "root": "/Users/letrongthien/Downloads/projects/pvt_middle-app",
+    "createdAt": "2026-09-14T04:00:31.613Z"
+  },
+  {
+    "id": "pvt-nissan-cae-c93227ad",
+    "name": "pvt_nissan-cae",
+    "root": "/Users/letrongthien/Downloads/projects/pvt_nissan-cae",
+    "createdAt": "2026-09-14T04:00:31.613Z"
+  },
+  {
+    "id": "pvt-pjmbo-system-231218a1",
+    "name": "pvt_pjmbo-system",
+    "root": "/Users/letrongthien/Downloads/projects/pvt_pjmbo-system",
+    "createdAt": "2026-09-14T04:00:31.613Z"
+  },
+  {
+    "id": "pvt-pnx-az-2597daf6",
+    "name": "pvt_pnx-az",
+    "root": "/Users/letrongthien/Downloads/projects/pvt_pnx-az",
+    "createdAt": "2026-09-14T04:00:31.613Z"
+  },
+  {
+    "id": "shinbalvero-32bae1ad",
+    "name": "shinbalvero",
+    "root": "/Users/letrongthien/Downloads/projects/shinbalvero",
+    "createdAt": "2026-09-14T04:00:31.613Z"
+  },
+  {
+    "id": "teams-bot-server-66a5efdd",
+    "name": "teams_bot_server",
+    "root": "/Users/letrongthien/Downloads/projects/teams_bot_server",
+    "createdAt": "2026-09-14T04:00:31.613Z"
+  }
+]

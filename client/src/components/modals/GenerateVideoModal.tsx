@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, memo } from 'react';
 import { Product, ProductCategory } from '../../types';
 import { StoryboardGrid } from '../storyboard/StoryboardGrid';
 import { PartEditorModal } from '../storyboard/PartEditorModal';
+import { DebateFeedView } from '../storyboard/DebateFeedView';
 import { Lightbox } from '../common/Lightbox';
 import { useToast } from '../../context/ToastContext';
 
@@ -27,6 +28,10 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
   const [imageUrl, setImageUrl] = useState('');
   const [customPromptText, setCustomPromptText] = useState('');
   const [promptsObj, setPromptsObj] = useState<Record<string, string>>({});
+  const promptsObjRef = useRef(promptsObj);
+  useEffect(() => {
+    promptsObjRef.current = promptsObj;
+  }, [promptsObj]);
   const [currentProductId, setCurrentProductId] = useState<string | null>(null);
   const [isSavingPromptMain, setIsSavingPromptMain] = useState(false);
 
@@ -70,16 +75,28 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
   const [isGeneratingAllImages, setIsGeneratingAllImages] = useState(false);
   const [generateImagesElapsedSec, setGenerateImagesElapsedSec] = useState(0);
   const [sceneImages, setSceneImages] = useState<string[]>(['', '', '', '', '', '']);
+  const sceneImagesRef = useRef(sceneImages);
+  useEffect(() => {
+    sceneImagesRef.current = sceneImages;
+  }, [sceneImages]);
   const [sceneUrls, setSceneUrls] = useState<string[]>(['', '', '', '', '', '']);
   const [drawingParts, setDrawingParts] = useState<boolean[]>([false, false, false, false, false, false]);
   const [renderingParts, setRenderingParts] = useState<boolean[]>([false, false, false, false, false, false]);
   const [pipelineStatusText, setPipelineStatusText] = useState('Sẵn sàng');
   const [isPipelineRunning, setIsPipelineRunning] = useState(false);
+  const [isDubbing, setIsDubbing] = useState(false);
   const isAbortRequested = useRef(false);
 
   // Upload S3 & TikTok toggles
   const [uploadS3, setUploadS3] = useState(true);
   const [publishTiktok, setPublishTiktok] = useState(false);
+
+  // Video Render Mode: 'browser' (Chrome Automation)
+  const [videoRenderMode, setVideoRenderMode] = useState<'browser'>('browser');
+
+  const handleSetVideoRenderMode = (_mode: 'browser') => {
+    setVideoRenderMode('browser');
+  };
 
   // Modals inside Generate
   const [editingPartNum, setEditingPartNum] = useState<number | null>(null);
@@ -94,18 +111,30 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
       const data = await res.json();
       if (data.success && Array.isArray(data.parts)) {
         const now = Date.now();
-        const imgs = data.parts.map((p: any) => {
+        const updatedImages = data.parts.map((p: any, idx: number) => {
           const raw = p.image?.url;
           if (!raw) return '';
-          return `${raw.split('?')[0]}?t=${now}`;
+          const clean = raw.split('?')[0];
+          const prevClean = (sceneImagesRef.current[idx] || '').split('?')[0];
+          if (clean === prevClean && sceneImagesRef.current[idx]) {
+            return sceneImagesRef.current[idx]; // Keep unchanged, avoid re-fetching & flicker
+          }
+          return `${clean}?t=${now}`;
         });
-        const vids = data.parts.map((p: any) => {
-          const raw = p.video?.url;
-          if (!raw) return '';
-          return `${raw.split('?')[0]}?t=${now}`;
+        sceneImagesRef.current = updatedImages;
+        setSceneImages(updatedImages);
+        setSceneUrls((prevVids) => {
+          return data.parts.map((p: any, idx: number) => {
+            const raw = p.video?.url;
+            if (!raw) return '';
+            const clean = raw.split('?')[0];
+            const prevClean = (prevVids[idx] || '').split('?')[0];
+            if (clean === prevClean && prevVids[idx]) {
+              return prevVids[idx]; // Keep unchanged
+            }
+            return `${clean}?t=${now}`;
+          });
         });
-        setSceneImages(imgs);
-        setSceneUrls(vids);
       }
     } catch (e) {
       console.warn('refreshPartsStatus error:', e);
@@ -319,7 +348,6 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
             setShowDebateBox(false);
           }
         } else {
-          // New product! Clear feedbacks & debate history
           setCurrentProductId(null);
           setConsensusPreFeedback('');
           setPartFeedback('');
@@ -450,14 +478,47 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
       setDebateElapsedSec((prev) => prev + 1);
     }, 1000);
 
+    // Dynamic next round calculation
+    const maxExistingRound = (debateMessagesRef.current || []).reduce((max: number, m: any) => {
+      let r = m.round;
+      if (!r) {
+        const match = m.title?.match(/Round\s*(\d+)/i) || m.content?.match(/Round\s*(\d+)/i);
+        r = match ? parseInt(match[1], 10) : 1;
+      }
+      return Math.max(max, Number(r) || 1);
+    }, currentDebateRound || 1);
+
+    const targetStartRound = continuePrev ? maxExistingRound + 1 : 1;
+
     if (!continuePrev) {
       setDebateMessages([]);
       setCurrentDebateRound(1);
       setCurrentActiveAi('ai1');
-      setDebateStatusText('🎭 AI 1 (AGY 3.8) & 🧐 AI 2 (GLM-5) đang khởi tạo phiên kiểm định Round 1...');
+      setDebateStatusText('🎭 AI 1 (Codex Sol Light) & 🧐 AI 2 (Gemini 3.8 Low) đang khởi tạo phiên kiểm định Round 1...');
     } else {
+      setCurrentDebateRound(targetStartRound);
       setCurrentActiveAi('ai1');
-      setDebateStatusText('📢 Tiếp thu góp ý của Đạo diễn và tiếp tục tranh biện...');
+      setDebateStatusText(`📢 Tiếp thu góp ý của Đạo diễn và bắt đầu tranh biện Round ${targetStartRound}...`);
+    }
+
+    // Capture previous proposal so AI 1 can revise from it instead of starting from scratch
+    const existingProposalDraft = customPromptText || (promptsObj && Object.keys(promptsObj).length > 0 ? JSON.stringify(promptsObj, null, 2) : undefined);
+
+    const accumulatedMessages: any[] = continuePrev ? [...debateMessagesRef.current] : [];
+
+    // Append user feedback directly into the debate stream message list
+    if (continuePrev && customFb) {
+      const userMsg: any = {
+        agent: "Đạo Diễn (Bạn / User)",
+        model: "Human Director",
+        role: "Chỉ Đạo Kịch Bản Trực Tiếp",
+        title: `📢 Góp Ý Trực Tiếp Từ Đạo Diễn (Round ${targetStartRound})`,
+        content: customFb,
+        timestamp: new Date().toLocaleTimeString('vi-VN'),
+        round: targetStartRound,
+      };
+      accumulatedMessages.push(userMsg);
+      setDebateMessages((prev) => [...prev, userMsg]);
     }
 
     try {
@@ -470,7 +531,8 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
           product_image_url: imageUrl || undefined,
           scene_count: 6,
           user_feedback: customFb || consensusPreFeedback.trim() || undefined,
-          start_round: continuePrev ? 2 : 1,
+          previous_proposal: continuePrev ? existingProposalDraft : undefined,
+          start_round: targetStartRound,
         }),
       });
 
@@ -480,7 +542,6 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
       const reader = res.body.getReader();
       const decoder = new TextDecoder('utf-8');
       let buffer = '';
-      const accumulatedMessages: any[] = continuePrev ? [...debateMessagesRef.current] : [];
 
       while (true) {
         const { done, value } = await reader.read();
@@ -506,33 +567,39 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
                 setDebateStatusText(`🎭 AI 1 (AGY 3.8) đang sáng tác và tối ưu kịch bản 3D (Round ${evt.round})...`);
               } else if (evt.type === 'ai1_done') {
                 if (evt.message) {
-                  accumulatedMessages.push(evt.message);
-                  setDebateMessages((prev) => [...prev, evt.message]);
+                  const effectiveRound = evt.round || evt.message.round || targetStartRound;
+                  const msgWithRound = { ...evt.message, round: effectiveRound };
+                  accumulatedMessages.push(msgWithRound);
+                  setDebateMessages((prev) => [...prev, msgWithRound]);
                 }
                 setCurrentActiveAi('ai2');
               } else if (evt.type === 'ai2_start') {
-                setCurrentDebateRound(evt.round || 1);
+                setCurrentDebateRound(evt.round || targetStartRound);
                 setCurrentActiveAi('ai2');
-                setDebateStatusText(`🧐 AI 2 (GLM-5) đang kiểm định tiêu chí nhân vật & bố cục (Round ${evt.round})...`);
+                setDebateStatusText(`🧐 AI 2 (Gemini 3.8 Low) đang kiểm định tiêu chí nhân vật & bố cục (Round ${evt.round || targetStartRound})...`);
               } else if (evt.type === 'ai2_done') {
                 if (evt.message) {
-                  accumulatedMessages.push(evt.message);
-                  setDebateMessages((prev) => [...prev, evt.message]);
+                  const effectiveRound = evt.round || evt.message.round || targetStartRound;
+                  const msgWithRound = { ...evt.message, round: effectiveRound };
+                  accumulatedMessages.push(msgWithRound);
+                  setDebateMessages((prev) => [...prev, msgWithRound]);
                 }
                 if (evt.reached) {
-                  setDebateStatusText(`🎉 ĐỒNG THUẬN 100% HOÀN HẢO ĐẠT ĐƯỢC TẠI ROUND ${evt.round}!`);
+                  setDebateStatusText(`🎉 ĐỒNG THUẬN 100% HOÀN HẢO ĐẠT ĐƯỢC TẠI ROUND ${evt.round || targetStartRound}!`);
                   setCurrentActiveAi(null);
                 } else {
-                  setDebateStatusText(`⚠️ Round ${evt.round} đạt ${evt.percentage}%. Chuyển sang Round ${evt.round + 1}...`);
-                  setCurrentDebateRound((evt.round || 1) + 1);
+                  setDebateStatusText(`⚠️ Round ${evt.round || targetStartRound} đạt ${evt.percentage}%. Chuyển sang Round ${(evt.round || targetStartRound) + 1}...`);
+                  setCurrentDebateRound((evt.round || targetStartRound) + 1);
                   setCurrentActiveAi('ai1');
                 }
               } else if (evt.type === 'complete') {
                 if (evt.result?.promptsObj) {
+                  promptsObjRef.current = evt.result.promptsObj;
                   setPromptsObj(evt.result.promptsObj);
                   setCustomPromptText(JSON.stringify(evt.result.promptsObj, null, 2));
-                  setDebateStatusText(`🎉 ĐỒNG THUẬN 100% (${evt.result.rounds || 1} rounds): Nhân vật & bố cục chuẩn 100%`);
-                  showToast(`🎉 2 AI đã đạt 100% đồng thuận sau ${evt.result.rounds || 1} round!`);
+                  const displayRounds = evt.result.rounds || targetStartRound;
+                  setDebateStatusText(`🎉 ĐỒNG THUẬN 100% (${displayRounds} rounds): Nhân vật & bố cục chuẩn 100%`);
+                  showToast(`🎉 2 AI đã tiếp thu góp ý và đạt 100% đồng thuận tại Round ${displayRounds}!`);
                   persistPrompts(evt.result.promptsObj).catch(console.error);
                 }
                 persistProductFeedback({ debate_messages: accumulatedMessages });
@@ -594,9 +661,11 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
         const partNum = idx + 1;
         setPipelineStatusText(`🎨 Gemini đang tạo ảnh Part ${partNum}/6...`);
         showToast(`🎨 Đang tạo ảnh Part ${partNum}/6...`);
-        // Part 1 uses product original image (-1), Part 2-6 use Part 1 (0) as character anchor
         const customRef = idx === 0 ? -1 : 0;
-        await handleRedrawSingleImage(partNum, customRef);
+        const success = await handleRedrawSingleImage(partNum, customRef);
+        if (!success) {
+          throw new Error(`Không thể tạo ảnh Part ${partNum}. Đã dừng để tránh render video bằng ảnh cũ/fallback.`);
+        }
       }
 
       if (!isAbortRequested.current) {
@@ -614,15 +683,15 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
   };
 
   // Redraw single scene image with instant cache-busting URL apply
-  const handleRedrawSingleImage = async (partNum: number, refSource: number, notes?: string, promptOverride?: string, dialogueOverride?: string) => {
+  const handleRedrawSingleImage = async (partNum: number, refSource: number, notes?: string, promptOverride?: string, dialogueOverride?: string): Promise<boolean> => {
     if (!productName.trim()) {
       showToast('⚠️ Vui lòng nhập tên sản phẩm trước khi vẽ ảnh!');
-      return;
+      return false;
     }
     const effectiveImageUrl = imageUrl || sceneImages[0] || (sceneImages.find(Boolean) ?? '');
     if (!effectiveImageUrl && refSource < 0) {
       showToast('⚠️ Cần có ảnh gốc sản phẩm hoặc ảnh Part 1 để AI đối chiếu nhân vật!');
-      return;
+      return false;
     }
     const sIdx = partNum - 1;
     setDrawingParts((prev) => {
@@ -630,19 +699,22 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
       copy[sIdx] = true;
       return copy;
     });
-    setPipelineStatusText(`🎨 Gemini đang vẽ ảnh Part ${partNum}...`);
+
+    setPipelineStatusText(`🎨 Gemini Web (Trình duyệt) đang vẽ ảnh Part ${partNum}...`);
 
     try {
-      const prompt = promptOverride ?? (promptsObj[`prompt${partNum}`] || (partNum === 1 ? promptsObj.prompt : '') || `3D Pixar scene ${partNum}`);
-      const dialogue = dialogueOverride ?? (promptsObj[`dialogue${partNum}`] || '');
+        const curPrompts = promptsObjRef.current;
+        const prompt = promptOverride ?? (curPrompts[`prompt${partNum}`] || (partNum === 1 ? curPrompts.prompt : '') || `3D Pixar scene ${partNum}`);
+        const dialogue = dialogueOverride ?? (curPrompts[`dialogue${partNum}`] || '');
 
-      const payload: any = {
-        product_name: productName.trim(),
-        image_url: effectiveImageUrl || 'fallback',
-        scene_index: sIdx,
-        prompt,
-        dialogue,
-      };
+        const payload: any = {
+          product_name: productName.trim(),
+          image_url: effectiveImageUrl || 'fallback',
+          scene_index: sIdx,
+          prompt,
+          dialogue,
+          render_mode: 'browser',
+        };
 
       if (refSource !== undefined && refSource !== null) {
         payload.reference_part_index = refSource;
@@ -657,23 +729,30 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
         body: JSON.stringify(payload),
       });
 
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+      }
+
       const data = await res.json();
       if (data.success && data.scene_image_url) {
         showToast(`🎉 Đã vẽ xong ảnh Part ${partNum}!`);
-        // Immediately apply fresh image with cache-busting timestamp to guarantee browser instant reload
         const cleanUrl = data.scene_image_url.split('?')[0];
         const freshUrl = `${cleanUrl}?t=${Date.now()}`;
+        sceneImagesRef.current[sIdx] = freshUrl;
         setSceneImages((prev) => {
           const copy = [...prev];
           copy[sIdx] = freshUrl;
           return copy;
         });
         await refreshPartsStatus();
+        return true;
       } else {
         showToast(`❌ Lỗi vẽ Part ${partNum}: ${data.error || 'Server error'}`);
+        return false;
       }
     } catch (err: any) {
       showToast(`❌ Lỗi: ${err.message}`);
+      return false;
     } finally {
       setDrawingParts((prev) => {
         const copy = [...prev];
@@ -686,19 +765,40 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
 
   // Render single video
   const handleRenderSingleVideo = async (partNum: number, promptOverride?: string, dialogueOverride?: string) => {
-    if (!productName.trim()) return;
+    if (!productName.trim()) return false;
     const sIdx = partNum - 1;
     setRenderingParts((prev) => {
       const copy = [...prev];
       copy[sIdx] = true;
       return copy;
     });
-    setPipelineStatusText(`🎬 Veo đang tạo video Part ${partNum}...`);
+    setPipelineStatusText(`🌐 Trình duyệt Chrome đang tạo video Part ${partNum}...`);
 
     try {
-      const prompt = promptOverride ?? (promptsObj[`prompt${partNum}`] || (partNum === 1 ? promptsObj.prompt : '') || '');
-      const dialogue = dialogueOverride ?? (promptsObj[`dialogue${partNum}`] || '');
-      const partImg = sceneImages[sIdx] || imageUrl;
+      const curPrompts = promptsObjRef.current;
+      const curImages = sceneImagesRef.current;
+      const prompt = promptOverride ?? (curPrompts[`prompt${partNum}`] || (partNum === 1 ? curPrompts.prompt : '') || '');
+      const dialogue = dialogueOverride ?? (curPrompts[`dialogue${partNum}`] || '');
+
+      const slug = productName
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9\s-_]/g, '')
+        .replace(/[\s_]+/g, '-') || 'scene';
+      const fallbackSceneUrl = `/downloads/${slug}/scenes/scene_${partNum}.png`;
+
+      const partImg = curImages[sIdx] || fallbackSceneUrl || imageUrl;
+
+      if (!prompt.trim()) {
+        showToast(`❌ Part ${partNum} chưa có prompt. Không gửi request Veo.`);
+        return false;
+      }
+      if (!partImg) {
+        showToast(`❌ Part ${partNum} chưa có ảnh nguồn. Không gửi request Veo.`);
+        return false;
+      }
 
       const res = await fetch('/api/pipeline/generate-single-scene-video', {
         method: 'POST',
@@ -709,16 +809,21 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
           prompt,
           dialogue,
           image_url: partImg,
+          render_mode: videoRenderMode,
         }),
       });
 
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+      }
+
       const data = await res.json();
-      if (data.success && data.video_url) {
+      if (data.success && data.video_url && data.video_path) {
         showToast(`🎉 Render video Part ${partNum} thành công!`);
         await refreshPartsStatus();
         return true;
       } else {
-        showToast(`❌ Lỗi render Part ${partNum}: ${data.error || 'Server error'}`);
+        showToast(`❌ Lỗi render Part ${partNum}: ${data.error || 'Server chưa xác nhận video đã tải về local'}`);
         return false;
       }
     } catch (err: any) {
@@ -757,9 +862,7 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
         feedback,
         image_url: imageUrl || undefined,
       };
-      if (attachedImg) {
-        payload.feedback_image_url = attachedImg;
-      }
+      if (attachedImg) payload.feedback_image_url = attachedImg;
 
       const res = await fetch('/api/prompts/revise-scene-stream', {
         method: 'POST',
@@ -799,7 +902,7 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
               } else if (evt.type === 'ai1_done') {
                 setRevisingStage('ai2');
                 if (typeof evt.elapsedSec === 'number') setRevisingElapsedSec(evt.elapsedSec);
-                setRevisingStatusText('🎭 AI 1 (AGY 3.8) đã xong bản thảo. Chuyển sang 🧐 AI 2 (GLM-5) kiểm định...');
+                setRevisingStatusText('🎭 AI 1 (Codex Sol Light) đã xong bản thảo. Chuyển sang 🧐 AI 2 (Gemini 3.8 Low) kiểm định...');
               } else if (evt.type === 'ai2_start') {
                 setRevisingStage('ai2');
                 if (typeof evt.elapsedSec === 'number') setRevisingElapsedSec(evt.elapsedSec);
@@ -807,13 +910,16 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
               } else if (evt.type === 'complete') {
                 setRevisingStage('done');
                 if (typeof evt.elapsedSec === 'number') setRevisingElapsedSec(evt.elapsedSec);
-                if (evt.prompts_obj) {
-                  setPromptsObj(evt.prompts_obj);
-                  setCustomPromptText(JSON.stringify(evt.prompts_obj, null, 2));
-                  showToast(`🎉 ${evt.revision_note || '2 AI đã thống nhất và sửa xong kịch bản!'}`);
+                const pObj = evt.prompts_obj || evt.result?.promptsObj;
+                const revNote = evt.revision_note || evt.result?.revisionNote;
+                if (pObj) {
+                  promptsObjRef.current = pObj;
+                  setPromptsObj(pObj);
+                  setCustomPromptText(JSON.stringify(pObj, null, 2));
+                  showToast(`🎉 ${revNote || '2 AI đã thống nhất và sửa xong kịch bản!'}`);
                   setPipelineStatusText(`Đã sửa xong kịch bản Part ${selectedIndices.map((i) => i + 1).join(', ')}!`);
-                  setRevisingStatusText(`🎉 Đã đồng thuận kịch bản (${evt.elapsedSec}s): ${evt.revision_note || 'Hoàn tất cập nhật kịch bản'}`);
-                  persistPrompts(evt.prompts_obj).catch(console.error);
+                  setRevisingStatusText(`🎉 Đã đồng thuận kịch bản (${evt.elapsedSec || 0}s): ${revNote || 'Hoàn tất cập nhật kịch bản'}`);
+                  persistPrompts(pObj).catch(console.error);
                 }
               } else if (evt.type === 'error') {
                 throw new Error(evt.error || 'Lỗi thảo luận 2 AI');
@@ -846,11 +952,17 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
           break;
         }
         const customRef = refSource === -99 ? (idx === 0 ? -1 : 0) : refSource;
-        await handleRedrawSingleImage(idx + 1, customRef, feedback);
+        const success = await handleRedrawSingleImage(idx + 1, customRef, feedback);
+        if (!success) {
+          throw new Error(`Tạo ảnh Part ${idx + 1} thất bại. Đã dừng batch.`);
+        }
       }
       if (!isAbortRequested.current) {
         showToast(`🎉 Đã vẽ xong toàn bộ ảnh cho các Part: ${selectedIndices.map((i) => i + 1).join(', ')}!`);
       }
+    } catch (err: any) {
+      showToast(`❌ Lỗi vẽ ảnh hàng loạt: ${err.message}`);
+      setPipelineStatusText(`❌ Lỗi: ${err.message}`);
     } finally {
       setIsPipelineRunning(false);
     }
@@ -862,19 +974,22 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
     setIsPipelineRunning(true);
     setPipelineStatusText('🎬 Đang render video hàng loạt...');
 
+    let completedAll = true;
     try {
       for (const idx of selectedIndices) {
         if (isAbortRequested.current) {
+          completedAll = false;
           showToast('⛔ Đã dừng render video hàng loạt.');
           break;
         }
         const success = await handleRenderSingleVideo(idx + 1);
         if (!success) {
+          completedAll = false;
           showToast(`⛔ Đã dừng quy trình vì Part ${idx + 1} chưa tạo xong video! Vui lòng kiểm tra lại.`);
           break;
         }
       }
-      if (!isAbortRequested.current) {
+      if (completedAll && !isAbortRequested.current) {
         showToast(`🎉 Đã render xong video cho các Part: ${selectedIndices.map((i) => i + 1).join(', ')}!`);
       }
     } finally {
@@ -883,10 +998,10 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
   };
 
   // Merge job videos
-  const handleMergeVideos = async () => {
+  const handleMergeVideos = async (): Promise<boolean> => {
     if (!productName.trim()) {
       showToast('⚠️ Vui lòng nhập tên sản phẩm!');
-      return;
+      return false;
     }
     setPipelineStatusText('🎬 Đang ghép 6 phân cảnh bằng FFmpeg...');
     showToast('🎬 Đang quét các Part video và ghép thành video hoàn chỉnh...');
@@ -902,16 +1017,66 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
           publish_tiktok: publishTiktok,
         }),
       });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+      }
       const data = await res.json();
       if (data.success) {
         showToast('🎉 Đã ghép video hoàn chỉnh thành công!', 6000);
         setPipelineStatusText('✅ Video hoàn chỉnh sẵn sàng!');
         onSuccess();
+        return true;
       } else {
         showToast('❌ Lỗi ghép video: ' + (data.error || 'Server error'));
+        return false;
       }
     } catch (err: any) {
       showToast('❌ Lỗi ghép: ' + err.message);
+      return false;
+    }
+  };
+
+  // Lồng tiếng VieNeu tự động (DuDu_NamChinh & Mai Bé Phương)
+  const handleDubVideo = async () => {
+    if (!productName.trim()) {
+      showToast('⚠️ Vui lòng nhập tên sản phẩm!');
+      return false;
+    }
+    setIsDubbing(true);
+    setPipelineStatusText('🎙️ Đang lồng tiếng video: DuDu (Nam chính) & Mai Bé Phương (BuBu)...');
+    showToast('🎙️ Bắt đầu lồng tiếng: DuDu (Nam chính) & Mai Bé Phương (BuBu)...', 4000);
+
+    try {
+      const res = await fetch('/api/pipeline/dub-video', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          product_id: currentProductId || initialProduct?.id,
+          product_name: productName.trim(),
+          prompts_obj: promptsObj,
+          dudu_voice: 'DuDu_NamChinh',
+          bubu_voice: 'Mai Bé Phương',
+          upload_s3: uploadS3,
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+      }
+      const data = await res.json();
+      if (data.success) {
+        showToast(`🎉 Đã lồng tiếng và sinh video mới thành công: ${data.voicedFilename}!`, 7000);
+        setPipelineStatusText(`✅ Video lồng tiếng hoàn tất: ${data.voicedFilename}`);
+        onSuccess();
+        return true;
+      } else {
+        showToast('❌ Lỗi lồng tiếng: ' + (data.error || 'Server error'));
+        return false;
+      }
+    } catch (err: any) {
+      showToast('❌ Lỗi lồng tiếng: ' + err.message);
+      return false;
+    } finally {
+      setIsDubbing(false);
     }
   };
 
@@ -923,8 +1088,8 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
     showToast('🚀 BẮT ĐẦU RUN ALL FLOW: Sinh 6 ảnh, 6 video Veo và ghép hoàn chỉnh...');
 
     try {
-      // Step 1: Kịch bản
-      const hasValidPrompts = Boolean(promptsObj.prompt1 && (promptsObj.prompt2 || promptsObj.prompt3));
+      const curPrompts = promptsObjRef.current;
+      const hasValidPrompts = Boolean(curPrompts.prompt1 && (curPrompts.prompt2 || curPrompts.prompt3));
       if (feedback.trim()) {
         showToast('Step 1/4: 🤖 AI đang cập nhật kịch bản theo yêu cầu...');
         await handleBatchRevisePrompts([0, 1, 2, 3, 4, 5], feedback.trim());
@@ -937,18 +1102,19 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
 
       if (isAbortRequested.current) throw new Error('Đã dừng quy trình theo yêu cầu.');
 
-      // Step 2: Vẽ 6 ảnh
       for (let idx = 0; idx < 6; idx++) {
         if (isAbortRequested.current) throw new Error('Đã dừng quy trình.');
         const partNum = idx + 1;
         const customRef = refSource === -99 ? (idx === 0 ? -1 : 0) : refSource;
         showToast(`Step 2/4: 🎨 Đang vẽ ảnh Part ${partNum}/6...`);
-        await handleRedrawSingleImage(partNum, customRef, feedback);
+        const imageSuccess = await handleRedrawSingleImage(partNum, customRef, feedback);
+        if (!imageSuccess) {
+          throw new Error(`Ảnh Part ${partNum} tạo thất bại. Không render video để tránh dùng ảnh stale/fallback.`);
+        }
       }
 
       if (isAbortRequested.current) throw new Error('Đã dừng quy trình.');
 
-      // Step 3: Render 6 video tuần tự (bắt buộc Video Part trước tải về thành công mới tạo Part sau)
       for (let idx = 0; idx < 6; idx++) {
         if (isAbortRequested.current) throw new Error('Đã dừng quy trình.');
         const partNum = idx + 1;
@@ -961,9 +1127,11 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
 
       if (isAbortRequested.current) throw new Error('Đã dừng quy trình.');
 
-      // Step 4: Ghép video
       showToast('Step 4/4: 🎬 Đang ghép toàn bộ video hoàn chỉnh...');
-      await handleMergeVideos();
+      const mergeSuccess = await handleMergeVideos();
+      if (!mergeSuccess) {
+        throw new Error('Ghép video thất bại. Full Flow chưa hoàn tất.');
+      }
 
       showToast('🎉 CHÚC MỪNG! ĐÃ HOÀN TẤT FULL FLOW VÀ TẠO VIDEO THÀNH CÔNG!', 6000);
       setPipelineStatusText('✅ Đã hoàn tất Full Flow!');
@@ -1037,55 +1205,21 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
           </div>
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
             {chromeReady && (
-              <button
-                type="button"
-                onClick={handleToggleChrome}
-                style={{
-                  padding: '6px 12px',
-                  borderRadius: '7px',
-                  border: '1px solid var(--border)',
-                  background: 'var(--bg2)',
-                  color: 'var(--text)',
-                  fontSize: '12px',
-                  cursor: 'pointer',
-                }}
-              >
+              <button type="button" onClick={handleToggleChrome} style={{ padding: '6px 12px', borderRadius: '7px', border: '1px solid var(--border)', background: 'var(--bg2)', color: 'var(--text)', fontSize: '12px', cursor: 'pointer' }}>
                 {chromeVisible ? '🙈 Ẩn Chrome' : '👁️ Hiện Chrome'}
               </button>
             )}
-            <button
-              type="button"
-              onClick={handleStartChrome}
-              style={{
-                padding: '6px 14px',
-                borderRadius: '7px',
-                border: 'none',
-                background: 'var(--grad)',
-                color: '#fff',
-                fontSize: '12px',
-                fontWeight: 600,
-                cursor: 'pointer',
-              }}
-            >
+            <button type="button" onClick={handleStartChrome} style={{ padding: '6px 14px', borderRadius: '7px', border: 'none', background: 'var(--grad)', color: '#fff', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}>
               🚀 Start Chrome
             </button>
           </div>
         </div>
 
-        {/* Product Name */}
         <div className="form-group">
           <label>Product Name *</label>
-          <input
-            id="inputProduct"
-            type="text"
-            placeholder="e.g. AKKO 3068B keyboard"
-            value={productName}
-            onChange={(e) => setProductName(e.target.value)}
-            onBlur={handleProductNameBlur}
-          />
+          <input id="inputProduct" type="text" placeholder="e.g. AKKO 3068B keyboard" value={productName} onChange={(e) => setProductName(e.target.value)} onBlur={handleProductNameBlur} />
         </div>
 
-        {/* Category */}
         <div className="form-group">
           <label>Category</label>
           <select id="inputCategory" value={category} onChange={(e) => setCategory(e.target.value as ProductCategory)}>
@@ -1101,513 +1235,79 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
           </select>
         </div>
 
-        {/* Custom Prompt / Kịch bản */}
         <div className="form-group">
-          <label>
-            Custom Prompt / Kịch bản (JSON hoặc Text) <span style={{ fontWeight: 400, color: 'var(--muted)' }}>(Tùy chọn)</span>
-          </label>
-          <textarea
-            id="inputCustomPrompt"
-            rows={4}
-            value={customPromptText}
-            onChange={(e) => handleCustomPromptChange(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '10px 14px',
-              background: 'var(--bg3)',
-              border: '1px solid var(--border)',
-              borderRadius: '10px',
-              color: 'var(--text)',
-              fontSize: '13px',
-              fontFamily: 'inherit',
-              outline: 'none',
-              resize: 'vertical',
-              boxSizing: 'border-box',
-            }}
-            placeholder="Dán kịch bản JSON (prompt1..6) hoặc prompt tại đây... Nếu để trống AI sẽ tự sinh."
-          />
+          <label>Custom Prompt / Kịch bản (JSON hoặc Text) <span style={{ fontWeight: 400, color: 'var(--muted)' }}>(Tùy chọn)</span></label>
+          <textarea id="inputCustomPrompt" rows={4} value={customPromptText} onChange={(e) => handleCustomPromptChange(e.target.value)} style={{ width: '100%', padding: '10px 14px', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: '10px', color: 'var(--text)', fontSize: '13px', fontFamily: 'inherit', outline: 'none', resize: 'vertical', boxSizing: 'border-box' }} placeholder="Dán kịch bản JSON (prompt1..6) hoặc prompt tại đây... Nếu để trống AI sẽ tự sinh." />
         </div>
 
-        {/* 2-AI Consensus Debate Feature */}
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '10px',
-            marginBottom: '12px',
-            padding: '12px 14px',
-            background: 'linear-gradient(135deg, rgba(124,58,237,0.1) 0%, rgba(59,130,246,0.1) 100%)',
-            borderRadius: '12px',
-            border: '1px solid rgba(124,58,237,0.35)',
-          }}
-        >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '12px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(124,58,237,0.1) 0%, rgba(59,130,246,0.1) 100%)', borderRadius: '12px', border: '1px solid rgba(124,58,237,0.35)' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', color: '#c4b5fd' }}>
-              <input
-                type="checkbox"
-                checked={aiConsensusEnabled}
-                onChange={(e) => setAiConsensusEnabled(e.target.checked)}
-                style={{ accentColor: '#7c3aed', width: '16px', height: '16px' }}
-              />
-              <span>🤝 2-AI Validation (AGY 3.8 tạo prompt, GLM-5 kiểm định đến khi đạt 100%)</span>
+              <input type="checkbox" checked={aiConsensusEnabled} onChange={(e) => setAiConsensusEnabled(e.target.checked)} style={{ accentColor: '#7c3aed', width: '16px', height: '16px' }} />
+              <span>🤝 2-AI Validation (Codex Sol sáng tác, Gemini 3.8 Low kiểm định đến khi đạt 100%)</span>
             </label>
-            <button
-              type="button"
-              onClick={() => triggerAiConsensusDebate()}
-              disabled={isDebating}
-              id="btnTriggerConsensus"
-              style={{
-                background: '#7c3aed',
-                color: '#fff',
-                border: 'none',
-                padding: '6px 12px',
-                borderRadius: '8px',
-                fontSize: '12px',
-                fontWeight: 600,
-                cursor: isDebating ? 'not-allowed' : 'pointer',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '5px',
-                transition: 'all 0.15s',
-              }}
-            >
+            <button type="button" onClick={() => triggerAiConsensusDebate()} disabled={isDebating} id="btnTriggerConsensus" style={{ background: '#7c3aed', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: isDebating ? 'not-allowed' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: '5px', transition: 'all 0.15s' }}>
               <span>{isDebating ? '⏳ Đang thảo luận 2 AI...' : '✨ Thảo luận 2 AI ngay'}</span>
             </button>
           </div>
-
           <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-            <label style={{ fontSize: '11px', fontWeight: 600, color: '#c4b5fd', display: 'flex', alignItems: 'center', gap: '5px' }}>
-              <span>💡 Góp ý / Chỉ đạo kịch bản cho 2 AI (Tùy chọn):</span>
-            </label>
-            <textarea
-              id="inputAiConsensusFeedback"
-              rows={2}
-              value={consensusPreFeedback}
-              onChange={(e) => setConsensusPreFeedback(e.target.value)}
-              onBlur={(e) => persistProductFeedback({ consensus_feedback: e.target.value })}
-              placeholder="VD: Sao lại ra 2 gấu đen ở step 2? Đổi thành 2 chú mèo; cảnh 3 vui vẻ hơn..."
-              style={{
-                width: '100%',
-                padding: '8px 12px',
-                background: 'var(--bg3)',
-                border: '1px solid rgba(124,58,237,0.35)',
-                borderRadius: '8px',
-                color: 'var(--text)',
-                fontSize: '12px',
-                outline: 'none',
-                resize: 'vertical',
-                minHeight: '44px',
-                fontFamily: 'inherit',
-                lineHeight: 1.4,
-                boxSizing: 'border-box',
-              }}
-            />
+            <label style={{ fontSize: '11px', fontWeight: 600, color: '#c4b5fd', display: 'flex', alignItems: 'center', gap: '5px' }}><span>💡 Góp ý / Chỉ đạo kịch bản cho 2 AI (Tùy chọn):</span></label>
+            <textarea id="inputAiConsensusFeedback" rows={2} value={consensusPreFeedback} onChange={(e) => setConsensusPreFeedback(e.target.value)} onBlur={(e) => persistProductFeedback({ consensus_feedback: e.target.value })} placeholder="VD: Sao lại ra 2 gấu đen ở step 2? Đổi thành 2 chú mèo; cảnh 3 vui vẻ hơn..." style={{ width: '100%', padding: '8px 12px', background: 'var(--bg3)', border: '1px solid rgba(124,58,237,0.35)', borderRadius: '8px', color: 'var(--text)', fontSize: '12px', outline: 'none', resize: 'vertical', minHeight: '44px', fontFamily: 'inherit', lineHeight: 1.4, boxSizing: 'border-box' }} />
           </div>
+          <div style={{ fontSize: '11px', color: 'var(--muted)', lineHeight: 1.5 }}>🎯 <strong>Điều kiện dừng:</strong> Phản biện lặp vòng không giới hạn round, chỉ dừng khi 2 AI đạt <strong>100% đồng thuận</strong>.<br />🔒 <strong>Khóa nhân vật & Bố cục:</strong> Nhân vật bám sát 100% ảnh & mô tả (loài, ngoại hình, trang phục) • Bố cục tiền cảnh/hậu cảnh & cốt truyện 6 cảnh chặt chẽ.</div>
 
-          <div style={{ fontSize: '11px', color: 'var(--muted)', lineHeight: 1.5 }}>
-            🎯 <strong>Điều kiện dừng:</strong> Phản biện lặp vòng không giới hạn round, chỉ dừng khi 2 AI đạt <strong>100% đồng thuận</strong>.<br />
-            🔒 <strong>Khóa nhân vật & Bố cục:</strong> Nhân vật bám sát 100% ảnh & mô tả (loài, ngoại hình, trang phục) • Bố cục tiền cảnh/hậu cảnh & cốt truyện 6 cảnh chặt chẽ.
-          </div>
-
-          {/* Live Debate Log Box */}
           {showDebateBox && (
-            <div
-              style={{
-                marginTop: '6px',
-                padding: '12px',
-                background: 'var(--bg2)',
-                borderRadius: '10px',
-                border: '1px solid var(--border)',
-                maxHeight: '280px',
-                overflowY: 'auto',
-                fontSize: '12px',
-              }}
-            >
-              {/* Round Stepper Chips */}
+            <div style={{ marginTop: '6px', padding: '12px', background: 'var(--bg2)', borderRadius: '10px', border: '1px solid var(--border)', maxHeight: '580px', overflowY: 'auto', fontSize: '12px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
-                <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  Tiến trình:
-                </span>
+                <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Tiến trình:</span>
                 {Array.from({ length: Math.max(currentDebateRound, 1) }).map((_, rIdx) => {
                   const rNum = rIdx + 1;
                   const isCurrent = rNum === currentDebateRound && isDebating;
                   const isPast = rNum < currentDebateRound;
                   const isConsensus100 = !isDebating && debateStatusText.includes('100%');
-
                   return (
-                    <div
-                      key={rNum}
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        padding: '4px 11px',
-                        borderRadius: '20px',
-                        fontSize: '11px',
-                        fontWeight: 700,
-                        background: isCurrent
-                          ? 'linear-gradient(135deg, rgba(168,85,247,0.25) 0%, rgba(236,72,153,0.25) 100%)'
-                          : isPast
-                          ? 'rgba(124,58,237,0.12)'
-                          : isConsensus100
-                          ? 'rgba(16,185,129,0.15)'
-                          : 'var(--bg3)',
-                        border: isCurrent
-                          ? '1.5px solid #ec4899'
-                          : isPast
-                          ? '1px solid rgba(139,92,246,0.4)'
-                          : isConsensus100
-                          ? '1px solid #10b981'
-                          : '1px solid var(--border)',
-                        color: isCurrent ? '#f472b6' : isPast ? '#a78bfa' : isConsensus100 ? '#10b981' : 'var(--muted)',
-                        animation: isCurrent ? 'activeRoundGlow 1.8s infinite' : 'none',
-                        transition: 'all 0.25s ease',
-                      }}
-                    >
-                      {isCurrent ? (
-                        <span
-                          style={{
-                            width: '7px',
-                            height: '7px',
-                            borderRadius: '50%',
-                            background: '#ec4899',
-                            animation: 'livePulse 1.2s infinite',
-                            display: 'inline-block',
-                          }}
-                        />
-                      ) : isPast ? (
-                        <span style={{ color: '#a78bfa' }}>✓</span>
-                      ) : isConsensus100 ? (
-                        <span style={{ color: '#10b981' }}>★</span>
-                      ) : null}
+                    <div key={rNum} style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '4px 11px', borderRadius: '20px', fontSize: '11px', fontWeight: 700, background: isCurrent ? 'linear-gradient(135deg, rgba(168,85,247,0.25) 0%, rgba(236,72,153,0.25) 100%)' : isPast ? 'rgba(124,58,237,0.12)' : isConsensus100 ? 'rgba(16,185,129,0.15)' : 'var(--bg3)', border: isCurrent ? '1.5px solid #ec4899' : isPast ? '1px solid rgba(139,92,246,0.4)' : isConsensus100 ? '1px solid #10b981' : '1px solid var(--border)', color: isCurrent ? '#f472b6' : isPast ? '#a78bfa' : isConsensus100 ? '#10b981' : 'var(--muted)', animation: isCurrent ? 'activeRoundGlow 1.8s infinite' : 'none', transition: 'all 0.25s ease' }}>
+                      {isCurrent ? <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#ec4899', animation: 'livePulse 1.2s infinite', display: 'inline-block' }} /> : isPast ? <span style={{ color: '#a78bfa' }}>✓</span> : isConsensus100 ? <span style={{ color: '#10b981' }}>★</span> : null}
                       <span>Round {rNum}</span>
-                      {isCurrent && (
-                        <span style={{ fontSize: '9.5px', background: 'rgba(236,72,153,0.35)', color: '#fff', padding: '1px 6px', borderRadius: '6px', letterSpacing: '0.5px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                          <span>ĐANG CHẠY</span>
-                          <span style={{ fontFamily: 'monospace', fontSize: '9.5px' }}>({formatTimer(debateElapsedSec)})</span>
-                        </span>
-                      )}
+                      {isCurrent && <span style={{ fontSize: '9.5px', background: 'rgba(236,72,153,0.35)', color: '#fff', padding: '1px 6px', borderRadius: '6px', letterSpacing: '0.5px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}><span>ĐANG CHẠY</span><span style={{ fontFamily: 'monospace', fontSize: '9.5px' }}>({formatTimer(debateElapsedSec)})</span></span>}
                     </div>
                   );
                 })}
               </div>
 
-              {/* Shimmering Live Status Banner */}
-              {debateStatusText && (
-                <div
-                  style={{
-                    fontWeight: 700,
-                    fontSize: '12px',
-                    color: isDebating ? '#c084fc' : debateStatusText.includes('100%') ? '#10b981' : '#8b5cf6',
-                    marginBottom: '10px',
-                    padding: '9px 12px',
-                    borderRadius: '8px',
-                    background: isDebating
-                      ? 'linear-gradient(90deg, rgba(139,92,246,0.15) 0%, rgba(236,72,153,0.18) 50%, rgba(139,92,246,0.15) 100%)'
-                      : debateStatusText.includes('100%')
-                      ? 'rgba(16,185,129,0.12)'
-                      : 'var(--bg3)',
-                    backgroundSize: isDebating ? '200% 100%' : 'auto',
-                    animation: isDebating ? 'shimmerSweep 3s linear infinite' : 'none',
-                    border: isDebating
-                      ? '1px solid rgba(236,72,153,0.45)'
-                      : debateStatusText.includes('100%')
-                      ? '1px solid rgba(16,185,129,0.4)'
-                      : '1px solid var(--border)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: '8px',
-                    position: 'relative',
-                    overflow: 'hidden',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    {isDebating ? (
-                      <span
-                        style={{
-                          width: '8px',
-                          height: '8px',
-                          borderRadius: '50%',
-                          background: currentActiveAi === 'ai2' ? '#f59e0b' : '#ec4899',
-                          animation: 'livePulse 1s infinite',
-                          flexShrink: 0,
-                        }}
-                      />
-                    ) : debateStatusText.includes('100%') ? (
-                      <span style={{ fontSize: '14px' }}>🎉</span>
-                    ) : (
-                      <span style={{ fontSize: '14px' }}>💬</span>
-                    )}
-                    <span>{debateStatusText}</span>
-                  </div>
-                  {isDebating && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-                      <span
-                        style={{
-                          fontSize: '11px',
-                          color: '#38bdf8',
-                          fontWeight: 700,
-                          background: 'var(--bg3)',
-                          border: '1px solid rgba(56,189,248,0.4)',
-                          padding: '2px 8px',
-                          borderRadius: '12px',
-                          fontFamily: 'monospace',
-                        }}
-                      >
-                        ⏱️ {formatTimer(debateElapsedSec)}
-                      </span>
-                      <span style={{ fontSize: '10.5px', color: '#f472b6', fontWeight: 700, background: 'rgba(236,72,153,0.2)', padding: '2px 8px', borderRadius: '6px' }}>
-                        Round {currentDebateRound}
-                      </span>
-                      <div style={{ display: 'flex', gap: '3px' }}>
-                        <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#ec4899', animation: 'bounceDot 1s infinite 0ms' }} />
-                        <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#ec4899', animation: 'bounceDot 1s infinite 200ms' }} />
-                        <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#ec4899', animation: 'bounceDot 1s infinite 400ms' }} />
-                      </div>
-                    </div>
-                  )}
+              {debateStatusText && <div style={{ fontWeight: 700, fontSize: '12px', color: isDebating ? '#c084fc' : debateStatusText.includes('100%') ? '#10b981' : '#8b5cf6', marginBottom: '10px', padding: '9px 12px', borderRadius: '8px', background: isDebating ? 'linear-gradient(90deg, rgba(139,92,246,0.15) 0%, rgba(236,72,153,0.18) 50%, rgba(139,92,246,0.15) 100%)' : debateStatusText.includes('100%') ? 'rgba(16,185,129,0.12)' : 'var(--bg3)', backgroundSize: isDebating ? '200% 100%' : 'auto', animation: isDebating ? 'shimmerSweep 3s linear infinite' : 'none', border: isDebating ? '1px solid rgba(236,72,153,0.45)' : debateStatusText.includes('100%') ? '1px solid rgba(16,185,129,0.4)' : '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', position: 'relative', overflow: 'hidden' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  {isDebating ? <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: currentActiveAi === 'ai2' ? '#f59e0b' : '#ec4899', animation: 'livePulse 1s infinite', flexShrink: 0 }} /> : debateStatusText.includes('100%') ? <span style={{ fontSize: '14px' }}>🎉</span> : <span style={{ fontSize: '14px' }}>💬</span>}
+                  <span>{debateStatusText}</span>
                 </div>
-              )}
+                {isDebating && <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}><span style={{ fontSize: '11px', color: '#38bdf8', fontWeight: 700, background: 'var(--bg3)', border: '1px solid rgba(56,189,248,0.4)', padding: '2px 8px', borderRadius: '12px', fontFamily: 'monospace' }}>⏱️ {formatTimer(debateElapsedSec)}</span><span style={{ fontSize: '10.5px', color: '#f472b6', fontWeight: 700, background: 'rgba(236,72,153,0.2)', padding: '2px 8px', borderRadius: '6px' }}>Round {currentDebateRound}</span></div>}
+              </div>}
 
-              {debateMessages.map((msg, i) => {
-                const isUser = msg.agent.includes('Đạo Diễn') || msg.role.includes('Chỉ Đạo');
-                const isAi1 = msg.agent.includes('AI 1');
-                const isConsensus100 = msg.title.includes('100%');
-                const borderCol = isConsensus100 ? '#10b981' : isAi1 ? '#8b5cf6' : '#f59e0b';
-                const bgCol = isConsensus100 ? 'rgba(16,185,129,0.14)' : isAi1 ? 'rgba(139,92,246,0.12)' : 'rgba(245,158,11,0.12)';
-
-                return (
-                  <div
-                    key={i}
-                    style={{
-                      marginBottom: '8px',
-                      padding: '8px 10px',
-                      borderLeft: `3px solid ${isUser ? '#06b6d4' : borderCol}`,
-                      background: isUser ? 'rgba(6,182,212,0.14)' : bgCol,
-                      borderRadius: '6px',
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', fontWeight: 700, color: isUser ? '#06b6d4' : borderCol, marginBottom: '4px' }}>
-                      <span>{isUser ? '👤 ' : ''}{msg.agent} ({msg.role})</span>
-                      <span style={{ color: 'var(--muted)' }}>{msg.timestamp}</span>
-                    </div>
-                    <div style={{ fontWeight: 600, fontSize: '12px', marginBottom: '4px', color: isConsensus100 ? '#10b981' : isUser ? '#38bdf8' : 'var(--text)' }}>
-                      {msg.title}
-                    </div>
-                    <div style={{ whiteSpace: 'pre-wrap', fontSize: '11px', lineHeight: 1.4, color: 'var(--text)' }}>
-                      {msg.content}
-                    </div>
-                  </div>
-                );
-              })}
-
-              {/* Active AI Thinking Card for Current Round */}
-              {isDebating && (
-                <div
-                  style={{
-                    padding: '10px 14px',
-                    borderRadius: '8px',
-                    background: currentActiveAi === 'ai2' ? 'rgba(245, 158, 11, 0.1)' : 'rgba(139, 92, 246, 0.1)',
-                    border: `1.5px dashed ${currentActiveAi === 'ai2' ? '#f59e0b' : '#a855f7'}`,
-                    animation: 'activeRoundGlow 2s infinite alternate',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: '10px',
-                    marginTop: '6px',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <div
-                      style={{
-                        width: '28px',
-                        height: '28px',
-                        borderRadius: '50%',
-                        background: currentActiveAi === 'ai2' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(139, 92, 246, 0.2)',
-                        border: `1px solid ${currentActiveAi === 'ai2' ? '#f59e0b' : '#a855f7'}`,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        fontSize: '14px',
-                        flexShrink: 0,
-                      }}
-                    >
-                      {currentActiveAi === 'ai2' ? '🧐' : '🎭'}
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                      <span style={{ fontSize: '11.5px', fontWeight: 700, color: currentActiveAi === 'ai2' ? '#fbbf24' : '#c084fc' }}>
-                        {currentActiveAi === 'ai2'
-                          ? `AI 2 (GLM-5) đang kiểm định tiêu chí Round ${currentDebateRound}...`
-                          : `AI 1 (AGY 3.8) đang sáng tác kịch bản Round ${currentDebateRound}...`}
-                      </span>
-                      <span style={{ fontSize: '10px', color: 'var(--muted)' }}>
-                        {currentActiveAi === 'ai2'
-                          ? 'Đang đối chiếu ảnh mẫu, tỷ lệ Chibi và kiểm định bối cảnh 6 Part'
-                          : 'Đang khởi tạo lời thoại, hành động và bố cục Pixar 3D sinh động'}
-                      </span>
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', gap: '4px', paddingRight: '6px' }}>
-                    <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: currentActiveAi === 'ai2' ? '#f59e0b' : '#a855f7', animation: 'bounceDot 1s infinite 0ms' }} />
-                    <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: currentActiveAi === 'ai2' ? '#f59e0b' : '#a855f7', animation: 'bounceDot 1s infinite 200ms' }} />
-                    <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: currentActiveAi === 'ai2' ? '#f59e0b' : '#a855f7', animation: 'bounceDot 1s infinite 400ms' }} />
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Live feedback toolbar */}
-          {showDebateBox && (
-            <div style={{ display: 'flex', gap: '6px', marginTop: '4px', alignItems: 'flex-start' }}>
-              <textarea
-                rows={2}
-                value={liveDebateFeedback}
-                onChange={(e) => setLiveDebateFeedback(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSendLiveDebateFeedback();
-                  }
-                }}
-                placeholder="💬 Góp ý trực tiếp cho 2 AI (VD: Step 2 đổi thành 2 chú mèo... Enter để gửi)"
-                style={{
-                  flex: 1,
-                  padding: '7px 10px',
-                  background: 'var(--bg2)',
-                  border: '1px solid var(--border)',
-                  borderRadius: '6px',
-                  color: 'var(--text)',
-                  fontSize: '12px',
-                  outline: 'none',
-                  resize: 'vertical',
-                  minHeight: '40px',
-                  fontFamily: 'inherit',
-                  lineHeight: 1.4,
-                  boxSizing: 'border-box',
-                }}
+              <DebateFeedView
+                messages={debateMessages}
+                currentRound={currentDebateRound}
+                isDebating={isDebating}
+                onOpenPartEditor={(partNum) => setEditingPartNum(partNum)}
+                onSavePartPrompt={handleSavePartPromptInModal}
               />
-              <button
-                type="button"
-                onClick={handleSendLiveDebateFeedback}
-                disabled={isDebating || !liveDebateFeedback.trim()}
-                style={{
-                  background: '#7c3aed',
-                  color: '#fff',
-                  border: 'none',
-                  padding: '8px 14px',
-                  borderRadius: '6px',
-                  fontSize: '12px',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  height: 'fit-content',
-                }}
-              >
-                💬 Gửi góp ý
-              </button>
+
+              {isDebating && <div style={{ padding: '10px 14px', borderRadius: '8px', background: currentActiveAi === 'ai2' ? 'rgba(245, 158, 11, 0.1)' : 'rgba(139, 92, 246, 0.1)', border: `1.5px dashed ${currentActiveAi === 'ai2' ? '#f59e0b' : '#a855f7'}`, animation: 'activeRoundGlow 2s infinite alternate', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginTop: '6px' }}><div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}><div style={{ width: '28px', height: '28px', borderRadius: '50%', background: currentActiveAi === 'ai2' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(139, 92, 246, 0.2)', border: `1px solid ${currentActiveAi === 'ai2' ? '#f59e0b' : '#a855f7'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', flexShrink: 0 }}>{currentActiveAi === 'ai2' ? '🧐' : '🎭'}</div><div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}><span style={{ fontSize: '11.5px', fontWeight: 700, color: currentActiveAi === 'ai2' ? '#fbbf24' : '#c084fc' }}>{currentActiveAi === 'ai2' ? `AI 2 (Gemini 3.8 Low) đang kiểm định tiêu chí Round ${currentDebateRound}...` : `AI 1 (Codex Sol Light) đang sáng tác kịch bản Round ${currentDebateRound}...`}</span><span style={{ fontSize: '10px', color: 'var(--muted)' }}>{currentActiveAi === 'ai2' ? 'Đang đối chiếu ảnh mẫu, tỷ lệ Chibi và kiểm định bối cảnh 6 Part' : 'Đang khởi tạo lời thoại, hành động và bố cục Pixar 3D sinh động'}</span></div></div></div>}
             </div>
           )}
+
+          {showDebateBox && <div style={{ display: 'flex', gap: '6px', marginTop: '4px', alignItems: 'flex-start' }}><textarea rows={2} value={liveDebateFeedback} onChange={(e) => setLiveDebateFeedback(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendLiveDebateFeedback(); } }} placeholder="💬 Góp ý trực tiếp cho 2 AI (VD: Step 2 đổi thành 2 chú mèo... Enter để gửi)" style={{ flex: 1, padding: '7px 10px', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--text)', fontSize: '12px', outline: 'none', resize: 'vertical', minHeight: '40px', fontFamily: 'inherit', lineHeight: 1.4, boxSizing: 'border-box' }} /><button type="button" onClick={handleSendLiveDebateFeedback} disabled={isDebating || !liveDebateFeedback.trim()} style={{ background: '#7c3aed', color: '#fff', border: 'none', padding: '8px 14px', borderRadius: '6px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', height: 'fit-content' }}>💬 Gửi góp ý</button></div>}
         </div>
 
-        {/* 6-Scene Storyboard & Granular Part Customizer */}
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '10px',
-            marginBottom: '12px',
-            padding: '12px 14px',
-            background: 'linear-gradient(135deg, rgba(236,72,153,0.08) 0%, rgba(245,158,11,0.08) 100%)',
-            borderRadius: '12px',
-            border: '1px solid rgba(236,72,153,0.35)',
-          }}
-        >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '12px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(236,72,153,0.08) 0%, rgba(245,158,11,0.08) 100%)', borderRadius: '12px', border: '1px solid rgba(236,72,153,0.35)' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', color: '#f472b6' }}>
-              <input
-                type="checkbox"
-                checked={autoSceneImages}
-                onChange={(e) => setAutoSceneImages(e.target.checked)}
-                style={{ accentColor: '#ec4899', width: '16px', height: '16px' }}
-              />
-              <span>🎨 Tự động tạo 6 ảnh phân cảnh bằng Gemini trước khi tạo Video</span>
-            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', color: '#f472b6' }}><input type="checkbox" checked={autoSceneImages} onChange={(e) => setAutoSceneImages(e.target.checked)} style={{ accentColor: '#ec4899', width: '16px', height: '16px' }} /><span>🎨 Tự động tạo 6 ảnh phân cảnh bằng Gemini trước khi tạo Video</span></label>
             <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-              <button
-                type="button"
-                onClick={handleGenerateSceneImages}
-                disabled={isPipelineRunning}
-                id="btnGenerateSceneImages"
-                style={{
-                  background: isGeneratingAllImages
-                    ? 'linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%)'
-                    : 'linear-gradient(135deg, #ec4899 0%, #f59e0b 100%)',
-                  color: '#fff',
-                  border: isGeneratingAllImages ? '1px solid #f472b6' : 'none',
-                  padding: '6px 13px',
-                  borderRadius: '8px',
-                  fontSize: '12px',
-                  fontWeight: 700,
-                  cursor: isPipelineRunning ? 'not-allowed' : 'pointer',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  boxShadow: isGeneratingAllImages ? '0 0 12px rgba(236,72,153,0.45)' : 'none',
-                  transition: 'all 0.25s ease',
-                }}
-              >
-                {isGeneratingAllImages ? (
-                  <>
-                    <span
-                      style={{
-                        display: 'inline-block',
-                        width: '11px',
-                        height: '11px',
-                        border: '2px solid rgba(255,255,255,0.35)',
-                        borderTopColor: '#fff',
-                        borderRadius: '50%',
-                        animation: 'spin 0.8s linear infinite',
-                      }}
-                    />
-                    <span>⏳ Đang tạo 6 ảnh... ({formatTimer(generateImagesElapsedSec)})</span>
-                    <div style={{ display: 'flex', gap: '2px', marginLeft: '2px' }}>
-                      <span style={{ width: '3px', height: '3px', borderRadius: '50%', background: '#fff', animation: 'bounceDot 1s infinite 0ms' }} />
-                      <span style={{ width: '3px', height: '3px', borderRadius: '50%', background: '#fff', animation: 'bounceDot 1s infinite 200ms' }} />
-                      <span style={{ width: '3px', height: '3px', borderRadius: '50%', background: '#fff', animation: 'bounceDot 1s infinite 400ms' }} />
-                    </div>
-                  </>
-                ) : (
-                  <>🖼️ Tạo trước 6 ảnh</>
-                )}
-              </button>
-              <button
-                type="button"
-                onClick={handleMergeVideos}
-                id="btnMergeVideosQuick"
-                style={{
-                  background: 'linear-gradient(135deg, #8b5cf6 0%, #3b82f6 100%)',
-                  color: '#fff',
-                  border: 'none',
-                  padding: '6px 12px',
-                  borderRadius: '8px',
-                  fontSize: '12px',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '5px',
-                }}
-              >
-                🎬 Ghép Video Hoàn Chỉnh
-              </button>
+              <button type="button" onClick={handleMergeVideos} id="btnMergeVideosQuick" style={{ background: 'linear-gradient(135deg, #8b5cf6 0%, #3b82f6 100%)', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>🎬 Ghép Video Hoàn Chỉnh</button>
+              <button type="button" onClick={handleDubVideo} disabled={isDubbing || isPipelineRunning} id="btnDubVideoQuick" style={{ background: isDubbing ? '#6b7280' : 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: isDubbing ? 'not-allowed' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: '5px', boxShadow: isDubbing ? 'none' : '0 2px 8px rgba(16,185,129,0.35)', transition: 'all 0.2s ease' }}>{isDubbing ? '⏳ Đang lồng tiếng...' : '🎙️ Lồng Tiếng (DuDu & BuBu)'}</button>
             </div>
           </div>
-          <div style={{ fontSize: '11px', color: 'var(--muted)', lineHeight: 1.4 }}>
-            📸 Gemini phân tích ảnh gốc + prompt để sinh 6 ảnh hoạt hình 3D Pixar chi tiết trước. Bạn có thể chọn và chỉnh sửa/tạo lại từng Part riêng lẻ (Part 1 ➔ 6).
-          </div>
+          <div style={{ fontSize: '11px', color: 'var(--muted)', lineHeight: 1.4 }}>📸 Gemini phân tích ảnh gốc + prompt để sinh 6 ảnh hoạt hình 3D Pixar chi tiết trước. Bạn có thể chọn và chỉnh sửa/tạo lại từng Part riêng lẻ (Part 1 ➔ 6).</div>
 
-          {/* Storyboard Grid with Assistant Box */}
           <StoryboardGrid
             productName={productName}
             promptsObj={promptsObj}
@@ -1625,6 +1325,8 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
             revisingElapsedSec={revisingElapsedSec}
             revisingStatusText={revisingStatusText}
             revisingTargetParts={revisingTargetParts}
+            videoRenderMode={videoRenderMode}
+            onChangeVideoRenderMode={handleSetVideoRenderMode}
             onOpenPartEditor={(partNum) => setEditingPartNum(partNum)}
             onRedrawSingleImage={handleRedrawSingleImage}
             onRenderSingleVideo={handleRenderSingleVideo}
@@ -1634,101 +1336,28 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
             onRunAllFlow={handleRunAllFlow}
             onStopPipeline={handleStopPipeline}
             onZoomImage={(idx) => setLightboxIndex(idx)}
+            onSavePartPrompt={handleSavePartPromptInModal}
+            onRevisePartPrompt={(partNum, feedback) => handleBatchRevisePrompts([partNum - 1], feedback)}
           />
         </div>
 
-        {/* S3 & TikTok toggles */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px', padding: '12px', background: 'var(--bg3)', borderRadius: '10px', border: '1px solid var(--border)' }}>
-          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
-            <span>☁️ Upload to S3</span>
-            <input
-              type="checkbox"
-              checked={uploadS3}
-              onChange={(e) => setUploadS3(e.target.checked)}
-              style={{ accentColor: '#7c3aed', width: '16px', height: '16px' }}
-            />
-          </label>
-          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer', color: 'var(--muted)' }}>
-            <span>🎵 Publish TikTok</span>
-            <input
-              type="checkbox"
-              checked={publishTiktok}
-              onChange={(e) => setPublishTiktok(e.target.checked)}
-              style={{ accentColor: '#7c3aed', width: '16px', height: '16px' }}
-            />
-          </label>
+          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}><span>☁️ Upload to S3</span><input type="checkbox" checked={uploadS3} onChange={(e) => setUploadS3(e.target.checked)} style={{ accentColor: '#7c3aed', width: '16px', height: '16px' }} /></label>
+          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer', color: 'var(--muted)' }}><span>🎵 Publish TikTok</span><input type="checkbox" checked={publishTiktok} onChange={(e) => setPublishTiktok(e.target.checked)} style={{ accentColor: '#7c3aed', width: '16px', height: '16px' }} /></label>
         </div>
 
-        {/* Footer Actions */}
         <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-            <button
-              type="button"
-              onClick={handleStopPipeline}
-              style={{
-                background: 'rgba(239,68,68,0.15)',
-                border: '1px solid rgba(239,68,68,0.45)',
-                color: '#f87171',
-                padding: '8px 14px',
-                borderRadius: '8px',
-                fontSize: '12px',
-                fontWeight: 700,
-                cursor: 'pointer',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '5px',
-              }}
-            >
-              ⛔ Dừng Lại (Stop)
-            </button>
-            <button className="btn-cancel" onClick={handleClose}>
-              Đóng
-            </button>
+            <button type="button" onClick={handleStopPipeline} style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.45)', color: '#f87171', padding: '8px 14px', borderRadius: '8px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>⛔ Dừng Lại (Stop)</button>
+            <button className="btn-cancel" onClick={handleClose}>Đóng</button>
           </div>
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-            <button
-              type="button"
-              className="btn-submit"
-              onClick={handleSavePrompt}
-              disabled={isSavingPromptMain}
-              style={{
-                background: 'var(--bg3)',
-                border: '1px solid var(--border)',
-                color: 'var(--text)',
-                boxShadow: 'none',
-                fontWeight: 600,
-                opacity: isSavingPromptMain ? 0.7 : 1,
-                cursor: isSavingPromptMain ? 'not-allowed' : 'pointer',
-              }}
-            >
-              {isSavingPromptMain ? '⏳ Đang lưu...' : '💾 Lưu Kịch Bản'}
-            </button>
-            <button
-              type="button"
-              onClick={() => handleRunAllFlow('', -99)}
-              disabled={isPipelineRunning}
-              style={{
-                background: 'linear-gradient(135deg, #ec4899 0%, #8b5cf6 50%, #3b82f6 100%)',
-                color: '#fff',
-                border: 'none',
-                padding: '9px 18px',
-                borderRadius: '8px',
-                fontSize: '13px',
-                fontWeight: 700,
-                cursor: isPipelineRunning ? 'not-allowed' : 'pointer',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px',
-                boxShadow: '0 3px 12px rgba(139,92,246,0.4)',
-              }}
-            >
-              🚀 Run All Flow Tạo Video
-            </button>
+            <button type="button" className="btn-submit" onClick={handleSavePrompt} disabled={isSavingPromptMain} style={{ background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text)', boxShadow: 'none', fontWeight: 600, opacity: isSavingPromptMain ? 0.7 : 1, cursor: isSavingPromptMain ? 'not-allowed' : 'pointer' }}>{isSavingPromptMain ? '⏳ Đang lưu...' : '💾 Lưu Kịch Bản'}</button>
+            <button type="button" onClick={() => handleRunAllFlow('', -99)} disabled={isPipelineRunning} style={{ background: 'linear-gradient(135deg, #ec4899 0%, #8b5cf6 50%, #3b82f6 100%)', color: '#fff', border: 'none', padding: '9px 18px', borderRadius: '8px', fontSize: '13px', fontWeight: 700, cursor: isPipelineRunning ? 'not-allowed' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px', boxShadow: '0 3px 12px rgba(139,92,246,0.4)' }}>🚀 Run All Flow Tạo Video</button>
           </div>
         </div>
       </div>
 
-      {/* Part Editor Modal */}
       {editingPartNum !== null && (
         <PartEditorModal
           isOpen={editingPartNum !== null}
@@ -1744,23 +1373,16 @@ export const GenerateVideoModal: React.FC<GenerateVideoModalProps> = memo(({
           onSavePartPrompt={handleSavePartPromptInModal}
           onRedrawSingleImage={handleRedrawSingleImage}
           onRenderSingleVideo={handleRenderSingleVideo}
+          onRevisePrompt={(feedback) => handleBatchRevisePrompts([editingPartNum - 1], feedback)}
+          isRevisingPrompts={isRevisingPrompts}
+          revisingStatusText={revisingStatusText}
           onStopPipeline={handleStopPipeline}
           onOpenLightbox={(img, title, idx) => setLightboxIndex(idx)}
           onRefreshPartsStatus={() => refreshPartsStatus(productName)}
         />
       )}
 
-      {/* Rich Storyboard Lightbox (Internal state isolated) */}
-      {lightboxIndex !== null && (
-        <Lightbox
-          imageUrl={sceneImages[lightboxIndex] || null}
-          images={sceneImages.filter(Boolean).length > 0 ? sceneImages : [imageUrl].filter(Boolean)}
-          currentIndex={lightboxIndex}
-          dialogues={[1, 2, 3, 4, 5, 6].map((i) => promptsObj[`dialogue${i}`] || '')}
-          title={`Phân Cảnh ${lightboxIndex + 1}: Bảng 6 Bước Diễn Hoạt`}
-          onClose={() => setLightboxIndex(null)}
-        />
-      )}
+      {lightboxIndex !== null && <Lightbox imageUrl={sceneImages[lightboxIndex] || null} images={sceneImages.filter(Boolean).length > 0 ? sceneImages : [imageUrl].filter(Boolean)} currentIndex={lightboxIndex} dialogues={[1, 2, 3, 4, 5, 6].map((i) => promptsObj[`dialogue${i}`] || '')} title={`Phân Cảnh ${lightboxIndex + 1}: Bảng 6 Bước Diễn Hoạt`} onClose={() => setLightboxIndex(null)} />}
     </div>
   );
 });

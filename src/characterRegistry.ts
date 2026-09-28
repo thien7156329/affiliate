@@ -27,27 +27,39 @@ export interface CharacterDefinition {
   name: string;
   avatar_emoji?: string;
   description?: string;
-  provider: "elevenlabs" | "macos_say" | "gemini_tts";
+  provider: "elevenlabs" | "macos_say" | "gemini_tts" | "gemini_veo" | "vieneu";
   voice_id: string;
+  veo_voice_directive?: string; // Voice casting prompt directive for Google Veo AI video generation
   voice_settings?: CharacterVoiceSettings;
   created_at?: string;
   updated_at?: string;
 }
 
 export const DEFAULT_CHARACTERS: Record<string, CharacterDefinition> = {
+  mai_be_phuong: {
+    id: "mai_be_phuong",
+    name: "Mai Bé Phương (Nữ Chính)",
+    avatar_emoji: "🎀",
+    description: "Nữ chính miền Nam tươi tắn, vui nhộn, tự nhiên không xước (VieNeu TTS)",
+    provider: "vieneu",
+    voice_id: "Mai Bé Phương",
+    veo_voice_directive: "Bright, lively, melodic southern Vietnamese young female voice, playful, sweet and highly expressive TikTok storytelling.",
+    voice_settings: {
+      pitch_shift: 1.0,
+      speech_rate: 175
+    }
+  },
   xam: {
     id: "xam",
     name: "Xám (Vàng Xám Comic)",
     avatar_emoji: "🐶",
     description: "Chú cún vàng đáng yêu, lạc quan, giọng trong trẻo dễ thương",
-    provider: "macos_say",
-    voice_id: "voice_xam_puppy_001",
+    provider: "gemini_veo",
+    voice_id: "Puck",
+    veo_voice_directive: "Cute, energetic, enthusiastic little puppy voice, cheerful and bright toddler intonation.",
     voice_settings: {
-      pitch_shift: 1.18,
-      speech_rate: 185,
-      elevenlabs_voice_id: "EXAVITQu4vr4xnSDxMaL", // Default ElevenLabs voice ID placeholder
-      stability: 0.75,
-      similarity_boost: 0.85
+      pitch_shift: 1.0,
+      speech_rate: 175
     }
   },
   sep_shiba: {
@@ -55,14 +67,12 @@ export const DEFAULT_CHARACTERS: Record<string, CharacterDefinition> = {
     name: "Sếp Shiba",
     avatar_emoji: "👔",
     description: "Sếp Shiba công sở đeo kính, giọng trầm nam tính gắt gỏng uy quyền",
-    provider: "macos_say",
-    voice_id: "voice_shiba_boss_002",
+    provider: "gemini_veo",
+    voice_id: "Charon",
+    veo_voice_directive: "Deep, authoritative, comedic office boss baritone voice, stern yet humorous.",
     voice_settings: {
-      pitch_shift: 0.82,
-      speech_rate: 155,
-      elevenlabs_voice_id: "ErXwobaYiN019PkySvjV",
-      stability: 0.85,
-      similarity_boost: 0.90
+      pitch_shift: 1.0,
+      speech_rate: 165
     }
   },
   be_meow: {
@@ -70,15 +80,31 @@ export const DEFAULT_CHARACTERS: Record<string, CharacterDefinition> = {
     name: "Bé Meow",
     avatar_emoji: "🐱",
     description: "Mèo chibi trắng đội nón nỉ xanh, giọng trẻ con cực cưng",
-    provider: "macos_say",
-    voice_id: "voice_meow_chibi_003",
+    provider: "gemini_veo",
+    voice_id: "Aoede",
+    veo_voice_directive: "Ultra-cute, delicate, sweet natural voice.",
     voice_settings: {
-      pitch_shift: 1.25,
-      speech_rate: 190,
-      elevenlabs_voice_id: "MF3mGyEYCl7XYWbV9V6O",
-      stability: 0.70,
-      similarity_boost: 0.80
+      pitch_shift: 1.0,
+      speech_rate: 175
     }
+  },
+  bubu: {
+    id: "bubu",
+    name: "BuBu (Gấu Nâu Chibi)",
+    avatar_emoji: "🐻",
+    description: "Gấu nâu caramel chibi siêu dễ thương, đầu tròn to phúng phính (≈65% thân), má phúng phính ửng cam đào, mắt hạt cúc đen bóng, miệng :3 toe toét, lông nhung mịn ấm áp, dáng lũn cũn tinh nghịch.",
+    provider: "vieneu",
+    voice_id: "Mai Bé Phương",
+    veo_voice_directive: "Ultra-cute, playful, adorable bubbly toddler child voice with sweet cheerful intonation."
+  },
+  dudu: {
+    id: "dudu",
+    name: "DuDu (Gấu Trắng Chibi)",
+    avatar_emoji: "🐻‍❄️",
+    description: "Gấu trắng tuyết chibi siêu đáng yêu, đầu tròn to phúng phính (≈65% thân), má hồng đào tròn xoe, thắt nơ/khăn nâu ở cổ, mắt hạt cúc đen bóng, miệng :3 chúm chím, lông nhung trắng mịn, tính cách ấm áp dịu dàng.",
+    provider: "vieneu",
+    voice_id: "DuDu_NamChinh",
+    veo_voice_directive: "Warm, gentle, sweet affectionate young boy/toddler voice, soothing and caring brotherly delivery."
   }
 };
 

@@ -59,6 +59,7 @@ export interface AiDebateMessage {
   content: string;
   timestamp: string;
   score?: number;
+  round?: number;
 }
 
 export interface CharacterVoice {

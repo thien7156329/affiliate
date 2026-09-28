@@ -86,8 +86,26 @@ export function buildDetailedSceneImagePrompt(
     ? referenceLabel
     : `${referenceLabel} reference image`;
 
-  let prompt = `Create a premium 3D Pixar animation storyboard sheet featuring 6 sequential action steps arranged in a clean 2x3 grid for Scene ${sceneIndex + 1}, strictly matching the 3D character design from the attached ${refText}:
+  let prompt = `Create a premium '3D Bear' animation style storyboard sheet featuring 6 sequential action steps arranged in a clean 2x3 grid for Scene ${sceneIndex + 1}, strictly matching the 3D character design from the attached ${refText}:
 ${scenePrompt}`;
+
+  prompt += `\n\nREFERENCE PRIORITY: The written CHARACTER BIBLE fixes the cast. If the original reference visibly depicts those characters, it also fixes their face, species, proportions, uniform and accessories; if it only depicts the product, use it to lock the product's appearance instead. A generated Scene 1 image guides shared 3D render style and setting, but must not override the bible or an original character reference. A preceding scene may guide pose and prop state only; never copy accidental design drift from it.`;
+
+  // ── Chibi character design lock — ensures keyframe images have correct proportions ──
+  // This is CRITICAL because Veo uses these keyframe images as visual reference.
+  // If keyframes are not chibi, videos won't be chibi either.
+  prompt += `\n\nCHIBI 3D BEAR CHARACTER DESIGN (MANDATORY FOR ALL PANELS — 'BUBU AND DUDU TV' CANON):
+- ALL bear characters MUST be rendered as adorable baby toddler plush dolls in the iconic 'Bubu and Dudu TV' 3D chibi style:
+  * PROPORTIONS: Extreme 1:1 or 1:1.5 toddler chibi proportions. Oversized spherical balloon head ≈ 65%-70% of total height, tiny chubby pear body, very short stubby rounded arms and legs with NO claws, NO fingers, NO paw pads.
+  * FLAT KAWAII FACE: Face MUST be completely smooth and flat like a cute plushie or kawaii emoji. ABSOLUTELY NO protruding animal muzzle, NO snout, NO nose bridge, NO jaw separation.
+  * EYES & EYEBROWS: Two small simple glossy black bead/button eyes placed wide apart with tiny white specular highlights. Delicate raised curved eyebrow lines set high on the forehead for an innocent, sweet toddler baby expression.
+  * NOSE & MOUTH: Cute tiny button dot nose right between the eyes. Adorable open ':3' cat/bear smile mouth showing a small pink tongue, drawn flat on the round face.
+  * CHEEKS: Big prominent soft circular blush stamps on chubby lower cheeks.
+  * FUR TEXTURE: Smooth velvety plush felt / velour toy skin with soft peach-fuzz and warm subsurface scattering glow. NOT coarse, stringy, or realistic wild bear fur!
+  * BuBu (Brown Bear): ENTIRELY warm caramel milk-chocolate brown velvety plush fur on body, face, ears, paws. Warm peach-apricot blush circles on cheeks. Playful, cheerful baby demeanor.
+  * DuDu (White Bear): ENTIRELY pure snow-white velvety plush fur on body, face, ears, paws. Soft rosy-pink blush circles on cheeks. Wears a cute small chocolate-brown knotted neck scarf / bow tie around neck. 100% white teddy bear — absolutely NO dark eye-rings, NO black markings, NEVER a panda.
+- ANTI-AGING & ANTI-REALISM STRICT RULE:
+  * ABSOLUTELY NO realistic bear muzzle, NO protruding snout, NO animal nostrils, NO animal teeth or claws, NO realistic wild fur, NO adult facial structure, NO tall humanoid bodies, NO aged or wrinkled expressions. Any panel showing adult proportions or a long animal muzzle is WRONG.`;
 
   if (redrawInstructions && redrawInstructions.trim()) {
     prompt += `\n\n═══════════════════════════════════════════════════════
@@ -101,7 +119,10 @@ Director Notes: ${redrawInstructions.trim()}
 
   prompt += `\n\nMandatory Visual & Composition Requirements:
 - 6 SEQUENTIAL ACTION STEPS (2x3 GRID): Present 6 sequential progression panels arranged in a clean 2x3 grid layout, depicting step-by-step character actions, movements, and key story beats for this scene.
-- 100% Character Consistency: Strictly maintain the exact 3D character model, facial anatomy, fur texture, colors, proportions, and clothing/accessories established in the attached ${refText}.
+- CHIBI 3D BEAR PROPORTIONS IN ALL SIX PANELS: Every bear character must maintain '3D Bear' chibi proportions (oversized round head, tiny stub limbs, fluffy soft fur) consistently across all 6 panels. Do NOT let any character "grow" into normal proportions.
+- IDENTITY IN ALL SIX PANELS: Reuse one identical 3D model per named character in every panel. Preserve head-to-body ratio, eye spacing/color, ear/muzzle shape, fur/skin markings, and the same uniform type/color/trim/logo, shoes and fixed accessories. No duplicate or swapped characters, no new clothing or accessories. White bear stays white fluffy. Brown bear stays brown fluffy.
+- EXPRESSION CONTINUITY: Keep the underlying face identical. Change gaze, brows, mouth and pose only when the scripted action/emotion calls for it; progress emotions gradually across panels. Never change the character's age, eye design, smile shape or facial markings.
+- PROP CONTINUITY: Keep each object the same color, shape, size, count and owner in every panel. Show each pickup, handoff, opening or placement as a visible step, retaining the same hand/side until that action occurs.
 - Narrative Progression: Show clear, dynamic step-by-step action progression, character interactions, and expressive animation poses throughout the 6 panels.
 - Cinematic Lighting & Environment: Beautiful volumetric lighting, rich cozy atmosphere, soft warm shadows, depth of field, and vibrant colors.`;
 
@@ -301,29 +322,45 @@ export async function generateSingleSceneImage(
 
     // 4. Click Send / Generate
     await page.evaluate(() => {
-      const selectors = [
-        'button[aria-label="Gửi tin nhắn"]',
-        'button[aria-label*="Gửi" i]',
-        'button[aria-label*="Send" i]',
-        'button.send-button',
-        'mat-icon[fonticon="arrow_upward"]',
-        'button mat-icon[data-mat-icon-name="arrow_upward"]',
-      ];
-      for (const sel of selectors) {
-        const btn = document.querySelector(sel) as HTMLButtonElement;
-        if (btn && !btn.disabled) {
-          btn.click();
-          return;
+      // 1. Search strictly inside the input area container first
+      const inputArea = document.querySelector('input-area-v2, .input-area, .chat-input-container, input-container, fieldset.input-area-container');
+      if (inputArea) {
+        const areaSendBtn = inputArea.querySelector(
+          '.send-button button, .send-button-container button, gem-icon-button.send-button button, button[aria-label="Send message"], button[aria-label="Gửi tin nhắn"], button mat-icon[data-mat-icon-name="arrow_upward"], button mat-icon[fonticon="arrow_upward"]'
+        ) as HTMLElement | null;
+        if (areaSendBtn) {
+          const btn = (areaSendBtn.tagName === 'BUTTON' ? areaSendBtn : areaSendBtn.closest('button')) as HTMLButtonElement | null;
+          if (btn && !btn.disabled) {
+            btn.click();
+            return;
+          }
         }
       }
-      const btns = Array.from(document.querySelectorAll("button"));
-      const sendBtn = btns.find(
-        (b) =>
-          b.getAttribute("aria-label")?.toLowerCase().includes("gửi") ||
-          b.innerHTML.includes("send") ||
-          b.innerHTML.includes("arrow_upward")
-      );
-      if (sendBtn) sendBtn.click();
+
+      // 2. High-priority dedicated Send button selectors (strictly excluding sidebar/history/menus)
+      const selectors = [
+        '.send-button button',
+        '.send-button-container button',
+        'gem-icon-button.send-button button',
+        'button[aria-label="Send message"]',
+        'button[aria-label="Gửi tin nhắn"]',
+        'button mat-icon[data-mat-icon-name="arrow_upward"]',
+        'button mat-icon[fonticon="arrow_upward"]',
+      ];
+      for (const sel of selectors) {
+        const target = document.querySelector(sel) as HTMLElement | null;
+        if (target) {
+          const btn = (target.tagName === 'BUTTON' ? target : target.closest('button')) as HTMLButtonElement | null;
+          if (
+            btn &&
+            !btn.disabled &&
+            !btn.closest('side-navigation-v2, bard-sidenav-container, bard-sidenav-content, mat-menu-panel, [role="navigation"], [role="menu"], aside, nav, .sidebar-list')
+          ) {
+            btn.click();
+            return;
+          }
+        }
+      }
     });
 
     isPromptSubmitted = true;
@@ -524,14 +561,18 @@ export async function generateAllSceneImages(
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
   console.log(`\n${"═".repeat(60)}`);
-  console.log(`🎨 [SceneImgGen] Starting Generation of ${prompts.length} Scene Images via Gemini...`);
+  console.log(`🎨 [SceneImgGen] Starting Generation of ${prompts.length} Scene Images via Gemini Web Browser...`);
   console.log(`   Reference Image: ${originalImageUrl}`);
   console.log(`   Target Directory: ${outputDir}`);
   console.log(`${"═".repeat(60)}\n`);
 
   // Download reference image to local path
-  const localRefImage = await downloadLocalCopy(originalImageUrl, outputDir);
-  if (!localRefImage || !fs.existsSync(localRefImage)) {
+  let localRefImage = await downloadLocalCopy(originalImageUrl, outputDir);
+  const defaultBearRef = path.resolve(__dirname, "../public/bubu_dudu_reference.jpg");
+  if ((!localRefImage || !fs.existsSync(localRefImage)) && fs.existsSync(defaultBearRef)) {
+    localRefImage = defaultBearRef;
+    console.log(`📌 [SceneImgGen] Using canonical Bubu & Dudu reference image: ${defaultBearRef}`);
+  } else if (!localRefImage || !fs.existsSync(localRefImage)) {
     console.warn(`⚠️  [SceneImgGen] Could not download reference image: ${originalImageUrl}`);
   }
 
@@ -562,31 +603,21 @@ export async function generateAllSceneImages(
     const results: SceneImageResult[] = [];
     const sceneImagePaths: string[] = [];
     const errors: string[] = [];
+    let sceneOneImagePath: string | undefined;
 
     for (let i = 0; i < prompts.length; i++) {
       console.log(`\n🖼️  [SceneImgGen] Generating Scene ${i + 1}/${prompts.length}...`);
       const dialogueText = dialogues && dialogues[i] ? dialogues[i] : undefined;
 
-      // Master Structure & Character Anchoring:
-      // - Phân cảnh 1 (i = 0): Tạo từ ảnh nhân vật gốc ban đầu.
-      // - Từ phân cảnh 2 trở đi (i >= 1): Lấy chính ảnh 3D đã tạo từ Phân cảnh 1 (sceneImagePaths[0])
-      //   làm hình mẫu chuẩn về cấu trúc, tạo hình, tỉ lệ và chất liệu cho các phân cảnh sau!
+      // Keep the original as the immutable identity reference. Scene 1 adds
+      // rendering style, but must not replace the original character design.
       const refImages: string[] = [];
-      if (i === 0) {
-        if (localRefImage && fs.existsSync(localRefImage)) {
-          refImages.push(localRefImage);
-        } else if (originalImageUrl) {
-          refImages.push(originalImageUrl);
-        }
-      } else {
-        // Từ phân cảnh 2 trở đi: CHỈ upload hình tạo từ phân cảnh 1, KHÔNG upload lại ảnh gốc
-        const scene1Image = sceneImagePaths[0];
-        if (scene1Image && fs.existsSync(scene1Image)) {
-          refImages.push(scene1Image);
-          console.log(`🎯 [SceneImgGen] Scene ${i + 1} CHỈ upload ảnh tạo Phân cảnh 1 làm mẫu: ${path.basename(scene1Image)} (không up lại ảnh gốc)`);
-        } else if (localRefImage && fs.existsSync(localRefImage)) {
-          refImages.push(localRefImage);
-        }
+      if (localRefImage && fs.existsSync(localRefImage)) {
+        refImages.push(localRefImage);
+      }
+      if (i > 0 && sceneOneImagePath && fs.existsSync(sceneOneImagePath)) {
+        refImages.push(sceneOneImagePath);
+        console.log(`🎯 [SceneImgGen] Scene ${i + 1}: original identity + Scene 1 style reference`);
       }
 
       const res = await generateSingleSceneImage(
@@ -596,12 +627,14 @@ export async function generateAllSceneImages(
         i,
         productSlug,
         outputDir,
-        dialogueText
+        dialogueText,
+        refImages.length > 1 ? "Original Reference and Scene 1" : "Original Reference"
       );
 
       results.push(res);
       if (res.success && res.imagePath) {
         sceneImagePaths.push(res.imagePath);
+        if (i === 0) sceneOneImagePath = res.imagePath;
       } else {
         errors.push(`Scene ${i + 1}: ${res.error || "Failed to generate"}`);
       }
@@ -684,11 +717,13 @@ export async function generateSingleSceneImageStandalone(
       }
       activeRefLabel = referenceLabel || "Original Reference";
     } else {
+      if (localRefImage && fs.existsSync(localRefImage)) {
+        refImages.push(localRefImage);
+      }
       if (scene1ImagePath && fs.existsSync(scene1ImagePath)) {
         refImages.push(scene1ImagePath);
-        console.log(`🎯 [SceneImgGen-Scene ${sceneIndex + 1}] Upload ảnh tạo Phân cảnh 1 làm mẫu: ${path.basename(scene1ImagePath)}`);
-      } else if (localRefImage && fs.existsSync(localRefImage)) {
-        refImages.push(localRefImage);
+        activeRefLabel = referenceLabel || "Original Reference and Scene 1";
+        console.log(`🎯 [SceneImgGen-Scene ${sceneIndex + 1}] Upload ảnh gốc và Phân cảnh 1 làm mẫu: ${path.basename(scene1ImagePath)}`);
       }
     }
 
@@ -711,4 +746,3 @@ export async function generateSingleSceneImageStandalone(
     }
   }
 }
-

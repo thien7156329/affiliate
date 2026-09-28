@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { VideoItem } from '../../types';
 import { useToast } from '../../context/ToastContext';
 
@@ -9,6 +9,11 @@ interface VideoPlayerModalProps {
   onUpdateSuccess: () => void;
 }
 
+const formatSeconds = (seconds: number) => {
+  if (!Number.isFinite(seconds) || seconds < 0) return '0.0s';
+  return `${seconds.toFixed(seconds >= 10 ? 1 : 2)}s`;
+};
+
 export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   video,
   isOpen,
@@ -16,15 +21,16 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   onUpdateSuccess,
 }) => {
   const { showToast } = useToast();
+  const videoRef = useRef<HTMLVideoElement>(null);
   const [title, setTitle] = useState('');
   const [caption, setCaption] = useState('');
   const [tags, setTags] = useState('');
   const [images, setImages] = useState<string[]>([]);
   const [s3Url, setS3Url] = useState('');
   const [streamUrl, setStreamUrl] = useState('');
-  const [trimSeconds, setTrimSeconds] = useState('0.6');
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [videoReloadKey, setVideoReloadKey] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
-  const [isTrimming, setIsTrimming] = useState(false);
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [isVoiceSyncing, setIsVoiceSyncing] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
@@ -37,7 +43,8 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
       setImages(video.images || []);
       setS3Url(video.s3_url || '');
       setStreamUrl(video.stream_url || video.s3_url || '');
-      setTrimSeconds('0.6');
+      setVideoDuration(0);
+      setVideoReloadKey((key) => key + 1);
     }
   }, [video, isOpen]);
 
@@ -102,42 +109,13 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
       showToast('🎉 Đã lồng giọng AI và đồng bộ thời gian thoại thành công!');
       if (data.video) {
         setStreamUrl(data.video.stream_url || data.video.s3_url || streamUrl);
+        setVideoReloadKey((key) => key + 1);
       }
       onUpdateSuccess();
     } catch (err: any) {
       showToast(`❌ Lỗi lồng giọng: ${err.message}`);
     } finally {
       setIsVoiceSyncing(false);
-    }
-  };
-
-  const handleTrimStart = async () => {
-    const sec = parseFloat(trimSeconds) || 0.6;
-    if (sec <= 0) {
-      showToast('⚠️ Vui lòng nhập số giây hợp lệ cần cắt đầu!');
-      return;
-    }
-    setIsTrimming(true);
-    try {
-      showToast(`✂️ Đang cắt ${sec}s đầu video bằng FFmpeg và tải lên lại S3...`);
-      const res = await fetch('/api/videos/trim-start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ video_id: video.id, trim_seconds: sec }),
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || 'Cắt video thất bại');
-      showToast('🎉 Đã cắt đầu video thành công!');
-      if (data.video) {
-        const fresh = (data.video.stream_url || data.video.s3_url || streamUrl);
-        setStreamUrl(`${fresh}?t=${Date.now()}`);
-        if (data.video.s3_url) setS3Url(data.video.s3_url);
-      }
-      onUpdateSuccess();
-    } catch (err: any) {
-      showToast(`❌ Lỗi cắt video: ${err.message}`);
-    } finally {
-      setIsTrimming(false);
     }
   };
 
@@ -260,12 +238,12 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
         className="modal"
         onClick={(e) => e.stopPropagation()}
         style={{
-          width: '960px',
-          maxWidth: '95vw',
-          height: 'min(740px, 92vh)',
+          width: '660px',
+          maxWidth: '92vw',
+          height: 'min(860px, 92vh)',
           maxHeight: '92vh',
-          padding: '20px 24px',
-          borderRadius: '20px',
+          padding: '18px 22px',
+          borderRadius: '18px',
           display: 'flex',
           flexDirection: 'column',
           gap: 0,
@@ -274,7 +252,6 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
           border: '1px solid var(--border)',
         }}
       >
-        {/* Header */}
         <div
           style={{
             display: 'flex',
@@ -319,58 +296,80 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
           </button>
         </div>
 
-        {/* Grid: 270px Video on Left, Content on Right */}
         <div
-          className="modal-body-grid"
+          className="modal-body-vertical"
           style={{
-            display: 'grid',
-            gridTemplateColumns: '270px 1fr',
-            gap: '20px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '16px',
             flex: 1,
             minHeight: 0,
             overflowY: 'auto',
-            padding: '16px 2px 16px 0',
-            alignItems: 'start',
+            padding: '14px 6px 14px 0',
           }}
         >
-          {/* Left Column: Video Player */}
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%' }}>
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              width: '100%',
+              gap: '8px',
+              flexShrink: 0,
+            }}
+          >
             <div
               id="videoPlayerContainer"
               style={{
                 background: '#000',
-                borderRadius: '12px',
+                borderRadius: '14px',
                 overflow: 'hidden',
                 width: '100%',
-                maxWidth: '270px',
-                maxHeight: '480px',
-                aspectRatio: '9/16',
+                maxHeight: '360px',
+                aspectRatio: '16/9',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                border: '1px solid var(--border)',
-                boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+                border: '1px solid rgba(255,255,255,0.12)',
+                boxShadow: '0 8px 30px rgba(0,0,0,0.55)',
               }}
             >
               {streamUrl ? (
                 <video
+                  key={`${videoReloadKey}:${streamUrl}`}
+                  ref={videoRef}
                   src={streamUrl}
                   controls
                   autoPlay
-                  style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#000', display: 'block', borderRadius: '12px' }}
+                  onLoadedMetadata={(e) => setVideoDuration(e.currentTarget.duration || 0)}
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'contain',
+                    background: '#000',
+                    display: 'block',
+                    borderRadius: '14px',
+                  }}
                 />
               ) : (
-                <div style={{ color: 'var(--muted)', fontSize: '13px' }}>Chưa có file video</div>
+                <div style={{ color: 'var(--muted)', fontSize: '14px' }}>Chưa có file video</div>
               )}
             </div>
+            {videoDuration > 0 && (
+              <div style={{ fontSize: '12px', color: 'var(--muted)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 4px' }}>
+                <span>⏱️ Thời lượng: <strong style={{ color: 'var(--text)' }}>{formatSeconds(videoDuration)}</strong></span>
+                {s3Url && (
+                  <a href={s3Url} target="_blank" rel="noreferrer" style={{ fontSize: '11px', color: '#38bdf8', textDecoration: 'none' }}>
+                    🔗 Xem link S3
+                  </a>
+                )}
+              </div>
+            )}
           </div>
 
-          {/* Right Column: Fields */}
           <div
-            id="videoModalRightColumn"
-            style={{ display: 'flex', flexDirection: 'column', gap: '14px', overflowY: 'auto', paddingRight: '8px', width: '100%' }}
+            id="videoModalDetails"
+            style={{ display: 'flex', flexDirection: 'column', gap: '14px', width: '100%' }}
           >
-            {/* Vietnamese Caption */}
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -428,7 +427,6 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
               />
             </div>
 
-            {/* Hashtags */}
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
                 <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--muted)' }}>🏷️ Hashtags:</span>
@@ -459,7 +457,6 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
               />
             </div>
 
-            {/* Image Gallery */}
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                 <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--muted)' }}>🖼️ Product Images:</span>
@@ -527,7 +524,6 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
               )}
             </div>
 
-            {/* S3 Link */}
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
                 <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--muted)' }}>☁️ Cloud S3 Link:</span>
@@ -560,7 +556,6 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
           </div>
         </div>
 
-        {/* Footer */}
         <div
           id="videoModalFooter"
           style={{
@@ -619,62 +614,6 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
             >
               <span>{isVoiceSyncing ? '⏳ Đang lồng giọng...' : '🎙️ Lồng Giọng AI'}</span>
             </button>
-
-            <div
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '4px',
-                background: 'var(--bg3)',
-                border: '1px solid var(--border)',
-                borderRadius: '8px',
-                padding: '3px 6px',
-              }}
-            >
-              <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text)' }} title="Thời gian cắt bỏ ở đầu video">
-                ✂️ Cắt đầu:
-              </span>
-              <input
-                type="number"
-                step="0.1"
-                min="0.1"
-                max="10"
-                value={trimSeconds}
-                onChange={(e) => setTrimSeconds(e.target.value)}
-                style={{
-                  width: '46px',
-                  padding: '3px 4px',
-                  fontSize: '11px',
-                  background: 'var(--bg2)',
-                  color: 'var(--text)',
-                  border: '1px solid var(--border)',
-                  borderRadius: '4px',
-                  textAlign: 'center',
-                  outline: 'none',
-                }}
-              />
-              <span style={{ fontSize: '11px', color: 'var(--muted)' }}>s</span>
-              <button
-                type="button"
-                onClick={handleTrimStart}
-                disabled={isTrimming}
-                style={{
-                  background: 'rgba(245,158,11,0.15)',
-                  color: '#f59e0b',
-                  border: '1px solid rgba(245,158,11,0.35)',
-                  padding: '4px 10px',
-                  borderRadius: '6px',
-                  fontSize: '11px',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '4px',
-                }}
-              >
-                <span>{isTrimming ? '⏳ Cắt...' : '✂️ Cắt & Up lại'}</span>
-              </button>
-            </div>
           </div>
 
           <div id="videoModalFooterRight" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>

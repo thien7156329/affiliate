@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, memo, useCallback } from 'react';
 import { AiDebateMessage } from '../../types';
 import { useToast } from '../../context/ToastContext';
+import { DebateFeedView } from './DebateFeedView';
 
 interface ConsensusDebateBoxProps {
   productName: string;
@@ -8,6 +9,7 @@ interface ConsensusDebateBoxProps {
   imageUrl?: string;
   productDesc?: string;
   onConsensusReached: (promptsObj: Record<string, string>) => void;
+  onOpenPartEditor?: (partNum: number) => void;
 }
 
 const DebateCardItem: React.FC<{ msg: AiDebateMessage }> = memo(({ msg }) => {
@@ -47,6 +49,7 @@ export const ConsensusDebateBox: React.FC<ConsensusDebateBoxProps> = memo(({
   imageUrl,
   productDesc,
   onConsensusReached,
+  onOpenPartEditor,
 }) => {
   const { showToast } = useToast();
   const [messages, setMessages] = useState<AiDebateMessage[]>([]);
@@ -72,12 +75,37 @@ export const ConsensusDebateBox: React.FC<ConsensusDebateBoxProps> = memo(({
     const newSessionId = continuePrevious && sessionId ? sessionId : 'sess_' + Math.random().toString(36).substring(2, 10);
     setSessionId(newSessionId);
 
+    const maxExistingRound = messages.reduce((max, m) => {
+      let r = m.round;
+      if (!r) {
+        const match = m.title?.match(/Round\s*(\d+)/i) || m.content?.match(/Round\s*(\d+)/i);
+        r = match ? parseInt(match[1], 10) : 1;
+      }
+      return Math.max(max, Number(r) || 1);
+    }, currentRound || 1);
+
+    const targetStartRound = continuePrevious ? maxExistingRound + 1 : 1;
+
     if (!continuePrevious) {
       setMessages([]);
       setCurrentRound(1);
-      setStatusText('🎭 AI 1 (AGY 3.8) & 🧐 AI 2 (GLM-5) đang khởi tạo phiên kiểm định...');
+      setStatusText('🎭 AI 1 (Codex Sol Light) & 🧐 AI 2 (Gemini 3.8 Low) đang khởi tạo phiên kiểm định...');
     } else {
-      setStatusText('📢 Tiếp thu góp ý của Đạo diễn và tiếp tục tranh biện...');
+      setCurrentRound(targetStartRound);
+      setStatusText(`📢 Tiếp thu góp ý của Đạo diễn và bắt đầu tranh biện Round ${targetStartRound}...`);
+    }
+
+    if (continuePrevious && customFeedback) {
+      const userMsg: AiDebateMessage = {
+        agent: "Đạo Diễn (Bạn / User)",
+        model: "Human Director",
+        role: "Chỉ Đạo Kịch Bản",
+        title: `📢 Góp Ý Trực Tiếp Từ Đạo Diễn (Round ${targetStartRound})`,
+        content: customFeedback,
+        timestamp: new Date().toLocaleTimeString('vi-VN'),
+        round: targetStartRound,
+      };
+      setMessages((prev) => [...prev, userMsg]);
     }
 
     try {
@@ -92,7 +120,7 @@ export const ConsensusDebateBox: React.FC<ConsensusDebateBoxProps> = memo(({
           scene_count: 6,
           user_feedback: customFeedback || preFeedback.trim() || undefined,
           session_id: newSessionId,
-          start_round: continuePrevious ? currentRound + 1 : 1,
+          start_round: targetStartRound,
         }),
       });
 
@@ -130,11 +158,17 @@ export const ConsensusDebateBox: React.FC<ConsensusDebateBoxProps> = memo(({
               } else if (evt.type === 'ai1_start') {
                 setStatusText(`🎭 AI 1 (AGY 3.8) đang sáng tác và tối ưu kịch bản 3D (Round ${evt.round})...`);
               } else if (evt.type === 'ai1_done') {
-                if (evt.message) setMessages((prev) => [...prev, evt.message]);
+                if (evt.message) {
+                  const m = { ...evt.message, round: evt.round || currentRound };
+                  setMessages((prev) => [...prev, m]);
+                }
               } else if (evt.type === 'ai2_start') {
-                setStatusText(`🧐 AI 2 (GLM-5) đang kiểm định tiêu chí nhân vật & bố cục...`);
+                setStatusText(`🧐 AI 2 (Gemini 3.8 Low) đang kiểm định tiêu chí nhân vật & bố cục...`);
               } else if (evt.type === 'ai2_done') {
-                if (evt.message) setMessages((prev) => [...prev, evt.message]);
+                if (evt.message) {
+                  const m = { ...evt.message, round: evt.round || currentRound };
+                  setMessages((prev) => [...prev, m]);
+                }
                 if (evt.reached) {
                   setStatusText(`🎉 ĐỒNG THUẬN 100% HOÀN HẢO ĐẠT ĐƯỢC TẠI ROUND ${evt.round}!`);
                 } else {
@@ -185,7 +219,7 @@ export const ConsensusDebateBox: React.FC<ConsensusDebateBoxProps> = memo(({
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
         <div style={{ fontSize: '13px', fontWeight: 600, color: '#c4b5fd', display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <span>🤝 2-AI Validation (AGY 3.8 tạo prompt, GLM-5 kiểm định đến khi đạt 100%)</span>
+          <span>🤝 2-AI Validation (Codex Sol sáng tác, Gemini 3.8 Low kiểm định đến khi đạt 100%)</span>
         </div>
         <button
           type="button"
@@ -246,14 +280,17 @@ export const ConsensusDebateBox: React.FC<ConsensusDebateBoxProps> = memo(({
             background: 'var(--bg2)',
             borderRadius: '8px',
             border: '1px solid var(--border)',
-            maxHeight: '280px',
+            maxHeight: '520px',
             overflowY: 'auto',
             fontSize: '12px',
           }}
         >
-          {messages.map((msg, idx) => (
-            <DebateCardItem key={idx} msg={msg} />
-          ))}
+          <DebateFeedView
+            messages={messages}
+            currentRound={currentRound}
+            isDebating={isStreaming}
+            onOpenPartEditor={onOpenPartEditor}
+          />
           <div ref={messagesEndRef} />
         </div>
       )}

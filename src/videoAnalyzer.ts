@@ -10,6 +10,7 @@ import axios from "axios";
 import fs from "fs";
 import path from "path";
 import { execSync } from "child_process";
+import { callAgy, isAgyEnabled, AGY_DEFAULT_MODEL } from "./agyClient.js";
 
 export interface DialogueSegment {
   id?: string;
@@ -49,58 +50,42 @@ export function getVideoDuration(videoPath: string): number {
 export async function analyzeVideoDialogueTimestamps(
   videoPath: string,
   providedScript?: string,
-  knownCharacters: string[] = ["xam", "sep_shiba", "be_meow"]
+  knownCharacters: string[] = ["dudu", "bubu", "xam", "sep_shiba", "be_meow"]
 ): Promise<VideoAnalysisResult> {
   const duration = getVideoDuration(videoPath);
-  const geminiKey = process.env.GEMINI_API_KEY;
-
-  if (geminiKey && fs.existsSync(videoPath)) {
+  // ── Step 1: Use AGY Gemini 3.8 (Primary) ──
+  if (isAgyEnabled()) {
     try {
-      console.log(`🤖 [VideoAnalyzer] Analyzing video with Gemini 2.5: ${path.basename(videoPath)} (${duration.toFixed(1)}s)...`);
-      const fileBuffer = fs.readFileSync(videoPath);
-      const base64Video = fileBuffer.toString("base64");
-
-      const promptText = `Analyze this video and identify every dialogue segment. 
+      console.log(`🤖 [VideoAnalyzer] Analyzing video dialogue timestamps using AGY Gemini (${AGY_DEFAULT_MODEL}): ${path.basename(videoPath)} (${duration.toFixed(1)}s)...`);
+      const systemPrompt = `You are a professional animation dialogue sound editor (AGY Gemini 3.8).
+Your task is to analyze the provided screenplay/dialogue and align each spoken line to precise timestamps within a video of total duration: ${duration.toFixed(1)} seconds.
 Known character IDs: ${knownCharacters.join(", ")}.
-If there is a provided script, match lines to exact video timestamps:
-"${providedScript || "Extract dialogue from video"}"
 
-For each segment, return a JSON array containing objects with:
-- "speaker": string (one of known character IDs e.g. xam, sep_shiba, be_meow)
-- "start": number (start time in seconds, e.g. 0.8)
-- "end": number (end time in seconds, e.g. 3.4)
-- "text": string (exact dialogue spoken in Vietnamese)
-- "emotion": string (e.g. happy, angry, sad, excited)
+Return a JSON array of objects with this schema:
+[
+  {
+    "speaker": "dudu",
+    "start": 0.8,
+    "end": 3.5,
+    "text": "Exact Vietnamese line",
+    "emotion": "happy"
+  }
+]
+Rules:
+- The video consists of scenes of 10.0 seconds each (Part 1: 0-10s, Part 2: 10-20s, Part 3: 20-30s, etc.).
+- In every scene, the first dialogue line MUST start promptly at +0.4s to +0.6s after the cut (e.g. 0.5s, 10.5s, 20.5s, 30.5s, etc.). Never delay 2-4 seconds into the scene.
+- Subsequent lines in the same scene follow naturally after the previous speaker finishes with a 0.3s turn-taking pause.
+- Allocate realistic speaking time (~3-4 words per second).
+- Keep timestamps strictly within [0, ${duration.toFixed(1)}].
+- Output ONLY the JSON array. No markdown wrapper.`;
 
-IMPORTANT: Return JSON array ONLY. No markdown wrapper.`;
+      const userPrompt = `Video Duration: ${duration.toFixed(1)} seconds.
+Script:
+"${providedScript || "Phim hoạt hình ngắn 60s"}"`;
 
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
-      const payload = {
-        contents: [
-          {
-            role: "user",
-            parts: [
-              {
-                inlineData: {
-                  mimeType: "video/mp4",
-                  data: base64Video.length < 20 * 1024 * 1024 ? base64Video : undefined // send if small enough
-                }
-              },
-              { text: promptText }
-            ].filter(p => p.text || p.inlineData?.data)
-          }
-        ],
-        generationConfig: {
-          temperature: 0.2,
-          responseMimeType: "application/json"
-        }
-      };
-
-      const response = await axios.post(url, payload, { timeout: 30000 });
-      const rawText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-
+      const rawText = await callAgy(systemPrompt, userPrompt, true);
       if (rawText) {
-        const cleanJson = rawText.replace(/```json/g, "").replace(/```/g, "").trim();
+        const cleanJson = rawText.replace(/```json/gi, "").replace(/```/g, "").trim();
         const parsed = JSON.parse(cleanJson);
         if (Array.isArray(parsed) && parsed.length > 0) {
           const segments: DialogueSegment[] = parsed.map((item: any, idx: number) => ({
@@ -111,11 +96,12 @@ IMPORTANT: Return JSON array ONLY. No markdown wrapper.`;
             text: item.text || "",
             emotion: item.emotion || "neutral"
           }));
-          return { video_duration: duration, segments, summary: "Analyzed via Gemini 2.5 Flash" };
+          console.log(`✅ [VideoAnalyzer] AGY Gemini aligned ${segments.length} dialogue segments successfully!`);
+          return { video_duration: duration, segments, summary: `Analyzed via AGY Gemini (${AGY_DEFAULT_MODEL})` };
         }
       }
     } catch (err: any) {
-      console.warn(`⚠️ [VideoAnalyzer] Gemini analysis failed/skipped: ${err.message}. Using intelligent script segmentation fallback.`);
+      console.warn(`⚠️ [VideoAnalyzer] AGY analysis failed: ${err.message}. Using intelligent script segmentation fallback.`);
     }
   }
 
@@ -139,7 +125,13 @@ export function parseScriptToTimestamps(script: string, videoDuration: number): 
     let speaker = "xam";
     let text = line;
 
-    if (line.includes("Sếp") || line.includes("Shiba") || line.startsWith("👔")) {
+    if (/dudu|gấu nâu/i.test(line)) {
+      speaker = "dudu";
+      text = line.replace(/^[🐻🐻‍❄️👔🐶🐱]?\s*(Gấu\s*DuDu|DuDu|Gấu\s*Nâu):\s*/i, "");
+    } else if (/bubu|gấu trắng/i.test(line)) {
+      speaker = "bubu";
+      text = line.replace(/^[🐻🐻‍❄️👔🐶🐱]?\s*(Gấu\s*BuBu|BuBu|Gấu\s*Trắng):\s*/i, "");
+    } else if (line.includes("Sếp") || line.includes("Shiba") || line.startsWith("👔")) {
       speaker = "sep_shiba";
       text = line.replace(/^[👔🐶🐱]?\s*(Sếp Shiba|Sếp|Shiba):\s*/i, "");
     } else if (line.includes("Xám") || line.startsWith("🐶")) {
@@ -163,22 +155,36 @@ export function parseScriptToTimestamps(script: string, videoDuration: number): 
     });
   }
 
-  const segmentDuration = Math.min(5.0, (videoDuration - 0.5) / validLines.length);
+  const numParts = Math.max(1, Math.round(videoDuration / 10.0));
+  const partDuration = videoDuration / numParts;
+
+  // Phân bổ câu thoại theo từng Part (scene) để âm thanh bắt đầu đúng lúc chuyển cảnh
+  // và không bị dồn cục ở nửa đầu video hoặc bị trễ
+  const linesPerPart = Math.max(1, Math.ceil(validLines.length / numParts));
 
   validLines.forEach((item, idx) => {
-    const start = 0.4 + idx * segmentDuration;
-    const end = Math.min(videoDuration - 0.1, start + segmentDuration - 0.2);
+    const partIdx = Math.min(numParts - 1, Math.floor(idx / linesPerPart));
+    const partBase = partIdx * partDuration;
+    const indexInPart = idx % linesPerPart;
+
+    // Ước tính thời lượng nói: ~14 ký tự/giây tiếng Việt
+    const estDur = Math.max(1.8, Math.min(4.2, item.text.length * 0.07));
+    const start = indexInPart === 0
+      ? partBase + 0.5
+      : Math.min(partBase + partDuration - 0.5, segments[idx - 1].end + 0.35);
+    const end = Math.min(partBase + partDuration - 0.1, start + estDur);
+
     segments.push({
       id: `seg_${idx + 1}`,
       speaker: item.speaker,
       start: parseFloat(start.toFixed(2)),
       end: parseFloat(end.toFixed(2)),
       text: item.text,
-      emotion: item.speaker === "sep_shiba" ? "angry" : "neutral"
+      emotion: item.speaker === "sep_shiba" ? "angry" : "neutral",
     });
   });
 
-  return { video_duration: videoDuration, segments, summary: "Segmented via script parser" };
+  return { video_duration: videoDuration, segments, summary: "Segmented via dynamic scene-aware script parser" };
 }
 
 /**

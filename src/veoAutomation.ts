@@ -56,6 +56,7 @@ export function restoreUserFocus(targetApp?: string | null): void {
 
 /**
  * Ensures the Chrome window is placed off-screen so it never renders over or flashes on the user's workspace.
+ * Positioned far to the left with a small size — effectively hidden but still functioning.
  */
 export async function ensureWindowOffscreen(page: any): Promise<void> {
   try {
@@ -127,6 +128,8 @@ const GEMINI_VEO_URL = "https://gemini.google.com/app";
 export interface VeoResult {
   success: boolean;
   localPath?: string;
+  voicedPath?: string;
+  voicedUrl?: string;
   thumbnailPath?: string;
   videoUrl?: string;
   error?: string;
@@ -250,8 +253,8 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
         userDataDir: tempProfileDir,
         args: [
           `--profile-directory=${CHROME_PROFILE}`,
-          "--window-position=3000,100",
-          "--window-size=1280,900",
+          "--window-position=10,40",
+          "--window-size=680,540",
           "--no-sandbox",
           "--disable-setuid-sandbox",
           "--disable-blink-features=AutomationControlled",
@@ -280,16 +283,20 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
     page.on("response", async (response: any) => {
       if (!isPromptSubmitted) return;
       const url = response.url();
-      const contentType = response.headers()["content-type"] || "";
-      const isVideo = contentType.includes("video/") ||
+      const contentType = (response.headers()["content-type"] || "").toLowerCase();
+
+      // Exclude Gemini LLM endpoints, RPC calls, avatars, and upload URLs
+      if (url.includes("generativelanguage.googleapis.com") || url.includes("batchexecute") || url.includes("google.com/upload") || url.includes("aiusercontent.google.com/image")) {
+        return;
+      }
+
+      const isVideo = contentType.startsWith("video/") ||
         url.includes(".mp4") || url.includes("videoplayback") ||
-        url.includes("video-downloads") || url.includes("generativelanguage") ||
-        url.includes("aiusercontent") || url.includes("usercontent.google") ||
-        (url.includes("google") && (contentType.includes("octet-stream") && url.length > 100));
+        url.includes("video-downloads");
 
       if (isVideo && !capturedVideoUrl && !url.startsWith("blob:")) {
         capturedVideoUrl = url;
-        console.log(`🎯 [VeoAuto] Captured video URL: ${url.slice(0, 100)}`);
+        console.log(`🎯 [VeoAuto] Captured genuine video URL: ${url.slice(0, 100)}`);
       }
     });
 
@@ -305,36 +312,93 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
     }
 
     // ── Navigate to Gemini Video section ─────────────────────────────────────
-    console.log("🎥 [VeoAuto] Clicking Video tab in sidebar...");
+    // Direct URL navigation is more reliable than clicking sidebar links
+    console.log("🎥 [VeoAuto] Navigating directly to Gemini Video page...");
     try {
-      // Wait for sidebar to render
-      await page.waitForSelector(
-        '[data-test-id="videos-side-nav-entry-button"] a, a[href="/videos"]',
-        { timeout: 10_000 }
-      );
+      // Strategy 1: Direct URL navigation to Video page
+      const currentUrl = await page.url();
+      if (!currentUrl.includes("/video")) {
+        await page.goto("https://gemini.google.com/app/video", { waitUntil: "networkidle2", timeout: 30_000 });
+        await new Promise(r => setTimeout(r, 3000));
+      }
 
-      // Use evaluate to dispatch a real MouseEvent (triggers Angular router)
-      const navClicked = await page.evaluate(() => {
-        const link = document.querySelector('[data-test-id="videos-side-nav-entry-button"] a') as HTMLAnchorElement
-          || document.querySelector('a[href="/videos"]') as HTMLAnchorElement;
-        if (!link) return false;
-        link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-        return true;
+      // Verify we're on the Video page
+      const videoPageCheck = await page.evaluate(() => {
+        const url = window.location.href;
+        const bodyText = document.body?.innerText || "";
+        const hasVideoHeading = bodyText.includes("Tạo video") || bodyText.includes("Create video");
+        const hasVideoUrl = url.includes("/video");
+        return { url, hasVideoHeading, hasVideoUrl };
+      });
+      console.log(`🎥 [VeoAuto] Video page check — URL: ${videoPageCheck.hasVideoUrl}, Heading: ${videoPageCheck.hasVideoHeading}`);
+
+      // Strategy 2: If URL navigation failed, try sidebar click
+      if (!videoPageCheck.hasVideoUrl && !videoPageCheck.hasVideoHeading) {
+        console.log("⚠️  [VeoAuto] Direct URL nav failed, trying sidebar click...");
+        const sidebarClicked = await page.evaluate(() => {
+          // Try sidebar link
+          const link = document.querySelector('[data-test-id="videos-side-nav-entry-button"] a') as HTMLAnchorElement
+            || document.querySelector('a[href="/videos"]') as HTMLAnchorElement
+            || document.querySelector('a[href*="video"]') as HTMLAnchorElement
+            || Array.from(document.querySelectorAll('a')).find(a => {
+              const text = (a.textContent || '').toLowerCase();
+              return text === 'video' || text === 'videos';
+            }) as HTMLAnchorElement;
+          if (link) {
+            link.click();
+            return true;
+          }
+          return false;
+        });
+        if (sidebarClicked) {
+          await new Promise(r => setTimeout(r, 3000));
+          console.log("✅ [VeoAuto] Sidebar Video link clicked");
+        }
+      }
+
+      // Strategy 3: If still not on Video page, force-select "Tạo video" from tools dropdown
+      const stillNotVideo = await page.evaluate(() => {
+        const url = window.location.href;
+        const bodyText = document.body?.innerText || "";
+        return !url.includes("/video") && !bodyText.includes("Tạo video") && !bodyText.includes("Create video");
       });
 
-      if (navClicked) {
-        console.log("✅ [VeoAuto] Video tab clicked — waiting for Video UI to load...");
-        await new Promise(r => setTimeout(r, 3000));
+      if (stillNotVideo) {
+        console.log("⚠️  [VeoAuto] Still not on Video page, trying to select 'Tạo video' from tools menu...");
+        // Click the tools/attachment button to open menu
+        await page.evaluate(() => {
+          const toolsBtn = document.querySelector('button[aria-label*="công cụ"]') as HTMLButtonElement
+            || document.querySelector('button[aria-label*="tools"]') as HTMLButtonElement
+            || document.querySelector('.add-content-button button') as HTMLButtonElement
+            || Array.from(document.querySelectorAll('button')).find(b =>
+              b.innerHTML.includes('add') || b.getAttribute('aria-label')?.includes('+')
+            ) as HTMLButtonElement;
+          if (toolsBtn) toolsBtn.click();
+        });
+        await new Promise(r => setTimeout(r, 1000));
 
-        // Verify navigation worked by checking page content
-        const inVideoSection = await page.evaluate(() =>
-          document.body?.innerText?.includes("Video") &&
-          (window.location.href.includes("video") || !!document.querySelector('[data-test-id*="video"]'))
-        );
-        console.log(`🎥 [VeoAuto] Video section loaded: ${inVideoSection}`);
+        // Select "Tạo video" option
+        const videoModeSelected = await page.evaluate(() => {
+          const items = Array.from(document.querySelectorAll('button, [role="menuitem"], span, div'));
+          const videoItem = items.find(el => {
+            const text = (el.textContent || '').trim();
+            return text === 'Tạo video' || text === 'Create video' || text === 'Generate video';
+          }) as HTMLElement;
+          if (videoItem) {
+            videoItem.click();
+            return true;
+          }
+          return false;
+        });
+        if (videoModeSelected) {
+          console.log("✅ [VeoAuto] 'Tạo video' mode selected from tools menu");
+          await new Promise(r => setTimeout(r, 2000));
+        } else {
+          console.warn("⚠️  [VeoAuto] Could not find 'Tạo video' option — video may generate via chat fallback");
+        }
       }
     } catch (err: any) {
-      console.warn(`⚠️  [VeoAuto] Video tab navigation failed: ${err.message} — using main chat fallback`);
+      console.warn(`⚠️  [VeoAuto] Video navigation failed: ${err.message} — using chat fallback`);
     }
 
     // Wait for input textarea (works in both chat and Video UI)
@@ -475,6 +539,77 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
 
     await new Promise(r => setTimeout(r, 1000));
 
+    // ── Enable "Add sound" toggle if available ─────────────────────────────
+    console.log("🔊 [VeoAuto] Checking for 'Add sound' toggle...");
+    const soundEnabled = await page.evaluate(() => {
+      // Strategy 1: Find toggle/checkbox/switch containing "Add sound" or "Thêm âm thanh" text
+      const allLabels = Array.from(document.querySelectorAll('label, span, div, p, button'));
+      const soundLabel = allLabels.find(el => {
+        const text = (el.textContent || '').trim().toLowerCase();
+        return text === 'add sound' || text === 'thêm âm thanh' || 
+               text.includes('add sound') || text.includes('âm thanh');
+      }) as HTMLElement | null;
+      
+      if (soundLabel) {
+        // Find associated toggle/checkbox/switch near the label
+        const parent = soundLabel.closest('.toggle-container, .setting-row, .option-row, mat-slide-toggle, label, [role="switch"]') || soundLabel.parentElement;
+        if (parent) {
+          // Check for mat-slide-toggle
+          const slideToggle = parent.querySelector('mat-slide-toggle, [role="switch"]') as HTMLElement;
+          if (slideToggle) {
+            const isChecked = slideToggle.classList.contains('mat-mdc-slide-toggle-checked') || 
+                              slideToggle.getAttribute('aria-checked') === 'true';
+            if (!isChecked) {
+              slideToggle.click();
+              return 'toggled_on';
+            }
+            return 'already_on';
+          }
+          
+          // Check for regular checkbox
+          const checkbox = parent.querySelector('input[type="checkbox"]') as HTMLInputElement;
+          if (checkbox && !checkbox.checked) {
+            checkbox.click();
+            return 'toggled_on';
+          } else if (checkbox?.checked) {
+            return 'already_on';
+          }
+          
+          // Try clicking the label/button itself as toggle
+          const clickTarget = parent.querySelector('button, [role="switch"], .toggle') as HTMLElement;
+          if (clickTarget) {
+            clickTarget.click();
+            return 'clicked_toggle';
+          }
+        }
+        // Fallback: click the label itself
+        soundLabel.click();
+        return 'clicked_label';
+      }
+      
+      // Strategy 2: Find any mat-slide-toggle or switch near sound-related aria labels
+      const toggles = Array.from(document.querySelectorAll('mat-slide-toggle, [role="switch"]'));
+      for (const toggle of toggles) {
+        const nearby = toggle.closest('.setting-row, .option-row, label');
+        const nearbyText = (nearby?.textContent || toggle.getAttribute('aria-label') || '').toLowerCase();
+        if (nearbyText.includes('sound') || nearbyText.includes('âm thanh') || nearbyText.includes('audio')) {
+          const isChecked = (toggle as HTMLElement).classList.contains('mat-mdc-slide-toggle-checked') || 
+                            toggle.getAttribute('aria-checked') === 'true';
+          if (!isChecked) {
+            (toggle as HTMLElement).click();
+            return 'toggled_on';
+          }
+          return 'already_on';
+        }
+      }
+      
+      return 'not_found';
+    });
+    console.log(`🔊 [VeoAuto] Sound toggle result: ${soundEnabled}`);
+    if (soundEnabled === 'toggled_on' || soundEnabled === 'clicked_toggle' || soundEnabled === 'clicked_label') {
+      await new Promise(r => setTimeout(r, 500));
+    }
+
     // Take screenshot to verify before submitting
     const debugDir = path.resolve(__dirname, "../data/debug");
     if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir, { recursive: true });
@@ -482,29 +617,51 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
 
     // Submit prompt using DOM click on Generate/Send button
     const submitted = await page.evaluate(() => {
+      // 1. Search strictly inside the input area container first
+      const inputArea = document.querySelector('input-area-v2, .input-area, .chat-input-container, input-container, fieldset.input-area-container');
+      if (inputArea) {
+        const areaSendBtn = inputArea.querySelector(
+          '.send-button button, .send-button-container button, gem-icon-button.send-button button, button[aria-label="Send message"], button[aria-label="Gửi tin nhắn"], button mat-icon[data-mat-icon-name="arrow_upward"], button mat-icon[fonticon="arrow_upward"]'
+        ) as HTMLElement | null;
+        if (areaSendBtn) {
+          const btn = (areaSendBtn.tagName === 'BUTTON' ? areaSendBtn : areaSendBtn.closest('button')) as HTMLButtonElement | null;
+          if (btn && !btn.disabled) {
+            btn.click();
+            return true;
+          }
+        }
+      }
+
+      // 2. High-priority dedicated Send button selectors (strictly excluding sidebar/history/menus)
       const selectors = [
+        '.send-button button',
+        '.send-button-container button',
+        'gem-icon-button.send-button button',
+        'button[aria-label="Send message"]',
         'button[aria-label="Gửi tin nhắn"]',
-        'button[aria-label*="Gửi" i]',
-        'button[aria-label*="Generate" i]',
-        'button[aria-label*="Tạo" i]',
-        'button[aria-label*="Send" i]',
-        'button.send-button',
-        'mat-icon[fonticon="arrow_upward"]',
         'button mat-icon[data-mat-icon-name="arrow_upward"]',
+        'button mat-icon[fonticon="arrow_upward"]',
       ];
       for (const sel of selectors) {
-        const btn = document.querySelector(sel) as HTMLButtonElement;
-        // Verify button is not inside a menu, dialog list, or sidebar list
-        if (btn && !btn.disabled && !btn.closest('mat-menu-panel') && !btn.closest('navigation-list') && !btn.closest('.sidebar-list') && !btn.closest('[role="menu"]')) {
-          btn.click();
-          return true;
+        const target = document.querySelector(sel) as HTMLElement | null;
+        if (target) {
+          const btn = (target.tagName === 'BUTTON' ? target : target.closest('button')) as HTMLButtonElement | null;
+          if (
+            btn &&
+            !btn.disabled &&
+            !btn.closest('side-navigation-v2, bard-sidenav-container, bard-sidenav-content, mat-menu-panel, [role="navigation"], [role="menu"], aside, nav, .sidebar-list')
+          ) {
+            btn.click();
+            return true;
+          }
         }
       }
       
-      const btns = Array.from(document.querySelectorAll('button'));
+      // 3. Fallback: Search buttons ONLY within main chat / input area (never sidebar)
+      const mainArea = document.querySelector('chat-window, .main-content, main, .content-container') || document;
+      const btns = Array.from(mainArea.querySelectorAll('button'));
       const targetBtn = btns.find(b => {
-        // Bypass buttons inside menus or sidebars to avoid misclicking menu options like "Ghim" / "Pin"
-        if (b.closest('mat-menu-panel') || b.closest('navigation-list') || b.closest('.sidebar-list') || b.closest('[role="menu"]') || b.closest('.context-menu')) {
+        if (b.closest('side-navigation-v2, bard-sidenav-container, bard-sidenav-content, mat-menu-panel, [role="navigation"], [role="menu"], aside, nav, .sidebar-list, .context-menu')) {
           return false;
         }
 
@@ -512,19 +669,11 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
         const text = (b.textContent || '').toLowerCase();
         const html = (b.innerHTML || '').toLowerCase();
 
-        // Exclude menu options explicitly
-        const isMenuOption = aria.includes('ghim') || aria.includes('pin') || aria.includes('xóa') || aria.includes('delete') || 
-                             aria.includes('sổ') || aria.includes('note') || aria.includes('chia') || aria.includes('share') || 
-                             aria.includes('đổi') || aria.includes('rename') || text.includes('ghim') || text.includes('pin') ||
-                             text.includes('xóa') || text.includes('delete') || text.includes('chia') || text.includes('share') ||
-                             text.includes('đổi') || text.includes('rename');
-        if (isMenuOption) return false;
-
-        return aria.includes('generate') || aria.includes('tạo') || aria.includes('gửi') || aria.includes('send') ||
-               text.includes('generate') || text.includes('tạo') || text.includes('gửi') || text.includes('send') ||
-               html.includes('send') || html.includes('gửi') || html.includes('mat-icon-name="send"');
+        return aria === 'send message' || aria === 'gửi tin nhắn' || aria === 'send' || aria === 'gửi' ||
+               text === 'send' || text === 'gửi' ||
+               html.includes('data-mat-icon-name="arrow_upward"') || html.includes('fonticon="arrow_upward"');
       });
-      if (targetBtn) {
+      if (targetBtn && !targetBtn.disabled) {
         targetBtn.click();
         return true;
       }
@@ -610,12 +759,16 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
                            bodyText.includes("video đã được tạo") ||
                            bodyText.includes("video đã xong");
 
-        // Find download button (English + Vietnamese labels)
-        const downloadBtn = document.querySelector(
-          'button[aria-label*="Download" i], button[aria-label*="download" i], ' +
-          'button[aria-label*="Tải" i], button[aria-label*="tải" i], ' +
-          'a[download], [data-mat-icon-name="download"]'
-        );
+        // Find genuine download video button (exclude upload buttons like 'Nội dung tải lên' / 'Upload')
+        const allBtns = Array.from(document.querySelectorAll('button, a[download]'));
+        const downloadBtn = allBtns.find(b => {
+          const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+          const text = (b.textContent || '').toLowerCase();
+          // Exclude upload buttons
+          if (aria.includes('tải lên') || aria.includes('upload') || text.includes('tải lên') || text.includes('upload')) return false;
+          return aria.includes('tải xuống') || aria.includes('tải video') || aria.includes('download') ||
+                 text.includes('tải xuống') || text.includes('download') || b.hasAttribute('download');
+        });
 
         const errorText = document.querySelector(
           '.error-container, [class*="error-message"]'
@@ -624,10 +777,22 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
         return { videoReady, hasDownload: !!downloadBtn, errorText };
       }).catch(() => ({ videoReady: false, hasDownload: false, errorText: null }));
 
+      // Veo video generation takes at least 20-30s. Ignore premature DOM triggers before 20s
+      if (elapsed < 20) {
+        continue;
+      }
+
       if (pageResult.videoReady || pageResult.hasDownload) {
         // Try to get video source directly first to avoid navigation-inducing clicks
         const videoSrc = await page.evaluate(() => {
-          const downloadBtns = Array.from(document.querySelectorAll('button[aria-label*="Download" i], button[aria-label*="download" i], button[aria-label*="Tải" i], button[aria-label*="tải" i], a[download]'));
+          const allBtns = Array.from(document.querySelectorAll('button, a[download]'));
+          const downloadBtns = allBtns.filter(b => {
+            const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+            const text = (b.textContent || '').toLowerCase();
+            if (aria.includes('tải lên') || aria.includes('upload') || text.includes('tải lên') || text.includes('upload')) return false;
+            return aria.includes('tải xuống') || aria.includes('tải video') || aria.includes('download') ||
+                   text.includes('tải xuống') || text.includes('download') || b.hasAttribute('download');
+          });
           if (downloadBtns.length > 0) {
             const latestBtn = downloadBtns[downloadBtns.length - 1];
             let parent = latestBtn.parentElement;
@@ -822,6 +987,11 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
         await downloadFile(capturedVideoUrl, localPath);
         downloadedFile = localPath;
       }
+    }
+
+    if (!downloadedFile || !fs.existsSync(downloadedFile) || fs.statSync(downloadedFile).size < 300_000) {
+      const size = downloadedFile && fs.existsSync(downloadedFile) ? fs.statSync(downloadedFile).size : 0;
+      throw new Error(`File video tải về không hợp lệ hoặc chưa hoàn tất (${size} bytes). Gemini chưa hoàn tất render video!`);
     }
 
     const durationMs = Date.now() - startTime;
@@ -1071,8 +1241,8 @@ export async function ensureChromeRunning(): Promise<void> {
     [
       `--remote-debugging-port=${CHROME_DEBUG_PORT}`,
       `--user-data-dir=${chromeAutoDir}`,
-      "--window-position=3000,100",
-      "--window-size=1280,900",
+      "--window-position=10,40",
+      "--window-size=680,540",
       "--no-first-run",
       "--no-default-browser-check",
       "--disable-background-mode",
@@ -1125,6 +1295,20 @@ export async function extractThreeKeyframes(
   console.log(`📸 [VeoAuto] Extracting 3 keyframes (start, mid, end) from video: ${path.basename(videoFilePath)}`);
   const baseName = path.basename(videoFilePath, path.extname(videoFilePath));
   const ts = Date.now();
+
+  // Xóa frame cũ của cùng video để tránh cache stale (giữ output dir sạch)
+  try {
+    const existingFrames = fs.readdirSync(outputDir).filter(f =>
+      f.startsWith(baseName + "_frame") && f.endsWith(".jpg")
+    );
+    for (const oldFrame of existingFrames) {
+      try { fs.unlinkSync(path.join(outputDir, oldFrame)); } catch {}
+    }
+    if (existingFrames.length > 0) {
+      console.log(`🧹 [VeoAuto] Đã xóa ${existingFrames.length} frame cũ của ${baseName} để tránh cache stale`);
+    }
+  } catch {}
+
   const f1 = path.join(outputDir, `${baseName}_frame1_${ts}.jpg`);
   const f2 = path.join(outputDir, `${baseName}_frame2_${ts}.jpg`);
   const f3 = path.join(outputDir, `${baseName}_frame3_${ts}.jpg`);
@@ -1171,6 +1355,8 @@ export async function extractThreeKeyframes(
 
 /**
  * Builds a comprehensive, cinematic prompt for Veo that includes both visual motion & character dialogue.
+ * Structure: Character Design → User Scene → Style → Dialogue → Motion → Accessories → Constraints
+ * Designed for clean renders with natural dialogue flow.
  */
 export function buildVeoScenePrompt(
   prompt: string,
@@ -1196,30 +1382,170 @@ export function buildVeoScenePrompt(
   }
 
   const sections: string[] = [];
-  if (sceneIndex !== undefined && sceneIndex > 0) {
-    sections.push(`🎬 SEAMLESS CONTINUOUS SEQUEL & MATCH-CUT (Part ${sceneIndex + 1} of 6):
-- OPENING MATCH-CUT: This scene begins IMMEDIATELY where Part ${sceneIndex} ended. Seamlessly match the ending character body posture, facing direction, held props, and camera momentum from the previous part.
-- SEAMLESS CONTINUITY: Maintain 100% exact character continuity (same fur/clothing, scale, face, height), same room environment coordinates, seamless lighting temperature, and smooth motion flow with ZERO abrupt jumps or disorienting cuts.`);
-  } else {
-    sections.push(`🎬 CINEMATIC ESTABLISHING SCENE (Part 1 of 6):
-- Establish the 3D Pixar world with smooth cinematic camera movement, setting the stage, character presence, and lighting tone for the continuous 6-part storyline.`);
+
+  // ── Section 0: Character identity anchor (concise, placed first so Veo locks in the look) ──
+  if (!/chibi.*proportion|maintain.*proportion/i.test(cleanPrompt)) {
+    sections.push(
+      "CHARACTER DESIGN: Iconic 'Bubu and Dudu TV' baby toddler 3D chibi plush bear dolls. " +
+      "Proportions: extreme 1:1 toddler chibi scale, oversized spherical balloon head (≈65%-70% of total height), tiny chubby pear-shaped body, very short stubby limbs without fingers or claws. " +
+      "Flat kawaii face: completely flat and smooth round baby face, ABSOLUTELY NO protruding snout, NO animal muzzle, NO nose bridge, NO animal jawline. " +
+      "Two small simple glossy black bead button eyes set wide apart with white specular dots, delicate raised curved eyebrow lines set high for an innocent baby expression, cute open ':3' cat/bear smile showing tiny pink tongue. " +
+      "BuBu = warm caramel honey-brown velvety plush fur, chubby cheeks with peach blush circles, playful baby demeanor. " +
+      "DuDu = pure snow-white velvety plush fur (100% white, NEVER a panda), chubby cheeks with rosy-pink blush circles, wearing a small chocolate-brown knotted neck scarf / bow tie. " +
+      "Fur is smooth velvety plush felt with soft peach-fuzz and warm subsurface scattering glow, NOT coarse wild bear fur. " +
+      "STRICT: Absolutely NO realistic bear muzzle, NO protruding snout, NO animal nostrils, NO realistic animal teeth or claws, NO adult facial features, NO tall humanoid anatomy, NO aged or wrinkled expressions."
+    );
   }
 
-  sections.push(`Scene Action & Motion:\n${cleanPrompt}`);
+  // ── Section 1: User's scene description (the actual action/story) ──
+  sections.push(cleanPrompt);
 
+  // ── Section 2: Visual style (3D Bear aesthetic) ──
+  if (!/chibi.*proportion|maintain.*proportion|plush.*toy/i.test(cleanPrompt)) {
+    sections.push(
+      "STYLE: Premium 3D CGI in the '3D Bear' animation style — ultra-soft fluffy fur rendering with warm subsurface scattering, " +
+      "soft dreamy volumetric lighting, warm pastel color grading, shallow depth of field, 4K. " +
+      "Characters must look like cute fluffy plush toys with clean smooth renders — no noisy artifacts, no extra limbs, no distorted faces. " +
+      "DuDu = pure white fluffy fur everywhere (body, face, ears, paws) — absolutely NO dark eye-rings or panda markings. " +
+      "BuBu = warm chocolate-brown fluffy fur everywhere — no black patches."
+    );
+  } else if (!/cinematic|3d animation/i.test(cleanPrompt)) {
+    sections.push("STYLE: Premium 3D Bear animation style, warm soft lighting, fluffy fur rendering, 4K.");
+  }
+
+  // ── Section 3: Dialogue & Voice (NEW — was previously missing entirely) ──
   if (dialogueText) {
-    sections.push(`Character Dialogue & Expressive Speaking (Lip-sync & Voiceover):\n- Spoken Lines: "${dialogueText}"\n- Characters naturally speak their lines with animated mouth movements, expressive facial gestures, and lively body language matching the dialogue.`);
+    // Parse dialogue lines to identify speakers and add natural voice direction
+    const dialogueLines = dialogueText.split(/\n/).filter(l => l.trim());
+    const formattedDialogue = dialogueLines.map(line => {
+      const trimmed = line.trim();
+      // If line already has speaker label like "BuBu: ..." or "DuDu: ..."
+      if (/^(BuBu|DuDu)\s*:/i.test(trimmed)) {
+        return trimmed;
+      }
+      // Return as-is for narrator or unlabeled lines
+      return trimmed;
+    }).join("\n");
+
+    sections.push(
+      "DIALOGUE & VOICE ACTING:\n" +
+      "Characters speak naturally with matching lip movements and expressive body language. " +
+      "BuBu has a warm, playful, slightly deeper cute voice. DuDu has a soft, gentle, higher-pitched sweet voice. " +
+      "Dialogue should feel conversational and spontaneous — NOT robotic or monotone. " +
+      "Characters react to each other naturally: nodding, tilting head, gesturing with paws while speaking.\n\n" +
+      formattedDialogue
+    );
+  } else {
+    // Even without explicit dialogue, add ambient sound/emotion direction
+    sections.push(
+      "AUDIO: Natural ambient sounds matching the scene (wind, birds, footsteps, etc.). " +
+      "Characters may make cute non-verbal sounds — giggles, gasps, happy hums — matching their expressions and actions."
+    );
   }
 
-  // Enforce Chibi Character Proportions Lock to prevent Veo from morphing cute characters into adults
-  const isChibiOrPlush = /chibi|bear|plush|teddy|cute|cartoon|bubu|dudu/i.test(cleanPrompt);
-  if (isChibiOrPlush) {
-    sections.push(`CRITICAL CHARACTER PROPORTIONS MANDATE:
-- STUBBY CHIBI BODY: All characters MUST strictly remain adorable miniature chibi plush teddy bears with oversized spherical round heads (1:1 or 1:2 head-to-body ratio), chubby bellies, and short stubby arms and legs with cute toddler waddling movement.
-- STRICT NEGATIVE DIRECTIVE: Do NOT stretch characters into tall, adult, elongated, or realistic human proportions. Absolutely NO adult limb proportions, NO realistic humanoid anatomy.`);
+  // ── Section 4: Motion constraints (concise) ──
+  if (!/minimal.*movement|subtle.*motion|static.*camera/i.test(cleanPrompt)) {
+    sections.push(
+      "MOTION: Smooth, minimal camera movement. Characters maintain consistent body shapes and sizes. " +
+      "No morphing or stretching. Subtle environmental motion only (wind, particles, gentle swaying)."
+    );
   }
 
-  sections.push(`Cinematography: High-end 3D Disney Pixar aesthetic, fluid character animation, vibrant cinematic lighting, crisp details, 60fps.`);
+  // ── Section 5: Accessory lock (dynamic detection — unchanged) ──
+  const detectedAccessories: string[] = [];
+  const seen = new Set<string>();
+
+  const actionPatterns = [
+    /(?:wearing|wears|dressed in|clad in)\s+(?:a\s+)?(.+?)(?:\.|,|;|\bon\b|\bin\b|$)/gi,
+    /(?:holding|holds|carrying|carries|gripping|grips)\s+(?:a\s+)?(.+?)(?:\.|,|;|\bin\b|\bwith\b|$)/gi,
+    /(?:riding|rides|driving|drives|sitting on)\s+(?:a\s+)?(.+?)(?:\.|,|;|\bthrough\b|\balong\b|$)/gi,
+    /(?:with\s+(?:a|an|his|her|their)\s+)(.+?)(?:\s+(?:on|in|at|around|behind|beside|near)\b|\.|,|;|$)/gi,
+    /(?:có|đeo|mặc|cầm|giữ|đội|mang|đi|ngồi trên)\s+(.+?)(?:\.|,|;|$)/gi,
+  ];
+
+  for (const pattern of actionPatterns) {
+    let match;
+    pattern.lastIndex = 0;
+    while ((match = pattern.exec(cleanPrompt)) !== null) {
+      if (match.index === pattern.lastIndex) {
+        pattern.lastIndex++;
+      }
+      const item = match[1]?.trim().replace(/\s+/g, " ");
+      if (item && item.length > 1 && item.length < 60) {
+        const cleaned = item.replace(/\s+(and|while|as|then|who|which|that|looking|facing|turned).*$/i, "").trim();
+        const key = cleaned.toLowerCase();
+        if (!seen.has(key) && cleaned.length > 1) {
+          seen.add(key);
+          detectedAccessories.push(cleaned);
+        }
+      }
+    }
+  }
+
+  const fallbackKeywords: { pattern: RegExp; label: string }[] = [
+    { pattern: /\b(?:yellow|blue|red|green|pink|white|black|orange|purple)\s+(?:puffer\s+)?jacket\b/i, label: "jacket" },
+    { pattern: /\bhelmet\b/i, label: "helmet" },
+    { pattern: /\bbackpack\b|ba\s*lô/i, label: "backpack" },
+    { pattern: /\bGoPro\b/i, label: "GoPro" },
+    { pattern: /\bselfie\s*stick\b/i, label: "selfie stick" },
+    { pattern: /\bdrone\b/i, label: "drone" },
+    { pattern: /\bscarf\b|khăn/i, label: "scarf" },
+    { pattern: /\bsweater\b/i, label: "sweater" },
+    { pattern: /\bwatch\b|đồng\s*hồ/i, label: "watch" },
+    { pattern: /\bglasses\b|sunglasses|kính/i, label: "glasses" },
+    { pattern: /\bhat\b|mũ|nón/i, label: "hat" },
+    { pattern: /\bbow\s*tie\b|nơ/i, label: "bow tie" },
+    { pattern: /\bcamera\b/i, label: "camera" },
+    { pattern: /\bmotorcycle\b|mô\s*tô|xe\s*máy/i, label: "motorcycle" },
+    { pattern: /\bscooter\b|\bVespa\b/i, label: "scooter" },
+    { pattern: /\bbicycle\b|\bbike\b|xe\s*đạp/i, label: "bicycle" },
+    { pattern: /\bumbrella\b|ô\s*dù/i, label: "umbrella" },
+    { pattern: /\blantern\b|đèn\s*lồng/i, label: "lantern" },
+    { pattern: /\bguitar\b/i, label: "guitar" },
+    { pattern: /\bfishing\s*rod\b|cần\s*câu/i, label: "fishing rod" },
+    { pattern: /\bteddy\b|\bplush\b|\bstuffed\b/i, label: "plush toy" },
+    { pattern: /\bbag\b|\bpurse\b|túi\s*xách/i, label: "bag" },
+    { pattern: /\bapron\b|tạp\s*dề/i, label: "apron" },
+    { pattern: /\bcrown\b|vương\s*miện/i, label: "crown" },
+    { pattern: /\bcape\b|áo\s*choàng/i, label: "cape" },
+    { pattern: /\bboots\b|\bshoes\b|giày/i, label: "footwear" },
+    { pattern: /\bnecklace\b|vòng\s*cổ/i, label: "necklace" },
+    { pattern: /\bbracelet\b|vòng\s*tay/i, label: "bracelet" },
+    { pattern: /\bribbon\b|ruy\s*băng/i, label: "ribbon" },
+    { pattern: /\bflower\s*crown\b|vòng\s*hoa/i, label: "flower crown" },
+    { pattern: /\bmap\b|bản\s*đồ/i, label: "map" },
+    { pattern: /\btelescope\b|kính\s*thiên\s*văn/i, label: "telescope" },
+    { pattern: /\bbinoculars\b|ống\s*nhòm/i, label: "binoculars" },
+    { pattern: /\bsword\b|kiếm/i, label: "sword" },
+    { pattern: /\bshield\b|khiên/i, label: "shield" },
+    { pattern: /\bwand\b|đũa\s*phép/i, label: "wand" },
+  ];
+
+  for (const { pattern, label } of fallbackKeywords) {
+    const key = label.toLowerCase();
+    if (!seen.has(key) && pattern.test(cleanPrompt)) {
+      seen.add(key);
+      detectedAccessories.push(label);
+    }
+  }
+
+  if (detectedAccessories.length > 0 && !/ACCESSORY LOCK|must remain visible/i.test(cleanPrompt)) {
+    const lockLines = detectedAccessories.map(a => `- ${a}`).join("\n");
+    sections.push(
+      `ACCESSORY LOCK — keep these items visible and unchanged throughout:\n${lockLines}`
+    );
+  }
+
+  // ── Section 6: Final constraints (concise — one clean block instead of repeating) ──
+  if (!/no morphing|no.*style.*drift/i.test(cleanPrompt)) {
+    sections.push(
+      "STRICT CONSTRAINTS (ANTI-AGING & PROPORTION LOCK): " +
+      "Baby toddler chibi proportions locked in every frame — giant round head, flat kawaii baby face, tiny stub limbs, soft plush fur. " +
+      "ABSOLUTELY NO realistic bear snout, NO protruding animal muzzle, NO animal teeth or claws, NO adult facial features, NO tall humanoid bodies, NO aged or wrinkled expressions. " +
+      "No morphing, no style drift. White bear DuDu stays pure white with brown neck scarf. Brown bear BuBu stays warm caramel brown. " +
+      "Preserve exact character designs, clothing, and props consistently throughout the entire video."
+    );
+  }
 
   return sections.join("\n\n");
 }
@@ -1315,8 +1641,8 @@ export async function generateVeoVideoParallel(
         userDataDir: tempProfileDir,
         args: [
           `--profile-directory=${CHROME_PROFILE}`,
-          "--window-position=3000,100",
-          "--window-size=1280,900",
+          "--window-position=10,40",
+          "--window-size=680,540",
           "--no-sandbox",
           "--disable-setuid-sandbox",
           "--disable-blink-features=AutomationControlled",
@@ -1449,58 +1775,115 @@ async function runSingleVeoAutomation(
       downloadPath: toHostPath(tabDownloadDir),
     }).catch(() => {});
 
-    // Intercept network responses to capture video URL
+    // Intercept network responses to capture genuine video URL
     let capturedVideoUrl: string | null = null;
     let isPromptSubmitted = false;
     page.on("response", async (response: any) => {
       if (!isPromptSubmitted) return;
       const url = response.url();
-      const contentType = response.headers()["content-type"] || "";
-      const isVideo = contentType.includes("video/") ||
+      const contentType = (response.headers()["content-type"] || "").toLowerCase();
+
+      // Strictly exclude Gemini chat API streaming endpoints, RPC, and upload artifacts
+      if (url.includes("generativelanguage.googleapis.com") || url.includes("batchexecute") || url.includes("google.com/upload") || url.includes("aiusercontent.google.com/image")) {
+        return;
+      }
+
+      const isVideo = contentType.startsWith("video/") ||
         url.includes(".mp4") || url.includes("videoplayback") ||
-        url.includes("video-downloads") || url.includes("generativelanguage") ||
-        url.includes("aiusercontent") || url.includes("usercontent.google") ||
-        (url.includes("google") && (contentType.includes("octet-stream") && url.length > 100));
+        url.includes("video-downloads");
 
       if (isVideo && !capturedVideoUrl && !url.startsWith("blob:")) {
         capturedVideoUrl = url;
-        console.log(`🎯 [VeoAuto-Tab ${index + 1}] Captured video URL: ${url.slice(0, 100)}`);
+        console.log(`🎯 [VeoAuto-Tab ${index + 1}] Captured genuine video URL: ${url.slice(0, 100)}`);
       }
     });
 
-    console.log(`🌐 [VeoAuto-Tab ${index + 1}] Navigating to Gemini Web...`);
-    await page.goto(GEMINI_VEO_URL, { waitUntil: "networkidle2", timeout: 60_000 });
-
-    // Click "New chat" to clean the active session so we don't fetch old videos/buttons from chat history
+    // ── Navigate to Gemini Video section ─────────────────────────────────────
+    // Direct URL navigation is more reliable than clicking sidebar links
+    console.log(`🎥 [VeoAuto-Tab ${index + 1}] Navigating directly to Gemini Video page...`);
     try {
-      console.log(`🧹 [VeoAuto-Tab ${index + 1}] Cleaning session (clicking New Chat)...`);
-      await page.evaluate(() => {
-        const btn = document.querySelector('[data-test-id="new-chat-button"]') as HTMLElement
-          || Array.from(document.querySelectorAll('a, button, [role="button"]')).find(el => {
-               const text = (el.textContent || '').toLowerCase();
-               const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-               return text.includes('new chat') || text.includes('cuộc trò chuyện mới') || text.includes('trò chuyện mới') ||
-                      aria.includes('new chat') || aria.includes('cuộc trò chuyện mới') || aria.includes('trò chuyện mới');
-             }) as HTMLElement;
-        if (btn) {
-          btn.click();
+      // Strategy 1: Direct URL navigation to Video page
+      const currentUrl = await page.url();
+      if (!currentUrl.includes("/video")) {
+        await page.goto("https://gemini.google.com/app/video", { waitUntil: "networkidle2", timeout: 30_000 });
+        await new Promise(r => setTimeout(r, 3000));
+      }
+
+      // Verify we're on the Video page
+      const videoPageCheck = await page.evaluate(() => {
+        const url = window.location.href;
+        const bodyText = document.body?.innerText || "";
+        const hasVideoHeading = bodyText.includes("Tạo video") || bodyText.includes("Create video");
+        const hasVideoUrl = url.includes("/video");
+        return { url, hasVideoHeading, hasVideoUrl };
+      });
+      console.log(`🎥 [VeoAuto-Tab ${index + 1}] Video page check — URL: ${videoPageCheck.hasVideoUrl}, Heading: ${videoPageCheck.hasVideoHeading}`);
+
+      // Strategy 2: If URL navigation failed, try sidebar click
+      if (!videoPageCheck.hasVideoUrl && !videoPageCheck.hasVideoHeading) {
+        console.log(`⚠️  [VeoAuto-Tab ${index + 1}] Direct URL nav failed, trying sidebar click...`);
+        const sidebarClicked = await page.evaluate(() => {
+          const link = document.querySelector('[data-test-id="videos-side-nav-entry-button"] a') as HTMLAnchorElement
+            || document.querySelector('a[href="/videos"]') as HTMLAnchorElement
+            || document.querySelector('a[href*="video"]') as HTMLAnchorElement
+            || Array.from(document.querySelectorAll('a')).find(a => {
+              const text = (a.textContent || '').toLowerCase();
+              return text === 'video' || text === 'videos';
+            }) as HTMLAnchorElement;
+          if (link) {
+            link.click();
+            return true;
+          }
+          return false;
+        });
+        if (sidebarClicked) {
+          await new Promise(r => setTimeout(r, 3000));
+          console.log(`✅ [VeoAuto-Tab ${index + 1}] Sidebar Video link clicked`);
         }
-      });
-      await new Promise(r => setTimeout(r, 2000));
-    } catch (err: any) {
-      console.warn(`⚠️  [VeoAuto-Tab ${index + 1}] Failed to click New Chat: ${err.message}`);
-    }
+      }
 
-    // Sidebar navigation click
-    try {
-      await page.waitForSelector('[data-test-id="videos-side-nav-entry-button"] a, a[href="/videos"]', { timeout: 10_000 });
-      await page.evaluate(() => {
-        const link = document.querySelector('[data-test-id="videos-side-nav-entry-button"] a') as HTMLAnchorElement
-          || document.querySelector('a[href="/videos"]') as HTMLAnchorElement;
-        if (link) link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+      // Strategy 3: If still not on Video page, force-select "Tạo video" from tools dropdown
+      const stillNotVideo = await page.evaluate(() => {
+        const url = window.location.href;
+        const bodyText = document.body?.innerText || "";
+        return !url.includes("/video") && !bodyText.includes("Tạo video") && !bodyText.includes("Create video");
       });
-      await new Promise(r => setTimeout(r, 3000));
-    } catch {}
+
+      if (stillNotVideo) {
+        console.log(`⚠️  [VeoAuto-Tab ${index + 1}] Still not on Video page, trying to select 'Tạo video' from tools menu...`);
+        await page.evaluate(() => {
+          const toolsBtn = document.querySelector('button[aria-label*="công cụ"]') as HTMLButtonElement
+            || document.querySelector('button[aria-label*="tools"]') as HTMLButtonElement
+            || document.querySelector('.add-content-button button') as HTMLButtonElement
+            || Array.from(document.querySelectorAll('button')).find(b =>
+              b.innerHTML.includes('add') || b.getAttribute('aria-label')?.includes('+')
+            ) as HTMLButtonElement;
+          if (toolsBtn) toolsBtn.click();
+        });
+        await new Promise(r => setTimeout(r, 1000));
+
+        const videoModeSelected = await page.evaluate(() => {
+          const items = Array.from(document.querySelectorAll('button, [role="menuitem"], span, div'));
+          const videoItem = items.find(el => {
+            const text = (el.textContent || '').trim();
+            return text === 'Tạo video' || text === 'Create video' || text === 'Generate video';
+          }) as HTMLElement;
+          if (videoItem) {
+            videoItem.click();
+            return true;
+          }
+          return false;
+        });
+        if (videoModeSelected) {
+          console.log(`✅ [VeoAuto-Tab ${index + 1}] 'Tạo video' mode selected from tools menu`);
+          await new Promise(r => setTimeout(r, 2000));
+        } else {
+          console.warn(`⚠️  [VeoAuto-Tab ${index + 1}] Could not find 'Tạo video' option — video may generate via chat fallback`);
+        }
+      }
+    } catch (err: any) {
+      console.warn(`⚠️  [VeoAuto-Tab ${index + 1}] Video navigation failed: ${err.message} — using chat fallback`);
+    }
 
     const inputSelector = 'rich-textarea [contenteditable="true"], textarea, [contenteditable="true"]';
     await page.waitForSelector(inputSelector, { timeout: 30_000 });
@@ -1645,35 +2028,123 @@ async function runSingleVeoAutomation(
     const initialDownloadCount = await page.evaluate(() => 
       document.querySelectorAll('button[aria-label*="Download" i], button[aria-label*="download" i], button[aria-label*="Tải" i], button[aria-label*="tải" i], a[download]').length
     ).catch(() => 0);
-    console.log(`📊 [VeoAuto-Tab ${index + 1}] Initial counts before submit: videos=${initialVideoCount}, downloads=${initialDownloadCount}`);
+    // ── Enable "Add sound" toggle if available ─────────────────────────────
+    console.log(`🔊 [VeoAuto-Tab ${index + 1}] Checking for 'Add sound' toggle...`);
+    try {
+      const soundEnabled = await page.evaluate(() => {
+        // Strategy 1: Find toggle/checkbox/switch containing "Add sound" or "Thêm âm thanh" text
+        const allLabels = Array.from(document.querySelectorAll('label, [role="switch"], mat-slide-toggle, .toggle, span'));
+        const soundLabel = allLabels.find(el => {
+          const text = (el.textContent || '').trim().toLowerCase();
+          return text === 'add sound' || text === 'thêm âm thanh' || 
+                 text.includes('add sound') || text.includes('âm thanh');
+        }) as HTMLElement;
+
+        if (soundLabel) {
+          const parent = soundLabel.closest('.toggle-container, .setting-row, .option-row, mat-slide-toggle, label, [role="switch"]') || soundLabel.parentElement;
+          if (parent) {
+            const toggleInput = parent.querySelector('input[type="checkbox"]') as HTMLInputElement;
+            if (toggleInput && !toggleInput.checked) {
+              toggleInput.click();
+              return 'toggled_on';
+            }
+            const switchEl = parent.querySelector('[role="switch"]') as HTMLElement;
+            if (switchEl && switchEl.getAttribute('aria-checked') !== 'true') {
+              switchEl.click();
+              return 'clicked_switch';
+            }
+            const matToggle = parent.querySelector('mat-slide-toggle') as HTMLElement;
+            if (matToggle && !matToggle.classList.contains('mat-mdc-slide-toggle-checked')) {
+              matToggle.click();
+              return 'clicked_mat_toggle';
+            }
+            const isAlreadyOn = parent.classList.contains('active') ||
+                                parent.classList.contains('checked') ||
+                                parent.getAttribute('aria-checked') === 'true';
+            if (!isAlreadyOn) {
+              (parent as HTMLElement).click();
+              return 'clicked_parent';
+            }
+            return 'already_on';
+          }
+          soundLabel.click();
+          return 'clicked_label';
+        }
+
+        // Strategy 2: Find any mat-slide-toggle or switch near sound-related aria labels
+        const switches = Array.from(document.querySelectorAll('mat-slide-toggle, [role="switch"]'));
+        for (const sw of switches) {
+          const ariaLabel = (sw.getAttribute('aria-label') || '').toLowerCase();
+          const nearbyText = (sw.parentElement?.textContent || '').toLowerCase();
+          if (nearbyText.includes('sound') || nearbyText.includes('âm thanh') || nearbyText.includes('audio')) {
+            const isChecked = sw.getAttribute('aria-checked') === 'true' ||
+                              sw.classList.contains('mat-mdc-slide-toggle-checked');
+            if (!isChecked) {
+              (sw as HTMLElement).click();
+              return 'toggled_on';
+            }
+            return 'already_on';
+          }
+        }
+        return 'not_found';
+      });
+      console.log(`🔊 [VeoAuto-Tab ${index + 1}] Sound toggle result: ${soundEnabled}`);
+      if (soundEnabled === 'toggled_on' || soundEnabled === 'clicked_toggle' || soundEnabled === 'clicked_label') {
+        await new Promise(r => setTimeout(r, 500));
+      }
+    } catch (soundErr: any) {
+      console.warn(`⚠️  [VeoAuto-Tab ${index + 1}] Sound toggle check error: ${soundErr.message}`);
+    }
 
     await new Promise(r => setTimeout(r, 1000));
 
     // Submit prompt using DOM click on Generate/Send button
     const submitted = await page.evaluate(() => {
+      // 1. Search strictly inside the input area container first
+      const inputArea = document.querySelector('input-area-v2, .input-area, .chat-input-container, input-container, fieldset.input-area-container');
+      if (inputArea) {
+        const areaSendBtn = inputArea.querySelector(
+          '.send-button button, .send-button-container button, gem-icon-button.send-button button, button[aria-label="Send message"], button[aria-label="Gửi tin nhắn"], button mat-icon[data-mat-icon-name="arrow_upward"], button mat-icon[fonticon="arrow_upward"]'
+        ) as HTMLElement | null;
+        if (areaSendBtn) {
+          const btn = (areaSendBtn.tagName === 'BUTTON' ? areaSendBtn : areaSendBtn.closest('button')) as HTMLButtonElement | null;
+          if (btn && !btn.disabled) {
+            btn.click();
+            return true;
+          }
+        }
+      }
+
+      // 2. High-priority dedicated Send button selectors (strictly excluding sidebar/history/menus)
       const selectors = [
+        '.send-button button',
+        '.send-button-container button',
+        'gem-icon-button.send-button button',
+        'button[aria-label="Send message"]',
         'button[aria-label="Gửi tin nhắn"]',
-        'button[aria-label*="Gửi" i]',
-        'button[aria-label*="Generate" i]',
-        'button[aria-label*="Tạo" i]',
-        'button[aria-label*="Send" i]',
-        'button.send-button',
-        'mat-icon[fonticon="arrow_upward"]',
         'button mat-icon[data-mat-icon-name="arrow_upward"]',
+        'button mat-icon[fonticon="arrow_upward"]',
       ];
       for (const sel of selectors) {
-        const btn = document.querySelector(sel) as HTMLButtonElement;
-        // Verify button is not inside a menu, dialog list, or sidebar list
-        if (btn && !btn.disabled && !btn.closest('mat-menu-panel') && !btn.closest('navigation-list') && !btn.closest('.sidebar-list') && !btn.closest('[role="menu"]')) {
-          btn.click();
-          return true;
+        const target = document.querySelector(sel) as HTMLElement | null;
+        if (target) {
+          const btn = (target.tagName === 'BUTTON' ? target : target.closest('button')) as HTMLButtonElement | null;
+          if (
+            btn &&
+            !btn.disabled &&
+            !btn.closest('side-navigation-v2, bard-sidenav-container, bard-sidenav-content, mat-menu-panel, [role="navigation"], [role="menu"], aside, nav, .sidebar-list')
+          ) {
+            btn.click();
+            return true;
+          }
         }
       }
       
-      const btns = Array.from(document.querySelectorAll('button'));
+      // 3. Fallback: Search buttons ONLY within main chat / input area (never sidebar)
+      const mainArea = document.querySelector('chat-window, .main-content, main, .content-container') || document;
+      const btns = Array.from(mainArea.querySelectorAll('button'));
       const targetBtn = btns.find(b => {
-        // Bypass buttons inside menus or sidebars to avoid misclicking menu options like "Ghim" / "Pin"
-        if (b.closest('mat-menu-panel') || b.closest('navigation-list') || b.closest('.sidebar-list') || b.closest('[role="menu"]') || b.closest('.context-menu')) {
+        if (b.closest('side-navigation-v2, bard-sidenav-container, bard-sidenav-content, mat-menu-panel, [role="navigation"], [role="menu"], aside, nav, .sidebar-list, .context-menu')) {
           return false;
         }
 
@@ -1681,19 +2152,11 @@ async function runSingleVeoAutomation(
         const text = (b.textContent || '').toLowerCase();
         const html = (b.innerHTML || '').toLowerCase();
 
-        // Exclude menu options explicitly
-        const isMenuOption = aria.includes('ghim') || aria.includes('pin') || aria.includes('xóa') || aria.includes('delete') || 
-                             aria.includes('sổ') || aria.includes('note') || aria.includes('chia') || aria.includes('share') || 
-                             aria.includes('đổi') || aria.includes('rename') || text.includes('ghim') || text.includes('pin') ||
-                             text.includes('xóa') || text.includes('delete') || text.includes('chia') || text.includes('share') ||
-                             text.includes('đổi') || text.includes('rename');
-        if (isMenuOption) return false;
-
-        return aria.includes('generate') || aria.includes('tạo') || aria.includes('gửi') || aria.includes('send') ||
-               text.includes('generate') || text.includes('tạo') || text.includes('gửi') || text.includes('send') ||
-               html.includes('send') || html.includes('gửi') || html.includes('mat-icon-name="send"');
+        return aria === 'send message' || aria === 'gửi tin nhắn' || aria === 'send' || aria === 'gửi' ||
+               text === 'send' || text === 'gửi' ||
+               html.includes('data-mat-icon-name="arrow_upward"') || html.includes('fonticon="arrow_upward"');
       });
-      if (targetBtn) {
+      if (targetBtn && !targetBtn.disabled) {
         targetBtn.click();
         return true;
       }
@@ -1721,20 +2184,37 @@ async function runSingleVeoAutomation(
       await new Promise(r => setTimeout(r, 5000));
       const elapsed = Math.round((Date.now() - pollStart) / 1000);
 
+      // Periodic screenshots for debugging (every 60s)
+      if (elapsed % 60 === 0 || elapsed === 10) {
+        const ssDir = path.resolve(__dirname, "../data/debug");
+        if (!fs.existsSync(ssDir)) fs.mkdirSync(ssDir, { recursive: true });
+        const ssPath = path.join(ssDir, `veo_tab${index + 1}_${elapsed}s.png`);
+        await page.screenshot({ path: ssPath, fullPage: false }).catch(() => {});
+        console.log(`📸 [VeoAuto-Tab ${index + 1}] Debug screenshot: ${ssPath}`);
+      }
+
+      // CRITICAL GATE: Veo diffusion physically takes 30-90 seconds to render a 10s video.
+      // Any detection under 20s is guaranteed to be a false positive (e.g. LLM text stream, upload thumbnail).
+      if (elapsed < 20) {
+        console.log(`⏳ [VeoAuto-Tab ${index + 1}] Rendering in progress (${elapsed}s elapsed)...`);
+        continue;
+      }
+
       if (capturedVideoUrl) {
         found = true;
         break;
       }
 
-      // Proactive check: look for new video elements even before "video ready" text appears
+      // Proactive check: look for new video elements created after prompt submission
       if (!found) {
         const proactiveVideoSrc = await page.evaluate((initCount: number) => {
+          // Check if there are newly added video elements
           const videos = Array.from(document.querySelectorAll("video")) as HTMLVideoElement[];
-          // Only check if there are NEW video elements since we submitted
           if (videos.length > initCount) {
             for (let i = videos.length - 1; i >= initCount; i--) {
-              const src = videos[i].src || videos[i].currentSrc;
-              if (src && !src.startsWith("blob:") && (src.includes("google") || src.includes(".mp4") || src.includes("usercontent"))) {
+              const v = videos[i];
+              const src = v.src || v.currentSrc || v.querySelector("source")?.src;
+              if (src && (src.includes(".mp4") || src.includes("videoplayback") || src.includes("google") || src.startsWith("blob:"))) {
                 return src;
               }
             }
@@ -1750,15 +2230,6 @@ async function runSingleVeoAutomation(
         }
       }
 
-      // Periodic screenshots for debugging (every 60s)
-      if (elapsed % 60 === 0 || elapsed === 10) {
-        const ssDir = path.resolve(__dirname, "../data/debug");
-        if (!fs.existsSync(ssDir)) fs.mkdirSync(ssDir, { recursive: true });
-        const ssPath = path.join(ssDir, `veo_tab${index + 1}_${elapsed}s.png`);
-        await page.screenshot({ path: ssPath, fullPage: false }).catch(() => {});
-        console.log(`📸 [VeoAuto-Tab ${index + 1}] Debug screenshot: ${ssPath}`);
-      }
-
       if (!hasRefreshed && elapsed >= 300) {
         hasRefreshed = true;
         console.log(`🔄 [VeoAuto-Tab ${index + 1}] Reloading page to fix freeze...`);
@@ -1768,12 +2239,31 @@ async function runSingleVeoAutomation(
 
       const pageResult = await page.evaluate((initialDownloadCount: number) => {
         const bodyText = document.body?.innerText || "";
-        const videoReady = bodyText.includes("Your video is ready") || bodyText.includes("video is ready") ||
+        const videos = Array.from(document.querySelectorAll("video")) as HTMLVideoElement[];
+        const hasNewVideo = videos.length > 0;
+        const videoReady = hasNewVideo ||
+                           bodyText.includes("Your video is ready") || bodyText.includes("video is ready") ||
                            bodyText.includes("Video của bạn đã sẵn sàng") ||
                            bodyText.includes("video đã sẵn sàng") ||
                            bodyText.includes("video đã được tạo") ||
                            bodyText.includes("video đã xong");
-        const downloadBtns = document.querySelectorAll('button[aria-label*="Download" i], button[aria-label*="download" i], button[aria-label*="Tải" i], button[aria-label*="tải" i], a[download]');
+
+        const allButtons = Array.from(document.querySelectorAll('button, a, [data-mat-icon-name="download"]'));
+        const downloadBtns = allButtons.filter(el => {
+          const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+          const title = (el.getAttribute('title') || '').toLowerCase();
+          const text = (el.textContent || '').toLowerCase();
+          // STRICTLY EXCLUDE "Tải lên" (Upload) buttons
+          if (aria.includes('tải lên') || aria.includes('upload') || text.includes('tải lên')) return false;
+          return (
+            aria.includes('tải video') || aria.includes('tải xuống') || aria.includes('tải về') ||
+            aria.includes('download video') || aria.includes('download') ||
+            title.includes('tải xuống') || title.includes('download') ||
+            text.includes('tải video') || text.includes('tải xuống') || text.includes('tải về') ||
+            el.hasAttribute('download') || !!el.querySelector('[data-mat-icon-name="download"]')
+          );
+        });
+
         const hasDownload = downloadBtns.length > initialDownloadCount;
         const errorText = document.querySelector('.error-container, [class*="error-message"]')?.textContent?.trim().slice(0, 100);
         return { videoReady, hasDownload, errorText };
@@ -1782,7 +2272,6 @@ async function runSingleVeoAutomation(
       if (pageResult.videoReady || pageResult.hasDownload) {
         // Try to get video source directly from DOM
         const videoSrc = await page.evaluate((initialVideoCount: number) => {
-          // Check all video tags directly
           const videos = Array.from(document.querySelectorAll("video")) as HTMLVideoElement[];
           for (let i = videos.length - 1; i >= 0; i--) {
             const src = videos[i].src || videos[i].currentSrc;
@@ -1790,7 +2279,6 @@ async function runSingleVeoAutomation(
               return src;
             }
           }
-          // Also check <source> tags
           const sources = Array.from(document.querySelectorAll("video source")) as HTMLSourceElement[];
           for (let i = sources.length - 1; i >= 0; i--) {
             if (sources[i].src) return sources[i].src;
@@ -1806,18 +2294,21 @@ async function runSingleVeoAutomation(
         }
 
         if (!downloadButtonClicked) {
-          console.log(`⬇️  [VeoAuto-Tab ${index + 1}] Video ready. Clicking download as fallback...`);
+          console.log(`⬇️  [VeoAuto-Tab ${index + 1}] Video ready at ${elapsed}s. Clicking download as fallback...`);
           const clicked = await page.evaluate((initialDownloadCount: number) => {
-            const buttons = Array.from(document.querySelectorAll("button, a")).filter(el => {
+            const allButtons = Array.from(document.querySelectorAll("button, a, [data-mat-icon-name='download']"));
+            const buttons = allButtons.filter(el => {
               const aria = (el.getAttribute("aria-label") || "").toLowerCase();
               const title = (el.getAttribute("title") || "").toLowerCase();
               const text = (el.textContent || "").toLowerCase();
-              const html = el.outerHTML.toLowerCase();
+              // STRICTLY EXCLUDE "Tải lên" / "Upload" buttons
+              if (aria.includes("tải lên") || aria.includes("upload") || text.includes("tải lên")) return false;
               return (
-                aria.includes("download") || aria.includes("tải") ||
-                title.includes("download") || title.includes("tải") ||
-                text.includes("download") || text.includes("tải") ||
-                html.includes("download") || html.includes("tải video")
+                aria.includes("tải video") || aria.includes("tải xuống") || aria.includes("tải về") ||
+                aria.includes("download video") || aria.includes("download") ||
+                title.includes("tải xuống") || title.includes("download") ||
+                text.includes("tải video") || text.includes("tải xuống") || text.includes("tải về") ||
+                el.hasAttribute("download") || !!el.querySelector('[data-mat-icon-name="download"]')
               );
             });
             if (buttons.length > 0) {
@@ -1958,6 +2449,12 @@ async function runSingleVeoAutomation(
       }
     } catch {}
 
+    // Strict validation: Video file MUST exist and be larger than 300KB (valid MP4)
+    if (!downloadedFile || !fs.existsSync(targetPath) || fs.statSync(targetPath).size < 300_000) {
+      const size = fs.existsSync(targetPath) ? fs.statSync(targetPath).size : 0;
+      throw new Error(`File video Part ${index + 1} không hợp lệ hoặc chưa tải xong (${size} bytes). Gemini chưa hoàn tất render video!`);
+    }
+
     const durationMs = Date.now() - startTime;
     return { success: true, localPath: targetPath, videoUrl: capturedVideoUrl, prompt, durationMs };
 
@@ -2011,13 +2508,19 @@ export async function generateSingleVeoSegment(
   }
 
   // 1. Resolve image to upload: check if previous video segment exists to chain ending frame
+  // IMPORTANT: Luôn lấy file Part trước MỚI NHẤT (theo mtime) để tránh dùng frame cũ từ lần render trước
   let prevEndFrame: string | null = null;
   if (sceneIndex > 0) {
     try {
       const files = fs.readdirSync(outputDir);
-      const prevVideo = files.find(f => f.endsWith(".mp4") && f.includes(`_part${sceneIndex}_`) && !f.includes("_merged"));
+      const prevVideos = files
+        .filter(f => f.endsWith(".mp4") && f.includes(`_part${sceneIndex}_`) && !f.includes("_merged") && !f.includes("_voiced") && !f.includes("_longtieng"))
+        .map(f => ({ name: f, mtime: fs.statSync(path.join(outputDir, f)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime); // Mới nhất lên đầu
+      const prevVideo = prevVideos.length > 0 ? prevVideos[0].name : null;
       if (prevVideo) {
         const prevVideoPath = path.join(outputDir, prevVideo);
+        console.log(`🔗 [VeoAuto-Single] Chaining Part ${sceneIndex + 1} ← sử dụng Part ${sceneIndex} video MỚI NHẤT: ${prevVideo}`);
         const kfs = await extractThreeKeyframes(prevVideoPath, outputDir);
         if (kfs.length > 0) {
           prevEndFrame = kfs[kfs.length - 1];
@@ -2135,8 +2638,8 @@ export async function generateSingleVeoSegment(
         userDataDir: tempProfileDir,
         args: [
           `--profile-directory=${CHROME_PROFILE}`,
-          "--window-position=3000,100",
-          "--window-size=1280,900",
+          "--window-position=10,40",
+          "--window-size=680,540",
           "--no-sandbox",
           "--disable-setuid-sandbox",
           "--disable-blink-features=AutomationControlled",

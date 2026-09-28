@@ -909,7 +909,11 @@ app.use(async (req, res, next) => {
   }
 
   // In development: check if Vite dev server is running on port 5173 for real-time HMR
-  if (process.env.NODE_ENV !== "production") {
+  // Only proxy to Vite when accessed via localhost — external domains (e.g. Cloudflare Tunnel)
+  // must get the production build because Vite HMR WebSocket won't work through the tunnel.
+  const hostHeader = req.headers.host || "";
+  const isLocalRequest = hostHeader.startsWith("localhost") || hostHeader.startsWith("127.0.0.1");
+  if (process.env.NODE_ENV !== "production" && isLocalRequest) {
     try {
       const viteUrl = `http://127.0.0.1:5173${req.originalUrl}`;
       const viteResp = await fetch(viteUrl, {
@@ -3370,6 +3374,7 @@ app.post("/api/pipeline/generate-scene-images", async (req: any, res: any) => {
       prompts,
       dialogues,
       prompts_obj,
+      render_mode = "browser",
     } = req.body;
 
     let targetImageUrl = image_url;
@@ -3493,6 +3498,7 @@ app.post("/api/pipeline/generate-single-scene-image", async (req: any, res: any)
       custom_reference_image_path,
       reference_label,
       redraw_instructions,
+      render_mode = "browser",
     } = req.body;
 
     if (!prompt) {
@@ -3543,7 +3549,7 @@ app.post("/api/pipeline/generate-single-scene-image", async (req: any, res: any)
       }
     }
 
-    console.log(`\n🎨 [API /generate-single-scene-image] Bắt đầu tạo Cảnh ${scene_index + 1} cho "${product_name}"... (Ref: ${targetRefLabel || (scene_index === 0 ? "Ảnh Gốc" : "Part 1")}, Ghi chú: ${redraw_instructions ? `"${redraw_instructions}"` : "None"})`);
+    console.log(`\n🎨 [API /generate-single-scene-image] Bắt đầu tạo Cảnh ${scene_index + 1} cho "${product_name}"... (Mode: ${render_mode}, Ref: ${targetRefLabel || (scene_index === 0 ? "Ảnh Gốc" : "Part 1")}, Ghi chú: ${redraw_instructions ? `"${redraw_instructions}"` : "None"})`);
     const { generateSingleSceneImageStandalone } = await import("./sceneImageGenerator.js");
 
     const result = await generateSingleSceneImageStandalone(
@@ -3590,6 +3596,9 @@ app.post("/api/pipeline/generate-single-scene-video", async (req: any, res: any)
       image_url,
       scene_image_path,
       job_folder,
+      render_mode = "browser",
+      aspect_ratio = "16:9",
+      duration_seconds = 10,
     } = req.body || {};
 
     if (!prompt) {
@@ -3609,9 +3618,8 @@ app.post("/api/pipeline/generate-single-scene-video", async (req: any, res: any)
     const outputDir = path.resolve(__dirname, `../data/downloads/${activeJobFolder}`);
     if (!existsSync(outputDir)) await fs.mkdir(outputDir, { recursive: true });
 
-    console.log(`\n🎬 [API /generate-single-scene-video] Bắt đầu render Video Part ${scene_index + 1} cho "${product_name}"...`);
+    console.log(`\n🌐 [API /generate-single-scene-video] Render Video Part ${scene_index + 1} bằng Trình duyệt Chrome...`);
     const { generateSingleVeoSegment } = await import("./veoAutomation.js");
-
     const result = await generateSingleVeoSegment(
       prompt,
       scene_index,
@@ -3633,13 +3641,17 @@ app.post("/api/pipeline/generate-single-scene-video", async (req: any, res: any)
 
     const filename = path.basename(result.localPath);
     const webUrl = `/downloads/${activeJobFolder}/${filename}`;
+    const voicedFilename = result.voicedPath ? path.basename(result.voicedPath) : null;
+    const voicedWebUrl = voicedFilename ? `/downloads/${activeJobFolder}/${voicedFilename}` : null;
 
     res.json({
       success: true,
       scene_index,
       job_folder: activeJobFolder,
-      video_path: result.localPath,
+      video_path: result.localPath,     // Bản gốc giữ 100% âm thanh & giọng gốc do Gemini tạo
       video_url: webUrl,
+      voiced_path: result.voicedPath || null, // Bản lồng tiếng đi kèm
+      voiced_url: voicedWebUrl,
       duration_ms: result.durationMs,
     });
   } catch (err: any) {
@@ -3917,6 +3929,159 @@ app.post("/api/pipeline/merge-job-videos", async (req: any, res: any) => {
   }
 });
 
+// ── REST: Lồng tiếng VieNeu (DuDu_NamChinh & Mai Bé Phương) cho Video ───────
+app.post("/api/pipeline/dub-video", async (req: any, res: any) => {
+  if (req.setTimeout) req.setTimeout(300000);
+  if (res.setTimeout) res.setTimeout(300000);
+  try {
+    const {
+      product_id,
+      product_name = "product",
+      job_folder,
+      prompts_obj,
+      dudu_voice = "DuDu_NamChinh",
+      bubu_voice = "Mai Bé Phương",
+      script_text,
+      upload_s3 = false,
+      bgm_volume = 0.7,
+      voice_temperature = 0.35,
+      speaker_voices = {},
+    } = req.body || {};
+
+    const productSlug = product_name
+      .toString()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9\s-_]/g, "")
+      .replace(/[\s_]+/g, "-") || "product";
+
+    const activeJobFolder = job_folder || productSlug;
+
+    const products = await loadProducts();
+    let product: any = null;
+    if (product_id) {
+      product = products.find((p) => p.id === product_id);
+    }
+    if (!product && product_name) {
+      const nameLower = product_name.trim().toLowerCase();
+      product = products.find((p) => p.name && p.name.trim().toLowerCase() === nameLower)
+        || products.find((p) => p.name && (p.name.toLowerCase().includes(productSlug) || productSlug.includes(p.name.toLowerCase())));
+    }
+
+    console.log(`\n🎙️ [API /dub-video] Lồng tiếng video cho "${product_name}" (folder: ${activeJobFolder})...`);
+    const { dubVideoWithVieneu } = await import("./videoDubbingService.js");
+
+    const result = await dubVideoWithVieneu({
+      productSlug,
+      jobFolder: activeJobFolder,
+      product,
+      promptsObj: prompts_obj || product?.prompts_obj || product?.promptsObj,
+      duduVoice: dudu_voice,
+      bubuVoice: bubu_voice,
+      scriptText: script_text,
+      uploadToS3: upload_s3,
+      bgmVolume: bgm_volume,
+      voiceTemperature: voice_temperature,
+      speakerVoices: speaker_voices,
+    });
+
+    // Register every successful dubbed render as its own Kho Video item.
+    // Optionally upload the rendered file and thumbnail when the UI's S3
+    // checkbox is enabled.
+    const voicedPath = result.voicedVideoPath;
+    const voicedFilename = result.voicedFilename;
+    const voicedStat = statSync(voicedPath);
+    const voicedDir = path.dirname(voicedPath);
+    const thumbFilename = `${path.basename(voicedFilename, path.extname(voicedFilename))}_thumb.jpg`;
+    const thumbPath = path.join(voicedDir, thumbFilename);
+    const localVideoUrl = `/downloads/${activeJobFolder}/${voicedFilename}`;
+    const localThumbUrl = `/downloads/${activeJobFolder}/${thumbFilename}`;
+    const hasThumbnail = extractVideoThumbnailSync(voicedPath, thumbPath);
+
+    let finalVideoUrl = localVideoUrl;
+    let finalThumbUrl = hasThumbnail ? localThumbUrl : (product?.thumbnail_url || "");
+    let voicedS3Key = "";
+
+    if (upload_s3 && S3_BUCKET && process.env.AWS_ACCESS_KEY_ID) {
+      try {
+        const prefix = S3_PREFIX.replace(/\/$/, "");
+        voicedS3Key = `${prefix}/${voicedFilename}`;
+        await new Upload({
+          client: s3Client,
+          params: {
+            Bucket: S3_BUCKET,
+            Key: voicedS3Key,
+            Body: await fs.readFile(voicedPath),
+            ContentType: "video/mp4",
+          },
+        }).done();
+        finalVideoUrl = `https://${S3_BUCKET}.s3.${process.env.AWS_REGION || "ap-southeast-1"}.amazonaws.com/${voicedS3Key}`;
+
+        if (hasThumbnail) {
+          const thumbKey = `${prefix}/${thumbFilename}`;
+          await new Upload({
+            client: s3Client,
+            params: {
+              Bucket: S3_BUCKET,
+              Key: thumbKey,
+              Body: await fs.readFile(thumbPath),
+              ContentType: "image/jpeg",
+            },
+          }).done();
+          finalThumbUrl = `https://${S3_BUCKET}.s3.${process.env.AWS_REGION || "ap-southeast-1"}.amazonaws.com/${thumbKey}`;
+        }
+        console.log(`☁️ [VideoDubbing] Uploaded dubbed video to S3: ${finalVideoUrl}`);
+      } catch (uploadErr: any) {
+        voicedS3Key = "";
+        finalVideoUrl = localVideoUrl;
+        console.warn(`⚠️ [VideoDubbing] S3 upload failed, keeping local Kho Video entry: ${uploadErr.message}`);
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    const metadataEntry: VideoMetadata = {
+      id: `vid_dubbed_${Date.now()}_${randomUUID().split("-")[0]}`,
+      product_name: product?.name || product_name,
+      title: `${product?.name || product_name} (Lồng tiếng)`,
+      description: `Bản lồng tiếng ${result.totalLines} câu, tự động đồng bộ theo timeline nhân vật.`,
+      prompt: product?.promptsObj || product?.prompts_obj
+        ? JSON.stringify(product?.promptsObj || product?.prompts_obj)
+        : "",
+      tags: [...new Set([...(product?.hashtags || product?.tags || []), "#longtieng", "#voicesync"])],
+      source_url: finalVideoUrl,
+      s3_url: finalVideoUrl,
+      s3_bucket: voicedS3Key ? S3_BUCKET : "",
+      s3_key: voicedS3Key,
+      local_path: voicedPath,
+      stream_url: finalVideoUrl,
+      size_bytes: voicedStat.size,
+      thumbnail_url: finalThumbUrl,
+      images: finalThumbUrl ? [finalThumbUrl] : [],
+      created_at: nowIso,
+      updated_at: nowIso,
+    };
+
+    const metadata = await loadMetadata();
+    const existingIndex = metadata.findIndex(item => item.local_path && path.resolve(item.local_path) === path.resolve(voicedPath));
+    if (existingIndex >= 0) metadata[existingIndex] = metadataEntry;
+    else metadata.unshift(metadataEntry);
+    await saveMetadata(metadata);
+    console.log(`🎞️ [VideoDubbing] Added to Kho Video: ${metadataEntry.title}`);
+
+    res.json({
+      ...result,
+      streamUrl: finalVideoUrl,
+      s3Url: voicedS3Key ? finalVideoUrl : "",
+      metadata: metadataEntry,
+    });
+  } catch (err: any) {
+    console.error(`❌ [API /dub-video] Error: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ── REST: Kiểm tra trạng thái các file Part Ảnh & Video trong job folder ──────
 app.get("/api/pipeline/job-parts-status", async (req: any, res: any) => {
   try {
@@ -3943,25 +4108,39 @@ app.get("/api/pipeline/job-parts-status", async (req: any, res: any) => {
       const hasImg = existsSync(imgPath);
       const imgUrl = hasImg ? `/downloads/${activeJobFolder}/scenes/scene_${i}.png` : null;
 
-      // Check part video
+      // Check part video (Original Gemini & Companion Voiced)
       let videoFile: string | null = null;
       let videoPath: string | null = null;
       let videoUrl: string | null = null;
       let videoMtime: number = 0;
 
+      let voicedVideoFile: string | null = null;
+      let voicedVideoPath: string | null = null;
+      let voicedVideoUrl: string | null = null;
+      let voicedVideoMtime: number = 0;
+
       if (existsSync(downloadsDir)) {
         const files = await fs.readdir(downloadsDir);
         for (const f of files) {
-          if (!f.endsWith(".mp4") || f.includes("_merged") || f.includes("_voiced") || f.includes(".orig") || f.includes(".bak")) continue;
+          if (!f.endsWith(".mp4") || f.includes("_merged") || f.includes(".orig") || f.includes(".bak")) continue;
           const match = f.match(new RegExp(`_part${i}_`, "i"));
           if (match) {
             const fullP = path.join(downloadsDir, f);
             const st = statSync(fullP);
-            if (st.mtimeMs > videoMtime) {
-              videoMtime = st.mtimeMs;
-              videoFile = f;
-              videoPath = fullP;
-              videoUrl = `/downloads/${activeJobFolder}/${f}`;
+            if (f.includes("_voiced")) {
+              if (st.mtimeMs > voicedVideoMtime) {
+                voicedVideoMtime = st.mtimeMs;
+                voicedVideoFile = f;
+                voicedVideoPath = fullP;
+                voicedVideoUrl = `/downloads/${activeJobFolder}/${f}`;
+              }
+            } else {
+              if (st.mtimeMs > videoMtime) {
+                videoMtime = st.mtimeMs;
+                videoFile = f;
+                videoPath = fullP;
+                videoUrl = `/downloads/${activeJobFolder}/${f}`;
+              }
             }
           }
         }
@@ -3981,12 +4160,40 @@ app.get("/api/pipeline/job-parts-status", async (req: any, res: any) => {
           path: videoPath,
           filename: videoFile,
         },
+        voiced_video: {
+          exists: !!voicedVideoPath,
+          url: voicedVideoUrl,
+          path: voicedVideoPath,
+          filename: voicedVideoFile,
+        },
       });
     }
 
     const mergedPath = path.join(downloadsDir, `${productSlug}_merged.mp4`);
     const hasMerged = existsSync(mergedPath);
     const mergedUrl = hasMerged ? `/downloads/${activeJobFolder}/${productSlug}_merged.mp4` : null;
+
+    let voicedFile: string | null = null;
+    let voicedPath: string | null = null;
+    let voicedUrl: string | null = null;
+    let latestVoicedMtime = 0;
+
+    if (existsSync(downloadsDir)) {
+      const files = await fs.readdir(downloadsDir);
+      for (const f of files) {
+        if (!f.endsWith(".mp4") || f.includes(".orig") || f.includes(".bak")) continue;
+        if (f.startsWith(productSlug) && (f.includes("_longtieng_") || f.includes("_voiced"))) {
+          const fullP = path.join(downloadsDir, f);
+          const st = statSync(fullP);
+          if (st.mtimeMs > latestVoicedMtime) {
+            latestVoicedMtime = st.mtimeMs;
+            voicedFile = f;
+            voicedPath = fullP;
+            voicedUrl = `/downloads/${activeJobFolder}/${f}`;
+          }
+        }
+      }
+    }
 
     res.json({
       success: true,
@@ -3996,6 +4203,12 @@ app.get("/api/pipeline/job-parts-status", async (req: any, res: any) => {
         exists: hasMerged,
         url: mergedUrl,
         path: hasMerged ? mergedPath : null,
+      },
+      voiced_video: {
+        exists: !!voicedPath,
+        url: voicedUrl,
+        path: voicedPath,
+        filename: voicedFile,
       },
     });
   } catch (err: any) {
@@ -4176,12 +4389,13 @@ app.post("/api/chrome/start", async (_req: any, res: any) => {
     const chromePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
     const { spawn } = await import("child_process");
     const isHidden = _req.body?.mode === "hidden";
-    const windowPos = isHidden ? "--window-position=3000,100" : "--window-position=100,100";
+    const windowPos = isHidden ? "--window-position=10,40" : "--window-position=100,100";
+    const windowSize = isHidden ? "--window-size=680,540" : "--window-size=1280,900";
     const proc = spawn(chromePath, [
       `--remote-debugging-port=${debugPort}`,
       `--user-data-dir=${chromeAutoDir}`,
       windowPos,
-      "--window-size=1280,900",
+      windowSize,
       "--no-first-run",
       "--no-default-browser-check",
       "--disable-background-mode",
@@ -4233,7 +4447,7 @@ app.post("/api/chrome/hide", async (_req: any, res: any) => {
       if (windowId) {
         await session.send("Browser.setWindowBounds", {
           windowId,
-          bounds: { windowState: "normal", left: 3000, top: 100, width: 1280, height: 900 },
+          bounds: { windowState: "normal", left: 1300, top: 890, width: 480, height: 400 },
         });
       }
       await session.detach();

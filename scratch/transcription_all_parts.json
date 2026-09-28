@@ -1,0 +1,26 @@
+[
+  {
+    "part": 1,
+    "raw": "```json\n[\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 0.000,\n    \"rel_end\": 4.100,\n    \"text\": \"Hôm nay nắng đẹp quá, Bubu ơi, tớ muốn tập chụp hình chuyên nghiệp.\",\n    \"emotion\": \"vui vẻ, hào hứng\"\n  },\n  {\n    \"speaker\": \"dudu\",\n    \"rel_start\": 4.500,\n    \"rel_end\": 6.800,\n    \"text\": \"Chụp hình á? Nhưng tớ, tớ ngại lắm.\",\n    \"emotion\": \"ngần ngại, bẽn lẽn\"\n  },\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 7.400,\n    \"rel_end\": 9.800,\n    \"text\": \"Đừng lo, cậu sẽ là siêu mẫu gấu xinh nhất.\",\n    \"emotion\": \"trấn an, động viên, vui vẻ\"\n  }\n]\n```"
+  },
+  {
+    "part": 2,
+    "raw": "```json\n[\n  {\n    \"speaker\": \"dudu\",\n    \"rel_start\": 8.35,\n    \"rel_end\": 10.85,\n    \"text\": \"Ok ok, góc này, ánh sáng này, perfect.\",\n    \"emotion\": \"excited\"\n  },\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 11.20,\n    \"rel_end\": 13.45,\n    \"text\": \"Tớ, tớ đứng đây có được không?\",\n    \"emotion\": \"hesitant\"\n  },\n  {\n    \"speaker\": \"dudu\",\n    \"rel_start\": 13.80,\n    \"rel_end\": 17.50,\n    \"text\": \"Đúng rồi, cậu đứng đó, ánh sáng chiếu lên lông cậu đẹp lắm.\",\n    \"emotion\": \"encouraging\"\n  }\n]\n```"
+  },
+  {
+    "part": 3,
+    "raw": "```json\n[\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 0.000,\n    \"rel_end\": 0.780,\n    \"text\": \"Như thế này nè.\",\n    \"emotion\": \"neutral\"\n  },\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 1.820,\n    \"rel_end\": 2.530,\n    \"text\": \"Wow, đẹp quá!\",\n    \"emotion\": \"excited\"\n  },\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 2.940,\n    \"rel_end\": 4.330,\n    \"text\": \"Giữ nguyên nhé BuBu ơi.\",\n    \"emotion\": \"encouraging\"\n  },\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 5.370,\n    \"rel_end\": 6.450,\n    \"text\": \"Này, tớ ngại nè.\",\n    \"emotion\": \"shy\"\n  },\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 7.660,\n    \"rel_end\": 8.300,\n    \"text\": \"Tớ là sh...\",\n    \"emotion\": \"playful\"\n  }\n]\n```"
+  },
+  {
+    "part": 4,
+    "raw": "```json\n[\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 0.08,\n    \"rel_end\": 1.35,\n    \"text\": \"chiêu mẫu gấu sao nè\",\n    \"emotion\": \"excited\"\n  },\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 1.83,\n    \"rel_end\": 2.30,\n    \"text\": \"click click\",\n    \"emotion\": \"playful\"\n  },\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 2.53,\n    \"rel_end\": 3.02,\n    \"text\": \"Đẹp xỉu\",\n    \"emotion\": \"admiring\"\n  },\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 3.54,\n    \"rel_end\": 4.12,\n    \"text\": \"Góc này nữa\",\n    \"emotion\": \"playful\"\n  },\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 4.54,\n    \"rel_end\": 5.00,\n    \"text\": \"Này nữa\",\n    \"emotion\": \"playful\"\n  },\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 5.34,\n    \"rel_end\": 6.30,\n    \"text\": \"Chụp hình vui quá\",\n    \"emotion\": \"happy\"\n  },\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 6.57,\n    \"rel_end\": 7.84,\n    \"text\": \"Tớ thích làm mẫu lắm nha\",\n    \"emotion\": \"enthusiastic\"\n  }\n]\n```"
+  },
+  {
+    "part": 5,
+    "raw": "```json\n[\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 0.00,\n    \"rel_end\": 1.80,\n    \"text\": \"Kìa bubu, ảnh đẹp quá xá!\",\n    \"emotion\": \"excited\"\n  },\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 2.00,\n    \"rel_end\": 5.00,\n    \"text\": \"Wow, tớ, tớ thật sự trông dễ thương lắm sao?\",\n    \"emotion\": \"surprised/flattered\"\n  },\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 5.20,\n    \"rel_end\": 8.20,\n    \"text\": \"Không chỉ dễ thương, là siêu siêu siêu xinh luôn.\",\n    \"emotion\": \"enthusiastic/complimentary\"\n  }\n]\n```"
+  },
+  {
+    "part": 6,
+    "raw": "```json\n[\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 0.00,\n    \"rel_end\": 2.80,\n    \"text\": \"Chúc mừng siêu mẫu gấu BuBu ra mắt\",\n    \"emotion\": \"vui vẻ\"\n  },\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 2.80,\n    \"rel_end\": 5.50,\n    \"text\": \"và chúc mừng nhiếp ảnh gia DuDu tài ba.\",\n    \"emotion\": \"vui vẻ\"\n  },\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 5.50,\n    \"rel_end\": 7.50,\n    \"text\": \"Hẹn lần sau chụp nữa nha!\",\n    \"emotion\": \"vui vẻ\"\n  },\n  {\n    \"speaker\": \"bubu\",\n    \"rel_start\": 7.50,\n    \"rel_end\": 8.80,\n    \"text\": \"Bạn thân mãi mãi.\",\n    \"emotion\": \"vui vẻ\"\n  }\n]\n```"
+  }
+]

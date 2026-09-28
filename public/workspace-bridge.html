@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Local Workspace Bridge</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #0b0d12; color: #e8ebf2; }
+    * { box-sizing: border-box; } body { margin: 0; } button, input, select, textarea { font: inherit; }
+    header { height: 56px; display: flex; align-items: center; gap: 12px; padding: 0 16px; border-bottom: 1px solid #272b36; background: #11141b; }
+    header strong { margin-right: auto; } select, input, button { color: inherit; background: #171b24; border: 1px solid #343a49; border-radius: 7px; padding: 7px 10px; }
+    button { cursor: pointer; } button:hover { background: #222838; } .primary { background: #3157d5; border-color: #4169e8; }
+    main { display: grid; grid-template-columns: 310px minmax(0, 1fr); height: calc(100vh - 88px); }
+    aside { border-right: 1px solid #272b36; overflow: auto; padding: 12px; } #tree button { display: block; width: 100%; text-align: left; border: 0; background: transparent; padding: 5px 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #tree button[data-type="directory"] { color: #8facff; font-weight: 600; pointer-events: none; }
+    section { display: flex; flex-direction: column; min-width: 0; } .toolbar { display: flex; gap: 8px; padding: 10px; border-bottom: 1px solid #272b36; }
+    .toolbar input { flex: 1; } #editor { flex: 1; width: 100%; resize: none; border: 0; outline: 0; padding: 18px; color: #dce3f5; background: #0d1016; font: 14px/1.55 "SFMono-Regular", Consolas, monospace; tab-size: 2; }
+    footer { height: 32px; padding: 7px 12px; border-top: 1px solid #272b36; color: #9da6bb; font-size: 12px; background: #11141b; }
+    dialog { color: inherit; background: #141821; border: 1px solid #343a49; border-radius: 12px; width: min(560px, 90vw); } dialog form { display: grid; gap: 12px; } dialog input { width: 100%; }
+    .actions { display: flex; justify-content: flex-end; gap: 8px; } @media (max-width: 760px) { main { grid-template-columns: 1fr; } aside { max-height: 32vh; border-right: 0; border-bottom: 1px solid #272b36; } }
+  </style>
+</head>
+<body>
+  <header><strong>Workspace Bridge</strong><select id="projects"></select><button id="addProject">+ Project</button><button id="removeProject">Remove</button></header>
+  <main>
+    <aside><input id="search" placeholder="Search code…" style="width:100%;margin-bottom:10px"><div id="tree"></div></aside>
+    <section><div class="toolbar"><input id="filePath" placeholder="Select or enter a relative path"><button class="primary" id="save">Save</button></div><textarea id="editor" spellcheck="false" placeholder="Select a file from the project tree"></textarea></section>
+  </main>
+  <footer id="status">Starting…</footer>
+  <dialog id="projectDialog"><form method="dialog"><h3>Add local project</h3><label>Name<input id="projectName" required></label><label>Absolute folder path<input id="projectRoot" required placeholder="/Users/me/projects/app"></label><div class="actions"><button value="cancel">Cancel</button><button id="confirmAdd" value="default" class="primary">Add</button></div></form></dialog>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let currentProject = "", currentEtag = "", searchTimer;
+    async function api(url, options) { const response = await fetch(url, options); const data = await response.json(); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`); return data; }
+    function status(message) { $("status").textContent = message; }
+    async function loadProjects(selectId) {
+      const { projects } = await api("/api/projects");
+      $("projects").innerHTML = projects.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)} — ${escapeHtml(p.root)}</option>`).join("");
+      currentProject = selectId || projects[0]?.id || ""; $("projects").value = currentProject;
+      await loadTree();
+    }
+    async function loadTree() {
+      if (!currentProject) { $("tree").innerHTML = "No projects"; return; }
+      status("Loading project…"); const { entries } = await api(`/api/projects/${encodeURIComponent(currentProject)}/tree`);
+      renderEntries(entries); status(`${entries.length} entries`);
+    }
+    function renderEntries(entries) {
+      $("tree").innerHTML = entries.map(entry => { const depth = entry.path.split("/").length - 1; return `<button data-path="${escapeHtml(entry.path)}" data-type="${entry.type}" style="padding-left:${7 + depth * 14}px">${entry.type === "directory" ? "▾" : "·"} ${escapeHtml(entry.name)}</button>`; }).join("");
+      $("tree").querySelectorAll('button[data-type="file"]').forEach(button => button.onclick = () => openFile(button.dataset.path));
+    }
+    async function openFile(filePath) { try { status(`Opening ${filePath}…`); const file = await api(`/api/projects/${encodeURIComponent(currentProject)}/file?path=${encodeURIComponent(filePath)}`); $("filePath").value = filePath; $("editor").value = file.content; currentEtag = file.etag; status(`${filePath} — ${file.size} bytes`); } catch (error) { status(error.message); } }
+    async function saveFile() { try { const filePath = $("filePath").value.trim(); if (!filePath) throw new Error("Enter a relative file path"); const result = await api(`/api/projects/${encodeURIComponent(currentProject)}/file`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: filePath, content: $("editor").value, etag: currentEtag || undefined }) }); currentEtag = result.etag; status(`Saved ${filePath} — ${result.size} bytes`); await loadTree(); } catch (error) { status(error.message); } }
+    function escapeHtml(value) { const node = document.createElement("span"); node.textContent = String(value); return node.innerHTML; }
+    $("projects").onchange = async (event) => { currentProject = event.target.value; currentEtag = ""; $("editor").value = ""; $("filePath").value = ""; await loadTree(); };
+    $("save").onclick = saveFile; $("addProject").onclick = () => $("projectDialog").showModal();
+    $("confirmAdd").onclick = async (event) => { event.preventDefault(); try { const { project } = await api("/api/projects", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: $("projectName").value, root: $("projectRoot").value }) }); $("projectDialog").close(); await loadProjects(project.id); } catch (error) { status(error.message); } };
+    $("removeProject").onclick = async () => { if (!currentProject || !confirm("Remove this project from the bridge? Files will not be deleted.")) return; await api(`/api/projects/${encodeURIComponent(currentProject)}`, { method: "DELETE" }); await loadProjects(); };
+    $("search").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(async () => { const query = $("search").value.trim(); if (!query) return loadTree(); try { const { results } = await api(`/api/projects/${encodeURIComponent(currentProject)}/search?q=${encodeURIComponent(query)}`); renderEntries(results.map(item => ({ name: `${item.path}:${item.line}  ${item.text.trim()}`, path: item.path, type: "file" }))); status(`${results.length} matches`); } catch (error) { status(error.message); } }, 250); };
+    $("editor").addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key === "s") { event.preventDefault(); saveFile(); } });
+    loadProjects().catch(error => status(error.message));
+  </script>
+</body>
+</html>

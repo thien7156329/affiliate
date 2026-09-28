@@ -83,3 +83,27 @@ Trong file cấu hình MCP của Gemini hoặc Claude:
 3. Set `TIKTOK_API_KEY=<access_token>` trong `.env`
 4. Uncomment phần real API trong `publishToTikTok()` trong `src/server.ts`
 # affiliate
+
+## Multi-project local workspace bridge
+
+The workspace bridge is a separate, localhost-only source browser and MCP server. It does not modify the affiliate pipeline server.
+
+```bash
+npm run dev:bridge
+# Open http://127.0.0.1:3410
+```
+
+On first run it registers this repository. Use **+ Project** in the browser to add more absolute project folders. Removing a project only removes it from the registry; it never deletes source files.
+
+MCP endpoint:
+
+```toml
+[mcp_servers.localWorkspace]
+url = "http://127.0.0.1:3410/mcp"
+```
+
+Available tools: `list_projects`, `list_files`, `read_file`, `write_file`, and `search_code`. Reads and writes are confined to registered roots, symlinks are excluded from discovery, file size is limited, and saves use an optional ETag to prevent overwriting concurrent edits.
+
+Keep the default `127.0.0.1` host for local use. If the server is exposed through HTTPS, set `WORKSPACE_BRIDGE_TOKEN` and send it as a Bearer token.
+
+For an HTTPS tunnel, also set `WORKSPACE_BRIDGE_PUBLIC=true`. Public mode always requires the Bearer token and exposes only `/mcp` plus the non-sensitive `/health` probe; browser and REST workspace routes return `404`.

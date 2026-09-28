@@ -15,7 +15,7 @@ export const VideoCard: React.FC<VideoCardProps> = memo(({
   video,
   fallbackImageUrl = '',
   onPlay,
-  onRefresh,
+  onRefresh: _onRefresh,
   onPublish,
 }) => {
   const { showToast } = useToast();
@@ -36,23 +36,10 @@ export const VideoCard: React.FC<VideoCardProps> = memo(({
     });
   };
 
-  const handleQuickTrim = async (e: React.MouseEvent) => {
+  const handleOpenTrimReview = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!window.confirm('Cắt bỏ 0.6s frame đầu của video này và tải lên lại S3?')) return;
-    try {
-      showToast('✂️ Đang cắt 0.6s đầu video và tải lên lại S3...');
-      const res = await fetch('/api/videos/trim-start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ video_id: video.id, trim_seconds: 0.6 }),
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || 'Cắt video thất bại');
-      showToast('🎉 Đã cắt 0.6s đầu và cập nhật video thành công!');
-      onRefresh();
-    } catch (err: any) {
-      showToast(`❌ Lỗi: ${err.message}`);
-    }
+    onPlay(video);
+    showToast('✂️ Mở video editor — review điểm cắt trước khi áp dụng.');
   };
 
   const handlePublishClick = (e: React.MouseEvent) => {
@@ -148,11 +135,11 @@ export const VideoCard: React.FC<VideoCardProps> = memo(({
         <button
           type="button"
           className="btn-action"
-          onClick={handleQuickTrim}
+          onClick={handleOpenTrimReview}
           style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.3)' }}
-          title="Cắt bỏ 0.6s frame đầu video bị khựng và tải lên S3 lại"
+          title="Mở editor để chọn và review điểm cắt trước khi ghi đè video"
         >
-          ✂️ Cắt đầu
+          ✂️ Cắt / Review
         </button>
         <button
           type="button"
