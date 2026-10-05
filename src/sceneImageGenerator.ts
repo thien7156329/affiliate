@@ -86,45 +86,69 @@ export function buildDetailedSceneImagePrompt(
     ? referenceLabel
     : `${referenceLabel} reference image`;
 
-  let prompt = `Create a premium '3D Bear' animation style storyboard sheet featuring 6 sequential action steps arranged in a clean 2x3 grid for Scene ${sceneIndex + 1}, strictly matching the 3D character design from the attached ${refText}:
+  let prompt = `Create a premium 3D Pixar/Disney animation style storyboard sheet featuring 6 sequential action steps arranged in a clean 2x3 grid for Scene ${sceneIndex + 1}, strictly matching the 3D character design and art style from the attached ${refText}:
 ${scenePrompt}`;
 
   prompt += `\n\nREFERENCE PRIORITY: The written CHARACTER BIBLE fixes the cast. If the original reference visibly depicts those characters, it also fixes their face, species, proportions, uniform and accessories; if it only depicts the product, use it to lock the product's appearance instead. A generated Scene 1 image guides shared 3D render style and setting, but must not override the bible or an original character reference. A preceding scene may guide pose and prop state only; never copy accidental design drift from it.`;
 
-  // ── Chibi character design lock — ensures keyframe images have correct proportions ──
-  // This is CRITICAL because Veo uses these keyframe images as visual reference.
-  // If keyframes are not chibi, videos won't be chibi either.
-  prompt += `\n\nCHIBI 3D BEAR CHARACTER DESIGN (MANDATORY FOR ALL PANELS — 'BUBU AND DUDU TV' CANON):
-- ALL bear characters MUST be rendered as adorable baby toddler plush dolls in the iconic 'Bubu and Dudu TV' 3D chibi style:
-  * PROPORTIONS: Extreme 1:1 or 1:1.5 toddler chibi proportions. Oversized spherical balloon head ≈ 65%-70% of total height, tiny chubby pear body, very short stubby rounded arms and legs with NO claws, NO fingers, NO paw pads.
-  * FLAT KAWAII FACE: Face MUST be completely smooth and flat like a cute plushie or kawaii emoji. ABSOLUTELY NO protruding animal muzzle, NO snout, NO nose bridge, NO jaw separation.
-  * EYES & EYEBROWS: Two small simple glossy black bead/button eyes placed wide apart with tiny white specular highlights. Delicate raised curved eyebrow lines set high on the forehead for an innocent, sweet toddler baby expression.
-  * NOSE & MOUTH: Cute tiny button dot nose right between the eyes. Adorable open ':3' cat/bear smile mouth showing a small pink tongue, drawn flat on the round face.
-  * CHEEKS: Big prominent soft circular blush stamps on chubby lower cheeks.
-  * FUR TEXTURE: Smooth velvety plush felt / velour toy skin with soft peach-fuzz and warm subsurface scattering glow. NOT coarse, stringy, or realistic wild bear fur!
-  * BuBu (Brown Bear): ENTIRELY warm caramel milk-chocolate brown velvety plush fur on body, face, ears, paws. Warm peach-apricot blush circles on cheeks. Playful, cheerful baby demeanor.
-  * DuDu (White Bear): ENTIRELY pure snow-white velvety plush fur on body, face, ears, paws. Soft rosy-pink blush circles on cheeks. Wears a cute small chocolate-brown knotted neck scarf / bow tie around neck. 100% white teddy bear — absolutely NO dark eye-rings, NO black markings, NEVER a panda.
-- ANTI-AGING & ANTI-REALISM STRICT RULE:
-  * ABSOLUTELY NO realistic bear muzzle, NO protruding snout, NO animal nostrils, NO animal teeth or claws, NO realistic wild fur, NO adult facial structure, NO tall humanoid bodies, NO aged or wrinkled expressions. Any panel showing adult proportions or a long animal muzzle is WRONG.`;
+  // ── Universal 3D Character Design & Visual Continuity Lock ──
+  prompt += `\n\n═══════════════════════════════════════════════════════
+🎯 CRITICAL CHARACTER & VISUAL CONTINUITY DIRECTIVE:
+Reference Source: Attached ${refText}.
+- 100% VISUAL CLONE FROM ATTACHED REFERENCE: Clone and strictly preserve the EXACT same character models, species, facial anatomy, fur/skin texture, eye design, color palette, and rendering style established in the attached ${refText}!
+- PRESERVE 3D CGI ANIMATION STYLE:
+  * If the reference image depicts organic, expressive 3D Pixar/Disney CGI characters, KEEP all 6 panels in that EXACT SAME 3D cinematic CGI animation style!
+  * DO NOT morph characters into felt puppets, stuffed fabric dolls, or clay figures unless the reference image itself explicitly depicts a stuffed doll!
+  * DO NOT add stitched seams, felt patches, or replace expressive cartoon eyes with button dots unless shown in the reference!
+- IDENTITY LOCK ACROSS ALL PANELS: Reuse the identical 3D model per named character in every panel. Preserve head-to-body ratio, eye design, muzzle/mouth shape, and markings. White characters stay white, golden characters stay golden. No species swapping, no sudden design shifts!
+═══════════════════════════════════════════════════════`;
+
+  // ── Species Anti-Confusion Lock (dynamically extracted from scene prompt) ──
+  const speciesKeywords: Array<{name: string; key: string; anatomy: string; forbidden: string}> = [
+    { name: "Turtle/Tortoise", key: "turtle|tortoise|rùa", anatomy: "hard shell on back, short stubby legs, small rounded head", forbidden: "long ears, fluffy tail, fur" },
+    { name: "Rabbit/Bunny", key: "rabbit|bunny|hare|thỏ", anatomy: "long upright ears, fluffy cotton-ball tail, soft fur, NO shell", forbidden: "shell, scales, short reptile legs" },
+    { name: "Monkey", key: "monkey|ape|khỉ", anatomy: "curly tail, agile hands with fingers, round face", forbidden: "shell, long ears, hooves, wings" },
+    { name: "Elephant", key: "elephant|voi", anatomy: "long trunk, large floppy ears, thick legs, grey skin", forbidden: "fur, shell, horns, wings" },
+    { name: "Bear", key: "bear|gấu", anatomy: "round ears, thick fur, stocky build", forbidden: "shell, long rabbit ears, trunk" },
+    { name: "Fox", key: "fox|cáo", anatomy: "bushy tail with white tip, pointed ears, orange fur", forbidden: "shell, trunk, mane" },
+    { name: "Lion", key: "lion|sư tử", anatomy: "majestic mane, golden fur, powerful paws", forbidden: "stripes, shell, trunk" },
+    { name: "Tiger", key: "tiger|hổ|cọp", anatomy: "black stripes on orange fur, powerful build", forbidden: "mane, shell, trunk" },
+    { name: "Pig", key: "pig|piglet|heo|lợn", anatomy: "round pink body, curly tail, flat snout", forbidden: "shell, long ears, mane" },
+    { name: "Frog", key: "frog|toad|ếch|cóc", anatomy: "smooth green skin, large protruding eyes, webbed feet", forbidden: "fur, shell on back, long ears" },
+    { name: "Penguin", key: "penguin|chim cánh cụt", anatomy: "black and white plumage, orange beak, flippers", forbidden: "fur, shell, long ears" },
+  ];
+
+  const promptLower = scenePrompt.toLowerCase();
+  const detectedSpecies = speciesKeywords.filter(s => new RegExp(s.key, 'i').test(promptLower));
+  if (detectedSpecies.length >= 2) {
+    prompt += `\n\n═══════════════════════════════════════════════════════
+⚠️ MULTI-SPECIES ANTI-CONFUSION LOCK (CRITICAL — DO NOT BLEND SPECIES):
+This scene features MULTIPLE DIFFERENT animal species. Each MUST remain 100% anatomically distinct:`;
+    for (const sp of detectedSpecies) {
+      prompt += `\n• ${sp.name}: MUST always show ${sp.anatomy}. NEVER give it: ${sp.forbidden}.`;
+    }
+    prompt += `\n- Each character's species-defining features (shell, ears, trunk, mane, tail type, skin texture) are IMMUTABLE.
+- NEVER blend features from one species onto another character!
+═══════════════════════════════════════════════════════`;
+  }
 
   if (redrawInstructions && redrawInstructions.trim()) {
     prompt += `\n\n═══════════════════════════════════════════════════════
-🎯 CRITICAL CHARACTER & VISUAL CONTINUITY DIRECTIVE (FROM DIRECTOR):
-Reference Source: Attached ${refText}.
+🎯 DIRECTOR FEEDBACK / REDRAW INSTRUCTIONS:
 Director Notes: ${redrawInstructions.trim()}
 ═══════════════════════════════════════════════════════
-- STRICT CHARACTER REPLICATION: Clone and strictly maintain the exact 3D character model, facial expressions, fur/skin texture, eyes, species, proportions, and clothing/accessories established in the attached ${refText}!
 - Faithfully apply the director's instructions while executing the scene prompt above.`;
   }
 
   prompt += `\n\nMandatory Visual & Composition Requirements:
 - 6 SEQUENTIAL ACTION STEPS (2x3 GRID): Present 6 sequential progression panels arranged in a clean 2x3 grid layout, depicting step-by-step character actions, movements, and key story beats for this scene.
-- CHIBI 3D BEAR PROPORTIONS IN ALL SIX PANELS: Every bear character must maintain '3D Bear' chibi proportions (oversized round head, tiny stub limbs, fluffy soft fur) consistently across all 6 panels. Do NOT let any character "grow" into normal proportions.
-- IDENTITY IN ALL SIX PANELS: Reuse one identical 3D model per named character in every panel. Preserve head-to-body ratio, eye spacing/color, ear/muzzle shape, fur/skin markings, and the same uniform type/color/trim/logo, shoes and fixed accessories. No duplicate or swapped characters, no new clothing or accessories. White bear stays white fluffy. Brown bear stays brown fluffy.
-- EXPRESSION CONTINUITY: Keep the underlying face identical. Change gaze, brows, mouth and pose only when the scripted action/emotion calls for it; progress emotions gradually across panels. Never change the character's age, eye design, smile shape or facial markings.
+- CONSISTENT CHARACTER PROPORTIONS IN ALL SIX PANELS: Every character must maintain their exact proportional scale, facial anatomy, and styling consistently across all 6 panels.
+- IDENTITY IN ALL SIX PANELS: Reuse one identical 3D model per named character in every panel. Preserve head-to-body ratio, eye spacing/color, ear/muzzle shape, fur/skin markings, and fixed accessories. No duplicate or swapped characters.
+- EXPRESSION CONTINUITY: Keep the underlying face identical. Change gaze, brows, mouth and pose only when the scripted action/emotion calls for it; progress emotions gradually across panels. Never change the character's core design or facial markings.
 - PROP CONTINUITY: Keep each object the same color, shape, size, count and owner in every panel. Show each pickup, handoff, opening or placement as a visible step, retaining the same hand/side until that action occurs.
 - Narrative Progression: Show clear, dynamic step-by-step action progression, character interactions, and expressive animation poses throughout the 6 panels.
-- Cinematic Lighting & Environment: Beautiful volumetric lighting, rich cozy atmosphere, soft warm shadows, depth of field, and vibrant colors.`;
+- Cinematic Lighting & Environment: Beautiful volumetric lighting, rich cozy atmosphere, soft warm shadows, depth of field, and vibrant colors.
+- VERTICAL 9:16 FRAMING FOR YOUTUBE SHORTS: Frame all character actions and staging strictly within the vertical 9:16 portrait safety zone. All visible characters must stay close together in the center, completely visible from head to toe or waist-up with ample headroom and floor room. NEVER stage characters far apart on opposite sides where they would be cropped in vertical 9:16 video.`;
 
   if (dialogue && dialogue.trim()) {
     prompt += `\n\n═══════════════════════════════════════════════════════
@@ -568,12 +592,10 @@ export async function generateAllSceneImages(
 
   // Download reference image to local path
   let localRefImage = await downloadLocalCopy(originalImageUrl, outputDir);
-  const defaultBearRef = path.resolve(__dirname, "../public/bubu_dudu_reference.jpg");
-  if ((!localRefImage || !fs.existsSync(localRefImage)) && fs.existsSync(defaultBearRef)) {
-    localRefImage = defaultBearRef;
-    console.log(`📌 [SceneImgGen] Using canonical Bubu & Dudu reference image: ${defaultBearRef}`);
-  } else if (!localRefImage || !fs.existsSync(localRefImage)) {
-    console.warn(`⚠️  [SceneImgGen] Could not download reference image: ${originalImageUrl}`);
+  if (!localRefImage || !fs.existsSync(localRefImage)) {
+    if (originalImageUrl) {
+      console.warn(`⚠️  [SceneImgGen] Could not download reference image: ${originalImageUrl}`);
+    }
   }
 
   let browser: any = null;

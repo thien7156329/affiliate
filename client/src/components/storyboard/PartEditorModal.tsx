@@ -84,6 +84,16 @@ export const PartEditorModal: React.FC<PartEditorModalProps> = ({
   const [isDrawing, setIsDrawing] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
 
+  const promptKeys = Object.keys(promptsObj || {}).map(k => {
+    const m = k.match(/^prompt(\d+)$/i);
+    return m ? parseInt(m[1], 10) : 0;
+  }).filter(n => n > 0);
+  const totalParts = Math.max(
+    promptKeys.length > 0 ? Math.max(...promptKeys) : 6,
+    partNum
+  );
+  const partNumbers = Array.from({ length: totalParts }, (_, i) => i + 1);
+
   const currentImage = sceneImages[partNum - 1];
   const currentVideo = sceneUrls[partNum - 1];
 
@@ -302,7 +312,7 @@ export const PartEditorModal: React.FC<PartEditorModalProps> = ({
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px', marginBottom: '14px' }}>
           <div>
-            <h2 style={{ margin: 0, fontSize: '20px', lineHeight: 1.25 }}>Chỉnh sửa video · Part {partNum}/6</h2>
+            <h2 style={{ margin: 0, fontSize: '20px', lineHeight: 1.25 }}>Chỉnh sửa video · Part {partNum}/{totalParts}</h2>
             <p style={{ margin: '5px 0 0', fontSize: '12px', color: 'var(--muted)' }}>{productName} · {category}</p>
           </div>
           <button
@@ -315,8 +325,8 @@ export const PartEditorModal: React.FC<PartEditorModalProps> = ({
           </button>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(70px, 1fr))', gap: '7px', marginBottom: '14px' }}>
-          {[1, 2, 3, 4, 5, 6].map((num) => (
+        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(partNumbers.length, 10)}, minmax(55px, 1fr))`, gap: '7px', marginBottom: '14px', overflowX: 'auto' }}>
+          {partNumbers.map((num) => (
             <button
               key={num}
               type="button"
@@ -363,7 +373,32 @@ export const PartEditorModal: React.FC<PartEditorModalProps> = ({
           <div style={cardStyle}>
             <div style={{ fontSize: '11px', fontWeight: 700, color: '#60a5fa', marginBottom: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span>Video · Part {partNum}</span>
-              {currentVideo && <span style={{ color: '#10b981', fontWeight: 600 }}>{videoDuration > 0 ? formatSeconds(videoDuration) : 'Sẵn sàng'}</span>}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {currentVideo && (
+                  <a
+                    href={`/api/videos/download?url=${encodeURIComponent(currentVideo)}&filename=${encodeURIComponent(`part_${partNum}`)}`}
+                    download={`part_${partNum}.mp4`}
+                    style={{
+                      background: 'rgba(16,185,129,0.15)',
+                      border: '1px solid rgba(16,185,129,0.4)',
+                      color: '#10b981',
+                      padding: '2px 8px',
+                      borderRadius: '5px',
+                      fontSize: '10.5px',
+                      fontWeight: 700,
+                      textDecoration: 'none',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      cursor: 'pointer',
+                    }}
+                    title={`Tải video Part ${partNum} về máy`}
+                  >
+                    ⬇️ Tải Video
+                  </a>
+                )}
+                {currentVideo && <span style={{ color: '#10b981', fontWeight: 600 }}>{videoDuration > 0 ? formatSeconds(videoDuration) : 'Sẵn sàng'}</span>}
+              </div>
             </div>
             <div style={{ aspectRatio: '16/9', background: '#050505', borderRadius: '9px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               {currentVideo ? (
@@ -608,7 +643,7 @@ export const PartEditorModal: React.FC<PartEditorModalProps> = ({
               <span style={{ fontSize: '11px', color: 'var(--muted)' }}>Ảnh tham chiếu</span>
               <select value={refSource} onChange={(e) => setRefSource(parseInt(e.target.value, 10))} style={{ ...fieldStyle, width: 'auto', padding: '6px 8px' }}>
                 <option value={-1}>Ảnh gốc sản phẩm</option>
-                {[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n - 1}>Part {n}</option>)}
+                {partNumbers.map((n) => <option key={n} value={n - 1}>Part {n}</option>)}
               </select>
               {originalImageUrl && <span style={{ fontSize: '10px', color: '#10b981' }}>Có ảnh gốc</span>}
             </div>

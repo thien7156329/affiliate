@@ -383,7 +383,7 @@
     .log-dot.running { background: var(--warning); animation: pulse 1s infinite; }
     .log-time { color: var(--muted); font-size: 11px; margin-top: 2px; }
 
-    /* ── TOAST ── */
+    /* ── TOAST (legacy #toast) ── */
     #toast {
       position: fixed; bottom: 24px; right: 24px;
       background: var(--bg3); border: 1px solid var(--border);
@@ -393,6 +393,37 @@
       transition: all 0.3s; pointer-events: none;
     }
     #toast.show { transform: translateY(0); opacity: 1; }
+
+    /* ── TOAST (React ToastContext) ── */
+    .toast-container {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 100000; /* Must be above ALL modals */
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      align-items: flex-end;
+      pointer-events: none;
+    }
+    .toast-msg {
+      background: linear-gradient(135deg, var(--bg3) 0%, var(--bg2) 100%);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 20px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2);
+      pointer-events: auto;
+      animation: toastSlideIn 0.35s cubic-bezier(0.21, 1.02, 0.73, 1) forwards;
+      max-width: 420px;
+      word-break: break-word;
+    }
+    @keyframes toastSlideIn {
+      from { transform: translateY(30px) scale(0.95); opacity: 0; }
+      to   { transform: translateY(0) scale(1); opacity: 1; }
+    }
 
     /* ── PIPELINE PROGRESS ── */
     .pipeline-progress {
@@ -715,6 +746,8 @@
 
       /* ── Toast ── */
       #toast { bottom: 10px; right: 10px; left: 10px; font-size: 13px; }
+      .toast-container { bottom: 10px; right: 10px; left: 10px; align-items: stretch; }
+      .toast-msg { max-width: 100%; font-size: 12px; }
 
       /* ── Log ── */
       .log-body { max-height: 180px; }

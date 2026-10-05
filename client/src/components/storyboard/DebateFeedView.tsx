@@ -49,7 +49,7 @@ function parseScriptFromContent(content: string): { parts: ParsedScenePart[]; bi
   } catch {}
 
   if (jsonParsed && typeof jsonParsed === 'object') {
-    for (let i = 1; i <= 6; i++) {
+    for (let i = 1; i <= 20; i++) {
       const p = jsonParsed[`prompt${i}`] || jsonParsed[`scene${i}`] || '';
       const d = jsonParsed[`dialogue${i}`] || '';
       if (p || d) {
@@ -79,7 +79,7 @@ function parseScriptFromContent(content: string): { parts: ParsedScenePart[]; bi
 
   // 3. Regex parser for scenes if JSON did not provide all parts
   if (Object.keys(partsMap).length < 2) {
-    for (let i = 1; i <= 6; i++) {
+    for (let i = 1; i <= 20; i++) {
       // Look for Scene i header
       const sceneRegex = new RegExp(
         `(?:###?\\s*|\\*\\*|\\b)(?:Scene|Part|Cảnh|Phân cảnh)\\s*${i}[:\\*\\s\\-]+([\\s\\S]*?)(?=(?:###?\\s*|\\*\\*|\\b)(?:Scene|Part|Cảnh|Phân cảnh)\\s*\\d+[:\\*\\s\\-]|$)`,
@@ -118,8 +118,10 @@ function parseScriptFromContent(content: string): { parts: ParsedScenePart[]; bi
     }
   }
 
+  const partIndices = Object.keys(partsMap).map(k => parseInt(k, 10)).sort((a, b) => a - b);
+  const maxPartParsed = partIndices.length > 0 ? Math.max(6, ...partIndices) : 6;
   const results: ParsedScenePart[] = [];
-  for (let i = 1; i <= 6; i++) {
+  for (let i = 1; i <= maxPartParsed; i++) {
     if (partsMap[i]) {
       results.push({
         partNum: i,

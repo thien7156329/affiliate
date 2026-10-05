@@ -58,6 +58,7 @@ export const ConsensusDebateBox: React.FC<ConsensusDebateBoxProps> = memo(({
   const [statusText, setStatusText] = useState('');
   const [preFeedback, setPreFeedback] = useState('');
   const [liveFeedback, setLiveFeedback] = useState('');
+  const [sceneCount, setSceneCount] = useState<number>(8);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -117,7 +118,7 @@ export const ConsensusDebateBox: React.FC<ConsensusDebateBoxProps> = memo(({
           category,
           product_image_url: imageUrl || undefined,
           product_description: productDesc || undefined,
-          scene_count: 6,
+          scene_count: sceneCount,
           user_feedback: customFeedback || preFeedback.trim() || undefined,
           session_id: newSessionId,
           start_round: targetStartRound,
@@ -221,26 +222,53 @@ export const ConsensusDebateBox: React.FC<ConsensusDebateBoxProps> = memo(({
         <div style={{ fontSize: '13px', fontWeight: 600, color: '#c4b5fd', display: 'flex', alignItems: 'center', gap: '6px' }}>
           <span>🤝 2-AI Validation (Codex Sol sáng tác, Gemini 3.8 Low kiểm định đến khi đạt 100%)</span>
         </div>
-        <button
-          type="button"
-          onClick={() => startDebateStream()}
-          disabled={isStreaming}
-          style={{
-            background: '#7c3aed',
-            color: '#fff',
-            border: 'none',
-            padding: '6px 14px',
-            borderRadius: '8px',
-            fontSize: '12px',
-            fontWeight: 600,
-            cursor: isStreaming ? 'not-allowed' : 'pointer',
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '5px',
-          }}
-        >
-          <span>{isStreaming ? '⏳ Đang thảo luận 2 AI...' : '✨ Thảo luận 2 AI ngay'}</span>
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          <select
+            value={sceneCount}
+            onChange={(e) => setSceneCount(parseInt(e.target.value, 10))}
+            disabled={isStreaming}
+            title="Chọn số lượng cảnh / thời lượng video"
+            style={{
+              background: 'var(--bg2)',
+              border: '1px solid rgba(124,58,237,0.4)',
+              color: 'var(--text)',
+              padding: '5px 8px',
+              borderRadius: '6px',
+              fontSize: '11px',
+              fontWeight: 600,
+              outline: 'none',
+              cursor: 'pointer',
+            }}
+          >
+            <option value={8}>⭐ 8 Cảnh (~80s) - Short 80s Chuẩn (Mặc định)</option>
+            <option value={3}>⚡ 3 Cảnh (~30s) - Short 30s Nhanh</option>
+            <option value={4}>⚡ 4 Cảnh (~40s) - Short 40s Vừa vặn</option>
+            <option value={5}>⚡ 5 Cảnh (~50s) - Short 50s Súc tích</option>
+            <option value={6}>🎬 6 Cảnh (~60s) - Short 60s Tình huống</option>
+            <option value={10}>🌟 10 Cảnh (~100s) - Ngụ Ngôn & Veo</option>
+            <option value={12}>📖 12 Cảnh (~2 Phút) - Cổ Tích Đầy Đủ</option>
+          </select>
+          <button
+            type="button"
+            onClick={() => startDebateStream()}
+            disabled={isStreaming}
+            style={{
+              background: '#7c3aed',
+              color: '#fff',
+              border: 'none',
+              padding: '6px 14px',
+              borderRadius: '8px',
+              fontSize: '12px',
+              fontWeight: 600,
+              cursor: isStreaming ? 'not-allowed' : 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '5px',
+            }}
+          >
+            <span>{isStreaming ? '⏳ Đang thảo luận 2 AI...' : '✨ Thảo luận 2 AI ngay'}</span>
+          </button>
+        </div>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>

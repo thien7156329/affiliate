@@ -26,6 +26,27 @@ export interface Product {
   consensus_feedback?: string;
   debate_messages?: any[];
   part_feedback?: string;
+  episodes?: EpisodeDefinition[];
+}
+
+export interface EpisodeDefinition {
+  id: string;
+  title: string;
+  startScene: number;
+  endScene: number;
+}
+
+export interface GeneratedEpisode {
+  id: string;
+  title: string;
+  startScene: number;
+  endScene: number;
+  filename: string;
+  local_path: string;
+  video_url: string;
+  voiced_path?: string | null;
+  voiced_url?: string | null;
+  thumbnail_url?: string | null;
 }
 
 export interface VideoItem {
@@ -36,6 +57,7 @@ export interface VideoItem {
   stream_url?: string;
   s3_url?: string;
   thumbnail_url?: string;
+  source_image_url?: string;
   description?: string;
   description_vi?: string;
   caption?: string;
@@ -49,6 +71,13 @@ export interface VideoItem {
   created_at?: string;
   job_name?: string;
   download_url?: string;
+  local_path?: string;
+  video_url?: string;
+  episodes?: GeneratedEpisode[];
+  youtube_video_id?: string;
+  youtube_url?: string;
+  youtube_shorts_url?: string;
+  youtube_published_at?: string;
 }
 
 export interface AiDebateMessage {

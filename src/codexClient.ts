@@ -3,7 +3,24 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 
-export const CODEX_CLI_PATH = process.env.CODEX_CLI_PATH || "/Applications/ChatGPT.app/Contents/Resources/codex";
+function findCodexCli(): string {
+  if (process.env.CODEX_CLI_PATH && fs.existsSync(process.env.CODEX_CLI_PATH)) {
+    return process.env.CODEX_CLI_PATH;
+  }
+  const candidates = [
+    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
+    "/usr/local/bin/codex",
+    "/opt/homebrew/bin/codex"
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return process.env.CODEX_CLI_PATH || "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex";
+}
+
+export const CODEX_CLI_PATH = findCodexCli();
 export const CODEX_MODEL = process.env.CODEX_MODEL || "gpt-5.6-sol";
 export const CODEX_EFFORT = process.env.CODEX_EFFORT || "low";
 
@@ -21,7 +38,7 @@ export async function callCodexSol(
 ): Promise<string> {
   if (!isCodexEnabled()) throw new Error("Codex is disabled by CODEX_ENABLED");
 
-  const executable = CODEX_CLI_PATH;
+  const executable = findCodexCli();
   if (!fs.existsSync(executable)) {
     throw new Error(`Codex binary not found at ${executable}`);
   }

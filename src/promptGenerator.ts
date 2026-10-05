@@ -39,7 +39,8 @@ import { CODEX_MODEL, callCodexSol, isCodexEnabled } from "./codexClient.js";
 function dubbingTimelineRules(sceneCount: number): string {
   return `
 8. MACHINE-READABLE DUBBING & LIP-SYNC TIMELINE (MANDATORY — CRITICAL GATE):
-- Every prompt1..prompt${sceneCount} describes exactly one 10.0-second scene and MUST contain an explicit DUB_TIMELINE block.
+- Every prompt1..prompt${sceneCount} describes exactly one scene of AT MOST 10.0 seconds and MUST contain an explicit DUB_TIMELINE block.
+- Scene length is CONTENT-DRIVEN (typically 4-9s): the timeline ENDS right after the last spoken line or key action plus a short (0.4-0.8s) closed-mouth reaction beat. NEVER pad the scene with idle waiting, empty staring or meaningless silence just to reach 10s.
 - Every spoken line in dialogueN MUST have exactly one matching interval in promptN, in the same order and with the exact same speaker name.
 - Use this exact parseable grammar for every interval: "X.X-Y.Ys, CharacterName says the line with precise Vietnamese lip-sync."
 - Use ASCII hyphen '-' and the trailing lowercase 's'; timestamps are relative to that scene, never global.
@@ -53,7 +54,7 @@ function dubbingTimelineRules(sceneCount: number): string {
 - dialogueN remains plain newline-separated Vietnamese in the exact format: CharacterName: "Exact spoken text". Do not put timestamps inside dialogueN.
 
 Required example inside every visual prompt:
-DUB_TIMELINE: 0.0-0.6s, no dialogue; both mouths closed. 0.6-3.2s, DuDu says the first line with precise Vietnamese lip-sync; only DuDu's mouth moves while BuBu listens with mouth closed. 3.2-3.6s, no dialogue; both mouths closed. 3.6-6.0s, BuBu says the second line with precise Vietnamese lip-sync; only BuBu's mouth moves while DuDu listens with mouth closed. 6.0-10.0s, no dialogue; both mouths closed.
+DUB_TIMELINE: 0.0-0.6s, no dialogue; both mouths closed. 0.6-3.2s, Character A says the first line with precise Vietnamese lip-sync; only Character A's mouth moves while Character B listens with mouth closed. 3.2-3.6s, no dialogue; both mouths closed. 3.6-6.0s, Character B says the second line with precise Vietnamese lip-sync; only Character B's mouth moves while Character A listens with mouth closed. 6.0-6.7s, no dialogue; both mouths closed, scene ends.
 `;
 }
 
@@ -82,8 +83,9 @@ export function validateDubbingTimelineStructure(
       issues.push(`prompt${scene}: timeline has no parseable intervals`);
       continue;
     }
-    if (Math.abs(intervals[0].start) > 0.05 || Math.abs(intervals[intervals.length - 1].end - 10) > 0.05) {
-      issues.push(`prompt${scene}: timeline must cover 0.0-10.0s`);
+    const lastEnd = intervals[intervals.length - 1].end;
+    if (Math.abs(intervals[0].start) > 0.05 || lastEnd < 3 - 0.05 || lastEnd > 10 + 0.05) {
+      issues.push(`prompt${scene}: timeline must start at 0.0s and end between 3.0s and 10.0s`);
     }
     for (let i = 0; i < intervals.length; i++) {
       const current = intervals[i];
@@ -570,41 +572,325 @@ function buildFallbackThreePrompts(productName: string, category: string): { pro
   };
 }
 /**
+ * Comprehensive animal/species keyword map for Vietnamese & English titles.
+ * Each entry contains: regex pattern, Vietnamese name, English name, species description,
+ * and a list of other species to prohibit.
+ */
+interface SpeciesEntry {
+  pattern: RegExp;
+  viName: string;
+  enName: string;
+  enPlural: string;
+  description: string;
+  negatives: string[];
+}
+
+const SPECIES_REGISTRY: SpeciesEntry[] = [
+  {
+    pattern: /rùa|turtle|tortoise/i,
+    viName: "RÙA",
+    enName: "TURTLE / TORTOISE",
+    enPlural: "turtles/tortoises",
+    description: "a chibi 3D turtle/tortoise with a clearly visible hard shell on its back, short stubby green/brown legs, small rounded head with gentle eyes, smooth shell texture with hexagonal patterns",
+    negatives: ["rabbit", "hare", "bear", "cat", "dog"]
+  },
+  {
+    pattern: /thỏ|rabbit|hare|bunny/i,
+    viName: "THỎ",
+    enName: "RABBIT / BUNNY",
+    enPlural: "rabbits/bunnies",
+    description: "a chibi 3D rabbit/bunny with long upright floppy ears, fluffy round cotton-ball tail, soft fur, large expressive eyes, small pink nose, NO shell on back",
+    negatives: ["turtle", "tortoise", "bear", "cat", "dog"]
+  },
+  {
+    pattern: /khỉ|monkey|ape|vượn/i,
+    viName: "KHỈ",
+    enName: "MONKEY / APE",
+    enPlural: "monkeys",
+    description: "a chibi 3D monkey with a round expressive face, curly tail, agile hands with tiny fingers, warm brown/golden fur, playful mischievous personality",
+    negatives: ["bear", "cat", "dog", "rabbit"]
+  },
+  {
+    pattern: /voi|elephant/i,
+    viName: "VOI",
+    enName: "ELEPHANT",
+    enPlural: "elephants",
+    description: "a chibi 3D baby elephant with a long trunk, large floppy ears, thick sturdy legs, grey smooth skin, small kind eyes, gentle and wise demeanor",
+    negatives: ["bear", "cat", "dog", "hippo"]
+  },
+  {
+    pattern: /sư tử|lion|sư ?tử/i,
+    viName: "SƯ TỬ",
+    enName: "LION",
+    enPlural: "lions",
+    description: "a chibi 3D lion with a majestic fluffy mane around its head, golden-tawny fur, powerful but cute paws, proud and brave personality",
+    negatives: ["tiger", "cat", "bear", "dog"]
+  },
+  {
+    pattern: /hổ|tiger|cọp/i,
+    viName: "HỔ / CỌP",
+    enName: "TIGER",
+    enPlural: "tigers",
+    description: "a chibi 3D tiger with distinctive black stripes on orange fur, powerful build, piercing eyes, white belly and inner ears, fierce but adorable",
+    negatives: ["lion", "cat", "bear", "dog"]
+  },
+  {
+    pattern: /cáo|fox|hồ ly/i,
+    viName: "CÁO",
+    enName: "FOX",
+    enPlural: "foxes",
+    description: "a chibi 3D fox with a fluffy bushy tail with white tip, pointed ears, orange-reddish fur, white chest/belly, clever and cunning personality, sharp but cute eyes",
+    negatives: ["dog", "wolf", "cat", "bear"]
+  },
+  {
+    pattern: /heo|lợn|pig|piglet|piggy/i,
+    viName: "HEO / LỢN",
+    enName: "PIG / PIGLET",
+    enPlural: "pigs/piglets",
+    description: "a chibi 3D piglet with a round pink body, curly little tail, flat snout with nostrils, small floppy ears, rosy cheeks, cheerful and clumsy personality",
+    negatives: ["bear", "cat", "dog", "hippo"]
+  },
+  {
+    pattern: /ếch|frog|cóc|toad/i,
+    viName: "ẾCH / CÓC",
+    enName: "FROG / TOAD",
+    enPlural: "frogs/toads",
+    description: "a chibi 3D frog/toad with smooth green skin, large round protruding eyes, wide smiling mouth, webbed feet, sitting in a cute squat pose",
+    negatives: ["turtle", "lizard", "snake"]
+  },
+  {
+    pattern: /chim cánh cụt|penguin/i,
+    viName: "CHIM CÁNH CỤT",
+    enName: "PENGUIN",
+    enPlural: "penguins",
+    description: "a chibi 3D penguin with black and white tuxedo-like plumage, orange beak and feet, small flippers, round body, waddling cute gait",
+    negatives: ["duck", "bird", "bear"]
+  },
+  {
+    pattern: /cú mèo|owl|cú/i,
+    viName: "CÚ MÈO",
+    enName: "OWL",
+    enPlural: "owls",
+    description: "a chibi 3D owl with large round wise eyes, feathery round body, small pointed beak, tufted ear feathers, soft brown/grey plumage, scholarly wise personality",
+    negatives: ["cat", "bird", "eagle"]
+  },
+  {
+    pattern: /chuột|mouse|rat|hamster/i,
+    viName: "CHUỘT",
+    enName: "MOUSE / HAMSTER",
+    enPlural: "mice/hamsters",
+    description: "a chibi 3D mouse/hamster with large round ears, tiny pink nose, long thin tail (mouse) or short stubby tail (hamster), small round body, twitchy whiskers",
+    negatives: ["cat", "rabbit", "rat"]
+  },
+  {
+    pattern: /cá(?!o|\s*sấu)|fish|cá vàng|goldfish|cá heo|dolphin/i,
+    viName: "CÁ",
+    enName: "FISH / GOLDFISH",
+    enPlural: "fish",
+    description: "a chibi 3D fish with shimmering scales, flowing fins, large expressive eyes, smooth streamlined body, bubbles around",
+    negatives: ["bird", "mammal"]
+  },
+  {
+    pattern: /khủng long|dinosaur|dino|t-rex/i,
+    viName: "KHỦNG LONG",
+    enName: "DINOSAUR",
+    enPlural: "dinosaurs",
+    description: "a chibi 3D baby dinosaur with short arms, long tail, round belly, tiny sharp teeth in a friendly smile, bumpy textured skin, bright colorful scales",
+    negatives: ["dragon", "lizard", "crocodile"]
+  },
+  {
+    pattern: /kỳ lân|unicorn/i,
+    viName: "KỲ LÂN",
+    enName: "UNICORN",
+    enPlural: "unicorns",
+    description: "a chibi 3D unicorn with a single sparkling horn on forehead, flowing rainbow mane and tail, white/pastel fur, large dreamy eyes, magical sparkles around",
+    negatives: ["horse", "deer", "donkey"]
+  },
+  {
+    pattern: /gà|chicken|rooster|chick|gà con/i,
+    viName: "GÀ",
+    enName: "CHICKEN / CHICK",
+    enPlural: "chickens/chicks",
+    description: "a chibi 3D chick/chicken with fluffy yellow down feathers (chick) or colorful plumage (rooster), small orange beak, tiny wings, round body",
+    negatives: ["duck", "bird", "penguin"]
+  },
+  {
+    pattern: /ngựa|horse|pony|ngựa con/i,
+    viName: "NGỰA",
+    enName: "HORSE / PONY",
+    enPlural: "horses/ponies",
+    description: "a chibi 3D horse/pony with flowing mane and tail, strong elegant legs, large gentle eyes, smooth coat, graceful and spirited personality",
+    negatives: ["donkey", "unicorn", "deer"]
+  },
+  {
+    pattern: /sóc|squirrel|chipmunk/i,
+    viName: "SÓC",
+    enName: "SQUIRREL / CHIPMUNK",
+    enPlural: "squirrels",
+    description: "a chibi 3D squirrel with a large bushy curved tail, tiny paws holding an acorn, bright alert eyes, reddish-brown fur, energetic and quick personality",
+    negatives: ["mouse", "rabbit", "hamster"]
+  },
+  {
+    pattern: /sói|wolf|chó sói/i,
+    viName: "SÓI",
+    enName: "WOLF",
+    enPlural: "wolves",
+    description: "a chibi 3D wolf with thick grey/silver fur, pointed ears, bushy tail, piercing intelligent eyes, pack-leader personality",
+    negatives: ["dog", "fox", "bear"]
+  },
+  {
+    pattern: /rắn|snake|trăn|serpent/i,
+    viName: "RẮN",
+    enName: "SNAKE / SERPENT",
+    enPlural: "snakes",
+    description: "a chibi 3D snake with a long sinuous body, smooth colorful scales, forked tongue, round cute head with large eyes, slithering gracefully",
+    negatives: ["worm", "lizard", "dragon"]
+  },
+  {
+    pattern: /cừu|sheep|lamb|cừu con/i,
+    viName: "CỪU",
+    enName: "SHEEP / LAMB",
+    enPlural: "sheep/lambs",
+    description: "a chibi 3D lamb/sheep with fluffy white wool covering its body, black/pink face and legs, small floppy ears, gentle innocent eyes, soft and cuddly",
+    negatives: ["goat", "dog", "bear"]
+  },
+  {
+    pattern: /dê|goat|dê con/i,
+    viName: "DÊ",
+    enName: "GOAT",
+    enPlural: "goats",
+    description: "a chibi 3D goat with small curved horns, rectangular pupils, short fur, small beard (billy goat), nimble hooves, playful and stubborn personality",
+    negatives: ["sheep", "deer", "horse"]
+  },
+  {
+    pattern: /hươu|nai|deer|reindeer|tuần lộc/i,
+    viName: "HƯƠU / NAI",
+    enName: "DEER / REINDEER",
+    enPlural: "deer",
+    description: "a chibi 3D deer/fawn with beautiful antlers (or budding antlers for fawns), spotted soft brown coat, large dark gentle eyes, slender graceful legs, shy and elegant",
+    negatives: ["horse", "goat", "moose"]
+  },
+  {
+    pattern: /gấu trúc|panda|gấu mèo/i,
+    viName: "GẤU TRÚC / PANDA",
+    enName: "PANDA",
+    enPlural: "pandas",
+    description: "a chibi 3D panda with distinctive black and white fur pattern, black eye patches, round fluffy body, short black ears, bamboo-loving gentle personality",
+    negatives: ["bear", "raccoon", "cat"]
+  },
+  {
+    pattern: /cá sấu|crocodile|alligator/i,
+    viName: "CÁ SẤU",
+    enName: "CROCODILE / ALLIGATOR",
+    enPlural: "crocodiles",
+    description: "a chibi 3D crocodile/alligator with scaly green skin, long snout with visible teeth in a smile, strong tail, short legs, armored back, surprisingly gentle chibi eyes",
+    negatives: ["lizard", "dinosaur", "turtle"]
+  },
+];
+
+/**
  * Automatically inspects the product/story title to rigidly lock species and characters,
- * preventing AI from hallucinating or confusing animals (e.g. bears vs cats vs dogs).
+ * preventing AI from hallucinating or confusing animals (e.g. turtles vs rabbits, bears vs cats).
+ *
+ * Supports 25+ animal species in both Vietnamese and English.
+ * When multiple species are detected (e.g. "Rùa và Thỏ"), generates a multi-species lock
+ * that rigidly distinguishes each character and prohibits species confusion.
  */
 export function detectCharacterAndSpeciesFromTitle(title: string): string {
   const t = (title || "").toLowerCase();
-  if (/gấu|dudu|bubu|bear|gấu nâu|gấu trắng/i.test(t)) {
-    return `🚨 SUPREME MANDATE - TITLE CHARACTER & SPECIES LOCK (KHÓA NHÂN VẬT GẤU CHIBI BABY 100%):
-- The story features the iconic chibi 3D bear duo: BuBu (Brown Bear) and DuDu (White Bear) as adorable baby toddler plush dolls (matching 'Bubu and Dudu TV' visual canon):
-  * BuBu (Gấu Nâu): Warm honey caramel-brown velvety plush fur, oversized round baby head, chubby cheeks with peach blush circles, tiny black glossy bead eyes, cute :3 open cat-smile mouth showing pink tongue, playful toddler demeanor.
-  * DuDu (Gấu Trắng): Pure snow-white velvety plush fur (100% white, NEVER a panda), oversized round baby head, chubby cheeks with soft rosy-pink blush circles, tiny black glossy bead eyes, cute :3 smile, wearing a cute chocolate-brown knotted neck scarf / bow tie, gentle caring demeanor.
+
+  // ── Bears (generic chibi bear species lock — no hardcoded character names) ──
+  if (/gấu|bear|gấu nâu|gấu trắng/i.test(t) && !/gấu trúc|panda/i.test(t)) {
+    return `🚨 SUPREME MANDATE - TITLE CHARACTER & SPECIES LOCK (KHÓA LOÀI GẤU CHIBI 100%):
+- The story features CHIBI 3D BEAR characters as adorable baby toddler plush dolls.
 - MANDATORY CHIBI ANATOMY (ANTI-AGING & ANTI-REALISM):
   * Head-to-body ratio: 1:1 or 1:1.5 toddler proportions. Oversized balloon-like spherical head ≈ 65%-70% of total height, tiny chubby pear-shaped body, very short stubby limbs without fingers or claws.
   * FLAT KAWAII FACE: Face MUST be completely smooth and flat like a plush toy or kawaii emoji. ABSOLUTELY NO protruding snout, NO animal muzzle, NO nose bridge, NO animal jaw division.
   * EYES & EYEBROWS: Two small simple glossy black bead/button eyes set wide apart with tiny white specular sparkle. Two delicate raised curved eyebrow lines set high on the forehead for an innocent, sweet baby look.
   * FUR TEXTURE: Smooth velvety plush felt / velour toy skin with soft warm subsurface scattering glow, NOT coarse, stringy, or realistic wild bear fur.
-- STRICT NEGATIVE: ABSOLUTELY NO realistic bear muzzle, NO protruding snout, NO animal nostrils, NO realistic animal teeth or claws, NO mature or adult facial features, NO tall humanoid proportions, NO aged or wrinkled expressions, NO cats, NO dogs, NO other animals!`;
+- STRICT IDENTITY LOCK: Each bear character must have its own distinct fur color, markings, and fixed accessories that remain identical in every scene.
+- STRICT NEGATIVE: ABSOLUTELY NO realistic bear muzzle, NO protruding snout, NO animal nostrils, NO realistic animal teeth or claws, NO mature or adult facial features, NO tall humanoid proportions, NO cats, NO dogs, NO other animals!`;
   }
-  if (/mèo|meow|cat|bé meo/i.test(t)) {
+
+  // ── Special case: Bé Meow (cat) ──
+  if (/mèo|meow|cat|bé meo/i.test(t) && !/cú mèo|gấu mèo/i.test(t)) {
     return `🚨 SUPREME MANDATE - TITLE CHARACTER & SPECIES LOCK (KHÓA LOÀI MÈO 100%):
 - The title explicitly specifies CATS (MÈO / Bé Meow).
-- MANDATORY: Characters MUST be 100% domestic CHIBI KITTENS / CATS.
-- ABSOLUTE PROHIBITION: DO NOT make them bears (gấu) or dogs (chó)!`;
+- MANDATORY: Characters MUST be 100% domestic CHIBI KITTENS / CATS with pointed ears, whiskers, and slit-pupil eyes.
+- STRICT IDENTITY LOCK: Each cat character must have its own distinct fur color, pattern, and fixed accessories that remain identical in every scene.
+- ABSOLUTE PROHIBITION: DO NOT make them bears (gấu), dogs (chó), rabbits (thỏ), or any other species!`;
   }
-  if (/chó|cún|shiba|dog|puppy|xám/i.test(t)) {
+
+  // ── Special case: Vàng Xám / Sếp Shiba (dogs) ──
+  if (/chó|cún|shiba|dog|puppy|xám/i.test(t) && !/chó sói/i.test(t)) {
     return `🚨 SUPREME MANDATE - TITLE CHARACTER & SPECIES LOCK (KHÓA LOÀI CHÓ/CÚN 100%):
 - The title explicitly specifies DOGS/PUPPIES (CHÓ / CÚN - Vàng Xám, Sếp Shiba).
-- MANDATORY: Characters MUST be 100% CHIBI PUPPIES / DOGS.
-- ABSOLUTE PROHIBITION: DO NOT make them cats (mèo) or bears (gấu)!`;
+- MANDATORY: Characters MUST be 100% CHIBI PUPPIES / DOGS with floppy/pointed ears, wagging tails, and wet nose.
+- STRICT IDENTITY LOCK: Each dog character must have its own distinct breed appearance, fur color, and fixed accessories that remain identical in every scene.
+- ABSOLUTE PROHIBITION: DO NOT make them cats (mèo), bears (gấu), or any other species!`;
   }
-  if (/vịt|duck/i.test(t)) {
-    return `🚨 SUPREME MANDATE - TITLE CHARACTER & SPECIES LOCK (KHÓA LOÀI VỊT 100%):
-- The title explicitly specifies DUCKS/DUCKLINGS (VỊT CON).
-- MANDATORY: Characters MUST be 100% CHIBI DUCKLINGS.`;
+
+  // ── General multi-species detection from registry ──
+  const matchedSpecies: SpeciesEntry[] = [];
+  for (const entry of SPECIES_REGISTRY) {
+    if (entry.pattern.test(t)) {
+      matchedSpecies.push(entry);
+    }
   }
-  return "";
+
+  if (matchedSpecies.length === 0) {
+    return "";
+  }
+
+  // ── Build a comprehensive species lock for all detected animals ──
+  const speciesNames = matchedSpecies.map(s => `${s.viName} (${s.enName})`).join(" & ");
+  const allNegatives = new Set<string>();
+  for (const s of matchedSpecies) {
+    for (const neg of s.negatives) {
+      // Don't add a negative that conflicts with another matched species
+      const isMatchedSpecies = matchedSpecies.some(ms =>
+        ms.enName.toLowerCase().includes(neg.toLowerCase()) ||
+        ms.enPlural.toLowerCase().includes(neg.toLowerCase())
+      );
+      if (!isMatchedSpecies) {
+        allNegatives.add(neg);
+      }
+    }
+  }
+
+  let directive = `🚨 SUPREME MANDATE - TITLE CHARACTER & SPECIES LOCK (KHÓA LOÀI ${speciesNames} 100%):\n`;
+  directive += `- The title explicitly specifies these character species: ${speciesNames}.\n`;
+
+  if (matchedSpecies.length >= 2) {
+    directive += `\n⚠️ CRITICAL MULTI-SPECIES DISTINCTION RULES (PHÂN BIỆT RÕ RÀNG TỪNG LOÀI):\n`;
+    directive += `- This story has MULTIPLE DIFFERENT animal species. Each species MUST remain 100% visually distinct and NEVER morph into another!\n`;
+    for (let i = 0; i < matchedSpecies.length; i++) {
+      const s = matchedSpecies[i];
+      directive += `\n  CHARACTER TYPE ${i + 1} — ${s.viName} (${s.enName}):\n`;
+      directive += `  * MUST be ${s.description}.\n`;
+      directive += `  * This character type MUST keep its species-specific anatomy in EVERY scene. It must NEVER transform into or borrow features from the other species.\n`;
+    }
+    directive += `\n- ANTI-CONFUSION MANDATE: The AI MUST NOT blend species features between characters!\n`;
+    directive += `  * Example: A TURTLE must always have a SHELL and short legs — NEVER give it long rabbit ears.\n`;
+    directive += `  * Example: A RABBIT must always have LONG EARS and fluffy tail — NEVER give it a shell or scales.\n`;
+    directive += `  * Example: A MONKEY must always have a TAIL and hands — NEVER give it wings or hooves.\n`;
+    directive += `  * Each character's species-defining anatomy (shell, ears, trunk, mane, tail shape, etc.) is IMMUTABLE.\n`;
+  } else {
+    const s = matchedSpecies[0];
+    directive += `- MANDATORY: All characters of this species MUST be ${s.description}.\n`;
+  }
+
+  directive += `\n- STRICT IDENTITY LOCK PER CHARACTER:\n`;
+  directive += `  * Each named character must have its own unique color palette, accessories, and distinguishing features.\n`;
+  directive += `  * These visual traits MUST remain identical in EVERY SINGLE SCENE — no drift, no swap, no merge.\n`;
+  directive += `  * Clothing/accessories assigned to one character MUST stay on that character only.\n`;
+
+  if (allNegatives.size > 0) {
+    directive += `\n- ABSOLUTE PROHIBITION: DO NOT turn any character into: ${Array.from(allNegatives).join(", ")}!\n`;
+    directive += `  DO NOT add anatomical features from prohibited species (e.g., no shells on rabbits, no ears on turtles, no trunks on monkeys)!`;
+  }
+
+  return directive;
 }
 
 export async function generatePromptsWithAiConsensus(
@@ -612,7 +898,7 @@ export async function generatePromptsWithAiConsensus(
   category: string = "tech",
   imageUrl?: string,
   productDescription?: string,
-  sceneCount: number = 6,
+  sceneCount: number = 8,
   maxRounds: number = 30,
   onProgress?: ConsensusProgressCallback,
   initialUserFeedback?: string,
@@ -660,16 +946,31 @@ export async function generatePromptsWithAiConsensus(
   }
 
   const cleanedDesc = cleanProductDescription(productDescription);
-  const speciesDirective = detectCharacterAndSpeciesFromTitle(productName);
+  // Detect species and characters from BOTH title and description so all characters are captured
+  const speciesDirective = detectCharacterAndSpeciesFromTitle(
+    cleanedDesc ? `${productName} ${cleanedDesc}` : productName
+  );
 
-  const userContext = `PRODUCT & CHARACTER BRIEF:
+  let userContext = `PRODUCT & CHARACTER BRIEF:
 - Product/Story Title: "${productName}"
 ${speciesDirective ? `\n${speciesDirective}\n` : ""}
 - Category: ${category}
-${cleanedDesc ? `- Character & World Description:\n${cleanedDesc}\n` : ""}
 ${imageUrl ? `- Reference Image: Provided in multimodal input (strictly observe all character species, fur colors, facial features, accessories, and setting).\n` : ""}
 - Required Scenes: Exactly ${sceneCount} continuous scenes.
-- Target Style: Viral '3D Bear' Chibi Animation Style (adorable squeezable plush bear dolls like 'Bubu and Dudu TV') with vibrant warm volumetric lighting, rich details, and lovable baby toddler chibi proportions.`;
+- Target Style: High-End 3D Pixar/Disney Cinematic Animation Style (vibrant warm volumetric lighting, rich textural detail, velvety soft fur/skin shaders, expressive animated acting, lovable character designs faithful to the characters described in the brief).`;
+
+  if (cleanedDesc) {
+    userContext += `\n\n═══════════════════════════════════════════════════════
+📖 NỘI DUNG CỐT TRUYỆN CHÍNH (PRIMARY STORY SCRIPT & PLOTLINE - BẮT BUỘC DỰA VÀO ĐÂY):
+${cleanedDesc}
+═══════════════════════════════════════════════════════
+MANDATE: The story above is the PRIMARY SOURCE OF TRUTH for the entire script!
+You MUST adapt this EXACT storyline across all ${sceneCount} scenes:
+1. Break down the events, conflicts, dialogues, and character interactions from the description naturally across Scene 1 to Scene ${sceneCount}.
+2. Retain all key characters, plot twists, and the comedic/moral climax directly from the story description.
+3. Dialogue in dialogue1..dialogue${sceneCount} must reflect the exact comedic dialogue lines, character relationships, and personality interactions depicted in the description.
+4. Do NOT invent a different, unrelated storyline!`;
+  }
 
   const ai1BaseSystemPrompt = `You are an elite 3D Animation Screenwriter, Visual Worldbuilder, and Master Prompt Engineer for Google Veo.
 
@@ -678,18 +979,22 @@ YOUR FOUR SUPREME MANDATES:
 1. MAXIMUM CHARACTER FIDELITY & SPECIES IDENTITY LOCK (LÀM SAO CHO NHÂN VẬT GIỐNG VỚI HÌNH MÔ TẢ NHẤT):
 - Strictly match the character(s) shown in the reference image and description!
 - Build and declare a rigid [CHARACTER_BIBLE] at the very beginning of your proposal:
-  * Strict Species Lock: Derive exact species directly from the reference image and brief (e.g. if domestic cats -> 100% domestic cats; if teddy bears -> 100% teddy bears; if puppies -> 100% puppies; if humans -> 100% humans). Preserve exact species across EVERY single scene without species morphing.
+  * Strict Species Lock: Derive exact species directly from the reference image and brief (e.g. if domestic cats -> 100% domestic cats; if lions -> 100% lions; if mice -> 100% mice; if puppies -> 100% puppies; if humans -> 100% humans). Preserve exact species across EVERY single scene without species morphing.
   * For EACH named character, write one immutable, concrete identity line: name, species, fur/skin color and markings, head/body ratio, ear and muzzle shape, eye shape/color, facial markings and default face, plus any distinguishing feature. Use the same name and identity line in every scene; never merge or swap characters.
   * Uniform Lock: Record the exact garment type, base color, trim, logo/badge location, footwear, and fixed accessories for each character. If the brief/reference shows a shared uniform, keep its design identical on every wearer; distinguish characters by their locked anatomy/markings. Never change outfits, add/remove hats, bows, bags or glasses, or exchange accessories unless the user explicitly requests an on-screen change.
   * Prop Lock: List persistent handheld/nearby objects with owner, color, shape, and which hand/side holds them. Keep object identity, count, size and ownership stable; a handoff, opening or removal must be shown on-screen and carried into subsequent scenes.
   * Expression Lock: Preserve the same underlying face, eye spacing, muzzle and mouth shape. Let emotion change only through subtle brows, gaze, mouth and pose as the story demands; do not redesign the face, alternate between incompatible smiles/eyes, or add unmotivated expressions.
   * Natural Posture Lock: Match the natural movement and postures suited to the characters' anatomy.
 
-2. TIGHT COMPOSITION & SPATIAL STAGING (BỐ CỤC CHẶT CHẼ):
+2. TIGHT COMPOSITION & SPATIAL STAGING (BỐ CỤC CHẶT CHẼ & CHUẨN DỌC 9:16 YOUTUBE SHORTS):
 - Every scene must be meticulously staged with three distinct depth layers:
   * Foreground (Tiền cảnh): Tangible, interactive physical props with tactile textures.
   * Midground (Trung cảnh): Clear character interactions, expressive face and eye contact, natural character actions (never floating or misplaced).
   * Background (Hậu cảnh): Cohesive, continuous lighting and architectural environment.
+- MANDATORY 9:16 VERTICAL FRAMING FOR YOUTUBE SHORTS & TIKTOK:
+  * Compose all actions specifically for a vertical 9:16 portrait screen.
+  * Keep characters close together or centered within the vertical safe zone (never placed far apart at extreme left/right edges).
+  * Maintain clean headroom above characters and floor room below so neither character is cut off or cropped when rendered in 9:16.
 - Purposeful cinematic camera angles: smooth camera pans, gentle dolly shots, eye-level close-ups, dynamic tracking shots. Zero jitter, zero floating elements, zero disorienting perspective changes.
 
 3. TIGHT NARRATIVE CONTINUITY (NỘI DUNG CHẶT CHẼ):
@@ -701,9 +1006,9 @@ YOUR FOUR SUPREME MANDATES:
 - If the human director / user provides feedback, critiques, or specific scene instructions, you MUST IMMEDIATELY and UNCONDITIONALLY fulfill and fix those exact points!
 - Never ignore, contradict, or override user feedback.
 
-5. STUBBY CHIBI PROPORTIONS & BABY-FACED KAWAII PLUSH DOLL MANDATE (KHÓA TỶ LỆ CHIBI BABY, KHÔNG ĐƯỢC GIÀ HAY CÓ MÕM):
-- For cartoon/plush/chibi characters: All characters MUST strictly be described with miniature chibi toddler proportions: oversized spherical round heads (1:1 or 1:1.5 head-to-body ratio), completely flat kawaii plush doll faces without protruding snouts or animal muzzles, small glossy button bead eyes, delicate raised curved eyebrows, cute open :3 cat smiles showing pink tongue, circular blush cheeks, soft chubby bellies, and short stubby limbs without fingers or claws.
-- STRICT NEGATIVE: Explicitly forbid realistic animal snouts, protruding muzzles, animal nostrils, jaw separation, realistic coarse bear fur, tall elongated bodies, adult limb proportions, or humanoid anatomy so Veo will NEVER render them as tall humanoids, realistic wild beasts, or aged characters!
+5. ADORABLE CHARACTER AESTHETIC & ANATOMICAL CONTINUITY (KHÓA THIẾT KẾ NHÂN VẬT & NGUYÊN MẪU 3D CHUẨN PIXAR):
+- For all characters: Faithfully follow the character anatomy, species, and styling established in the brief and reference image. Keep them charming, youthful, and lovable in the signature 3D Pixar / Disney animated feature film style (expressive cartoon eyes with lifelike specular glint, velvety soft fur shaders, clear facial expressions, and natural species proportions suited to cute stylized animation).
+- STRICT CONSISTENCY: NEVER randomly morph species, alter character anatomy, or turn characters into mismatched plush felt dolls if they were established as smooth 3D CGI animation! Preserve exact eye shape, facial structure, colors, markings, and accessories across all scenes.
 
 6. SEAMLESS SCENE TRANSITION & MATCH-CUT CONTINUITY (CHUYỂN CẢNH LIỀN MẠCH, NỐI NHAU KHÔNG GIẬT KHUNG):
 - Ensure unbroken visual momentum between consecutive scenes (Scene 1 -> Scene 2 -> Scene 3 -> Scene 4 -> Scene 5 -> Scene 6):
@@ -714,8 +1019,7 @@ YOUR FOUR SUPREME MANDATES:
 7. RIGID CHARACTER VOICE CASTING & AUDIO PERFORMANCE DIRECTIVE (KHÓA ÂM THANH & GIỌNG NÓI TỪNG NHÂN VẬT):
 - In addition to [CHARACTER_BIBLE], you MUST declare a rigid [AUDIO_AND_VOICE_BIBLE] defining the audio identity of each character based on the characters identified in the brief:
   * For EVERY character in the story, declare: Character Name, Role, Gender/Age, Vocal Timbre & Pitch, and Vietnamese speaking style.
-  * Example for DuDu & BuBu: DuDu = gentle, sweet, affectionate cute toddler/young boy voice (comforting childlike tone); BuBu = adorable bubbly toddler girl voice (playful, giggly child soprano).
-  * For any other characters (cats, dogs, rabbits, children, adults): Dynamically assign distinctive, harmonious vocal profiles that fit each character's appearance, age, and personality.
+  * Assign distinctive, harmonious vocal profiles that fit each character's appearance, species, age, and personality.
 - DIALOGUE CONVENTIONS:
   * In every dialogue1..dialogue${sceneCount}, speaker names MUST strictly use the exact character names identified in the brief: 'CharacterName: *action/emotion* "..."'.
   * Speaker identities must strictly match their designated roles and remain consistent across all scenes.
@@ -725,8 +1029,13 @@ YOUR FOUR SUPREME MANDATES:
 
 ${dubbingTimelineRules(sceneCount)}
 
+8. PRIMARY STORY SCRIPT ADAPTATION MANDATE:
+- When a "PRIMARY STORY SCRIPT & PLOTLINE" (Story Description) is provided in the brief, it is the ABSOLUTE FOUNDATION of your screenplay.
+- Adapt the exact plot events, conflicts, dialogues, and character interactions from the description across the ${sceneCount} scenes. Do NOT invent a different or unrelated storyline!
+- Preserve the story's humorous/fable climax and punchline accurately in the final scene.
+
 LANGUAGE & SCRIPT STRUCTURE:
-- Visual Prompts (prompt1..prompt${sceneCount}): 100% descriptive English for Google Veo. Start with "Cinematic 3D Pixar-style animation...". Include camera movement, 3-layer spatial layout, character anatomy, lighting, chibi proportion lock, seamless match-cut transition links, and negative prompts.
+- Visual Prompts (prompt1..prompt${sceneCount}): 100% descriptive English for Google Veo. Start with "Cinematic 3D Pixar-style animation...". Include camera movement, 3-layer spatial layout, character anatomy, lighting, character continuity lock, seamless match-cut transition links, and negative prompts.
 - Each visual prompt must be independently usable: identify every visible character by the same name and locked visual traits, uniform and fixed accessories from [CHARACTER_BIBLE]. Do not rely on "same as previous scene" alone; each scene may be rendered in a fresh session.
 - Dialogue (dialogue1..dialogue${sceneCount}): 100% natural, heartwarming Vietnamese for children. Cute character personality dynamics.
 
@@ -743,21 +1052,25 @@ Your sole mission is to audit AI 1's 3D animation script and enforce absolute 10
 AUDIT CRITERIA (WEIGHTED BREAKDOWN):
 1. Character Fidelity & Reference Match (Weight: 20%):
    - Are characters 100% faithful to the reference image and description?
-   - SPECIES LOCK: Are species and anatomy strictly preserved across every scene?
-   - CHIBI PROPORTION LOCK: Are chibi characters strictly miniature/stubby with zero adult stretching?
+   - SPECIES & ANATOMY LOCK: Are species, anatomy, and art style strictly preserved across every scene?
+   - CHARACTER DESIGN FIDELITY: Are character proportions, facial structures, and features strictly preserved without style drift?
    - Does the proposal include one concrete, immutable identity line per named character, including face/markings, uniform details, fixed accessories and prop ownership? Reject vague phrases such as "same outfit" without those details.
    - Compare every prompt against that bible: reject any changed uniform color/logo, missing or swapped accessory, new facial anatomy, inconsistent expression with the preceding beat, or object that appears/disappears without an on-screen action.
-2. Human Director Feedback Adherence (Weight: 20% - CRITICAL GATE):
+2. Story Description Fidelity & Narrative Compliance (Weight: 20% - CRITICAL GATE):
+   - If a primary story description is provided in the brief, did AI 1 faithfully follow and adapt this EXACT story across the ${sceneCount} scenes?
+   - Did AI 1 include all key characters, the central conflict, and the specific comedic punchline/moral from the description?
+   - If AI 1 invented an unrelated story or ignored the description, you MUST REJECT WITH consensus_percentage < 100 and consensus_reached = false!
+3. Human Director Feedback Adherence (Weight: 15% - CRITICAL GATE):
    - Did AI 1 faithfully follow and implement 100% of all feedback and critiques given by the human director?
    - If AI 1 failed to address ANY part of the user feedback, you MUST REJECT WITH consensus_percentage < 100 and consensus_reached = false!
-3. Composition Tightness & 3-Layer Spatial Staging (Weight: 15%):
+4. Composition Tightness & 3-Layer Spatial Staging (Weight: 15%):
    - Does EVERY scene have clear foreground props, midground acting, and background atmosphere?
    - Is camera blocking purposeful, cinematic, and stable for Veo?
-4. Seamless Scene Transition & Match-Cut Continuity (Weight: 15%):
+5. Seamless Scene Transition & Match-Cut Continuity (Weight: 10%):
    - Does each scene naturally and fluidly flow into the next scene without jarring cuts or teleports?
    - Are ending/opening character poses, camera momentum, and held props logically matched between adjacent scenes?
    - Verify the exact hand/side holding each object and the character's emotional state at every scene boundary; emotion may evolve through acting but the underlying face must remain identical.
-5. Language & Veo Feasibility (Weight: 10%):
+6. Language & Veo Feasibility (Weight: 10%):
    - Are all visual prompts 100% fluent, descriptive English with zero Vietnamese?
    - Are camera movements smooth and renderable for Veo without morphing?
 7. Character Voice Casting & Audio Continuity Audit (Weight: 10% - CRITICAL FOR VEO AUDIO):
@@ -1320,8 +1633,10 @@ ${dubbingTimelineRules(6)}
 ═══════════════════════════════════════════════════════
 VISUAL PROMPT RULES
 ═══════════════════════════════════════════════════════
+- TARGET FORMAT: YouTube Shorts & TikTok (Vertical 9:16 portrait aspect ratio).
+- Mandatory Vertical 9:16 Composition: Every scene must be framed specifically for vertical 9:16 mobile screens. Characters must be staged close together in the center vertical safe zone with clean headroom above and floor space below. NEVER place characters far apart on opposite sides where they would be cropped out.
 - Each visual prompt (prompt1–prompt6) must be 2–3 sentences in English only.
-- Describe: character(s), their emotional state/action, environment (specific details), lighting (warm/cool/natural), camera movement (e.g., "slow push in", "gentle low-angle looking up", "handheld intimacy shot").
+- Describe: character(s), their emotional state/action, environment (specific details), lighting (warm/cool/natural), camera movement (e.g., "slow push in", "gentle low-angle looking up", "vertical tracking shot").
 - Maintain visual consistency: same character designs, art style (3D Pixar/animated), color palette across all 6 scenes.
 - Start each scene from the previous scene's final pose, expression, held object/hand and camera view. Identify visible characters by name and their locked distinguishing traits so each prompt works in a fresh rendering session.
 - DO NOT write text overlays or subtitle instructions inside visual prompts.
@@ -1723,7 +2038,18 @@ INSPECT THE ATTACHED IMAGE VERY CAREFULLY! You must diagnose the visual discrepa
 ═══════════════════════════════════════════════════════`
     : "";
 
-  const currentScenesSummary = [1, 2, 3, 4, 5, 6].map(i => {
+  const sceneKeys = Object.keys(currentPromptsObj || {}).map(k => {
+    const m = k.match(/^prompt(\d+)$/i);
+    return m ? parseInt(m[1], 10) : 0;
+  }).filter(n => n > 0);
+  const totalScenes = Math.max(
+    sceneKeys.length > 0 ? Math.max(...sceneKeys) : 0,
+    ...sceneIndices.map(i => i + 1),
+    6
+  );
+  const allSceneIndices = Array.from({ length: totalScenes }, (_, idx) => idx + 1);
+
+  const currentScenesSummary = allSceneIndices.map(i => {
     const isTarget = sceneIndices.includes(i - 1);
     const p = currentPromptsObj[`prompt${i}`] || "";
     const d = currentPromptsObj[`dialogue${i}`] || "";
@@ -1736,16 +2062,16 @@ Dialogue: ${d}`;
 
   // Step 1: AI 1 (AGY Gemini 3.8) generates the creative draft.
   const ai1SystemPrompt = `You are a world-class 3D Pixar animation director and viral TikTok ad scriptwriter (AGY Gemini 3.8).
-Your job is to creatively REVISE specific scenes ([${targetPartNames}]) of a 6-scene 3D cartoon video storyboard based on human director feedback and visual inspection.
+Your job is to creatively REVISE specific scenes ([${targetPartNames}]) of a ${totalScenes}-scene 3D cartoon video storyboard based on human director feedback and visual inspection.
 ${speciesDirective ? `\n${speciesDirective}\n` : ""}
 CRITICAL RULES:
 1. TARGET SCENES: Revise specifically [${targetPartNames}].
 2. CHARACTER LOCK & DISTINCTION: Preserve the exact 3D Pixar character visual style, species (strictly match title and reference, NEVER confuse bears with cats or dogs), distinct colors (e.g. clearly distinguish Gấu Nâu vs Gấu Trắng/Panda), clothing, and charm across all scenes.
-   Preserve the existing CHARACTER BIBLE verbatim across all six scenes: same chibi anatomy and face, exact uniform colors/trim/logo, fixed accessories, and prop ownership. Only revise these fixed details if the human director explicitly asks; then apply that change consistently to every scene. Keep expressions continuous with the story beat, without changing facial anatomy.
+   Preserve the existing CHARACTER BIBLE verbatim across all scenes: same chibi anatomy and face, exact uniform colors/trim/logo, fixed accessories, and prop ownership. Only revise these fixed details if the human director explicitly asks; then apply that change consistently to every scene. Keep expressions continuous with the story beat, without changing facial anatomy.
 3. VISUAL PROMPTS: Rich cinematic 3D Pixar descriptions in ENGLISH with 3 depth layers (foreground, midground, background), camera motion, lighting, and expressions.
 4. DIALOGUES: Natural, witty, heartwarming VIETNAMESE dialogue.
 5. DIRECTOR FEEDBACK: You MUST faithfully follow 100% of the user's instructions and visual audit findings.
-${dubbingTimelineRules(6)}
+${dubbingTimelineRules(totalScenes)}
 When revising dialogue, recalculate the matching DUB_TIMELINE in every affected prompt. Never preserve stale timestamps after changing words.${visualAuditNote}`;
 
   const ai1UserPrompt = `Product Name: ${productName}
@@ -1803,11 +2129,12 @@ Please provide your creative revision draft for [${targetPartNames}] explaining 
 
   // Step 2: AI 2 (Gemini 3.8 Low review, or fallback to GLM-5) audits the revision, verifies compliance, and generates strict JSON
   const ai2AuditorTitle = isSolConnected ? "Gemini 3.8 Low" : "GLM-5";
+  const schemaKeys = allSceneIndices.map(i => `  "prompt${i}": "string",\n  "dialogue${i}": "string"`).join(",\n");
   const ai2SystemPrompt = `You are the Supreme Animation Auditor & Lead Prompt Engineer (${ai2AuditorTitle}).
 Your mission is to audit AI 1's draft for [${targetPartNames}], ensure 100% compliance with user feedback, character locks/color distinctions, and output the final validated JSON schema.
-Compare each scene against the existing CHARACTER BIBLE and preserve the same face, chibi proportions, uniform, fixed accessories and props. Any requested design change must be applied consistently across all six scenes.
+Compare each scene against the existing CHARACTER BIBLE and preserve the same face, chibi proportions, uniform, fixed accessories and props. Any requested design change must be applied consistently across all scenes.
 
-${dubbingTimelineRules(6)}
+${dubbingTimelineRules(totalScenes)}
 Reject or repair any scene whose DUB_TIMELINE is missing, incomplete, overlaps, names the wrong speaker, or no longer matches its revised dialogue word-for-word and line-for-line.
 
 OUTPUT FORMAT (STRICT JSON ONLY):
@@ -1815,18 +2142,7 @@ OUTPUT FORMAT (STRICT JSON ONLY):
   "story_title": "string",
   "ai2_audit_note": "A concise professional audit summary in Vietnamese verifying adherence to user feedback and character lock",
   "revision_note": "Brief explanation in Vietnamese of changes made to ${targetPartNames}",
-  "prompt1": "string",
-  "prompt2": "string",
-  "prompt3": "string",
-  "prompt4": "string",
-  "prompt5": "string",
-  "prompt6": "string",
-  "dialogue1": "string",
-  "dialogue2": "string",
-  "dialogue3": "string",
-  "dialogue4": "string",
-  "dialogue5": "string",
-  "dialogue6": "string"
+${schemaKeys}
 }`;
 
   const ai2UserPrompt = `Product Name: ${productName}
@@ -1841,7 +2157,7 @@ HUMAN DIRECTOR INSTRUCTIONS:
 AI 1 (${ai1Name.toUpperCase()}) PROPOSAL:
 ${ai1Draft}
 
-Please audit AI 1's proposal, refine prompts/dialogues for perfection, and output the final 6-part screenplay JSON.`;
+Please audit AI 1's proposal, refine prompts/dialogues for perfection, and output the final ${totalScenes}-part screenplay JSON.`;
 
   let ai2Name = isSolConnected ? "AI 2 (AGY Gemini 3.8 Low)" : "AI 2 (GLM-5)";
   onProgress?.({
@@ -1884,7 +2200,7 @@ Please audit AI 1's proposal, refine prompts/dialogues for perfection, and outpu
     }
 
     const updatedPromptsObj: Record<string, any> = { ...currentPromptsObj };
-    for (let i = 1; i <= 6; i++) {
+    for (let i = 1; i <= totalScenes; i++) {
       if (parsed[`prompt${i}`]) updatedPromptsObj[`prompt${i}`] = parsed[`prompt${i}`];
       if (parsed[`dialogue${i}`]) updatedPromptsObj[`dialogue${i}`] = parsed[`dialogue${i}`];
     }
@@ -1893,7 +2209,7 @@ Please audit AI 1's proposal, refine prompts/dialogues for perfection, and outpu
       Object.assign(updatedPromptsObj, attachCharacterBibleToScenes(
         updatedPromptsObj,
         currentPromptsObj.character_bible,
-        6
+        totalScenes
       ));
     }
 

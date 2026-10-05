@@ -1,14 +1,16 @@
-import React, { memo } from 'react';
+import React, { memo, useState } from 'react';
 import { VideoItem } from '../../types';
 import { getDisplayImageUrl } from '../../utils/image';
 import { useToast } from '../../context/ToastContext';
+import { YouTubePublishModal } from '../modals/YouTubePublishModal';
+import { FacebookPublishModal } from '../modals/FacebookPublishModal';
 
 interface VideoCardProps {
   video: VideoItem;
   fallbackImageUrl?: string;
   onPlay: (video: VideoItem) => void;
   onRefresh: () => void;
-  onPublish: (id: string) => void;
+  onPublish?: (id: string) => void;
 }
 
 export const VideoCard: React.FC<VideoCardProps> = memo(({
@@ -19,6 +21,10 @@ export const VideoCard: React.FC<VideoCardProps> = memo(({
   onPublish,
 }) => {
   const { showToast } = useToast();
+  const [showYouTubeModal, setShowYouTubeModal] = useState(false);
+  const [showFacebookModal, setShowFacebookModal] = useState(false);
+
+
   const initialSrc = video.thumbnail_url || (video.images && video.images.length > 0 ? video.images[0] : '') || fallbackImageUrl;
   const displaySrc = getDisplayImageUrl(initialSrc);
   const fallbackSrc = getDisplayImageUrl(fallbackImageUrl);
@@ -36,15 +42,32 @@ export const VideoCard: React.FC<VideoCardProps> = memo(({
     });
   };
 
+  const handlePublishTikTok = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (onPublish) {
+      onPublish(video.id);
+    } else {
+      try {
+        showToast('📱 Đang đăng video lên TikTok...');
+        const res = await fetch(`/api/videos/${video.id}/publish`, { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          showToast(`✅ ${data.message || 'Đăng TikTok thành công!'}`);
+          if (_onRefresh) _onRefresh();
+        } else {
+          showToast('❌ ' + (data.error || 'Lỗi đăng TikTok'));
+        }
+      } catch (err: any) {
+        showToast('❌ Lỗi: ' + err.message);
+      }
+    }
+  };
+
   const handleOpenTrimReview = (e: React.MouseEvent) => {
+
     e.stopPropagation();
     onPlay(video);
     showToast('✂️ Mở video editor — review điểm cắt trước khi áp dụng.');
-  };
-
-  const handlePublishClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    onPublish(video.id);
   };
 
   return (
@@ -117,6 +140,28 @@ export const VideoCard: React.FC<VideoCardProps> = memo(({
 
         <div className="video-meta" style={{ marginTop: 'auto', paddingTop: '10px' }}>
           <span className="tag success">✓ Generated</span>
+          {video.youtube_url && (
+            <a
+              href={video.youtube_shorts_url || video.youtube_url}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="tag"
+              style={{
+                background: 'rgba(239, 68, 68, 0.15)',
+                color: '#f87171',
+                border: '1px solid rgba(239, 68, 68, 0.35)',
+                textDecoration: 'none',
+                fontWeight: 600,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '3px',
+              }}
+              title="Xem trên YouTube"
+            >
+              🔴 YouTube
+            </a>
+          )}
           <span className="tag">
             {new Date(video.created_at || Date.now()).toLocaleDateString('vi-VN')}
           </span>
@@ -127,28 +172,125 @@ export const VideoCard: React.FC<VideoCardProps> = memo(({
         <button
           type="button"
           className="btn-action"
-          onClick={handleCopyS3}
-          title="Sao chép link S3"
+          onClick={(e) => {
+            e.stopPropagation();
+            setShowYouTubeModal(true);
+          }}
+          style={{
+            flex: 1,
+            background: 'rgba(239, 68, 68, 0.15)',
+            color: '#ef4444',
+            border: '1px solid rgba(239, 68, 68, 0.35)',
+            fontWeight: 700,
+            padding: '6px 8px',
+            fontSize: '11px',
+            borderRadius: '6px',
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '4px',
+          }}
+          title="Đăng video lên YouTube (Full hoặc Shorts)"
         >
-          📋 Copy
+          🔴 YouTube
         </button>
         <button
           type="button"
           className="btn-action"
-          onClick={handleOpenTrimReview}
-          style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.3)' }}
-          title="Mở editor để chọn và review điểm cắt trước khi ghi đè video"
+          onClick={(e) => {
+            e.stopPropagation();
+            setShowFacebookModal(true);
+          }}
+          style={{
+            flex: 1,
+            background: 'rgba(24, 119, 242, 0.15)',
+            color: '#60a5fa',
+            border: '1px solid rgba(24, 119, 242, 0.35)',
+            fontWeight: 700,
+            padding: '6px 8px',
+            fontSize: '11px',
+            borderRadius: '6px',
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '4px',
+          }}
+          title="Đăng video ngắn lên Facebook Reel / Fanpage"
         >
-          ✂️ Cắt / Review
+          🔵 Facebook
         </button>
         <button
           type="button"
-          className="btn-action primary"
-          onClick={handlePublishClick}
+          className="btn-action"
+          onClick={handlePublishTikTok}
+          style={{
+            flex: 1,
+            background: 'rgba(236, 72, 153, 0.15)',
+            color: '#f472b6',
+            border: '1px solid rgba(236, 72, 153, 0.35)',
+            fontWeight: 700,
+            padding: '6px 8px',
+            fontSize: '11px',
+            borderRadius: '6px',
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '4px',
+          }}
+          title="Đăng video lên TikTok"
         >
-          📱 Publish
+          🎵 TikTok
         </button>
       </div>
+
+      {showYouTubeModal && (
+        <YouTubePublishModal
+          isOpen={showYouTubeModal}
+          onClose={() => setShowYouTubeModal(false)}
+          defaultTitle={video.title || ''}
+          defaultDescription={video.description || video.caption || ''}
+          defaultTags={(video.tags || []).map((t) => t.replace(/^#/, ''))}
+          defaultThumbnailUrl={video.thumbnail_url || video.source_image_url || ''}
+          videoUrl={video.video_url || video.stream_url || video.s3_url}
+          videoId={video.id}
+          episodes={video.episodes?.map((ep) => ({
+            id: ep.id,
+            title: ep.title,
+            video_url: ep.voiced_url || ep.video_url,
+            local_path: ep.voiced_path || ep.local_path,
+            thumbnail_url: ep.thumbnail_url || video.thumbnail_url || video.source_image_url || '',
+          }))}
+          onSuccess={() => {
+            if (_onRefresh) _onRefresh();
+          }}
+        />
+      )}
+
+      {showFacebookModal && (
+        <FacebookPublishModal
+          isOpen={showFacebookModal}
+          onClose={() => setShowFacebookModal(false)}
+          defaultTitle={video.title || ''}
+          defaultDescription={video.description || video.caption || ''}
+          defaultTags={(video.tags || []).map((t) => t.replace(/^#/, ''))}
+          defaultThumbnailUrl={video.thumbnail_url || video.source_image_url || ''}
+          videoUrl={video.video_url || video.stream_url || video.s3_url}
+          videoId={video.id}
+          episodes={video.episodes?.map((ep) => ({
+            id: ep.id,
+            title: ep.title,
+            video_url: ep.voiced_url || ep.video_url,
+            local_path: ep.voiced_path || ep.local_path,
+            thumbnail_url: ep.thumbnail_url || video.thumbnail_url || video.source_image_url || '',
+          }))}
+          onSuccess={() => {
+            if (_onRefresh) _onRefresh();
+          }}
+        />
+      )}
     </div>
   );
 });

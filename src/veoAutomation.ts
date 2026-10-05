@@ -1383,75 +1383,96 @@ export function buildVeoScenePrompt(
 
   const sections: string[] = [];
 
-  // ── Section 0: Character identity anchor (concise, placed first so Veo locks in the look) ──
-  if (!/chibi.*proportion|maintain.*proportion/i.test(cleanPrompt)) {
-    sections.push(
-      "CHARACTER DESIGN: Iconic 'Bubu and Dudu TV' baby toddler 3D chibi plush bear dolls. " +
-      "Proportions: extreme 1:1 toddler chibi scale, oversized spherical balloon head (≈65%-70% of total height), tiny chubby pear-shaped body, very short stubby limbs without fingers or claws. " +
-      "Flat kawaii face: completely flat and smooth round baby face, ABSOLUTELY NO protruding snout, NO animal muzzle, NO nose bridge, NO animal jawline. " +
-      "Two small simple glossy black bead button eyes set wide apart with white specular dots, delicate raised curved eyebrow lines set high for an innocent baby expression, cute open ':3' cat/bear smile showing tiny pink tongue. " +
-      "BuBu = warm caramel honey-brown velvety plush fur, chubby cheeks with peach blush circles, playful baby demeanor. " +
-      "DuDu = pure snow-white velvety plush fur (100% white, NEVER a panda), chubby cheeks with rosy-pink blush circles, wearing a small chocolate-brown knotted neck scarf / bow tie. " +
-      "Fur is smooth velvety plush felt with soft peach-fuzz and warm subsurface scattering glow, NOT coarse wild bear fur. " +
-      "STRICT: Absolutely NO realistic bear muzzle, NO protruding snout, NO animal nostrils, NO realistic animal teeth or claws, NO adult facial features, NO tall humanoid anatomy, NO aged or wrinkled expressions."
-    );
+  // ══════════════════════════════════════════════════════════════════════
+  // PRIORITY 0: EXPLICIT VIDEO GENERATION DIRECTIVE (MANDATORY)
+  // Forces Gemini multimodal router to activate Veo (Video AI) and NEVER Imagen (Image AI)
+  // ══════════════════════════════════════════════════════════════════════
+  sections.push("🎬 CREATE A SHORT CINEMATIC VIDEO (VEO AI) — max 10 seconds, paced to the scene content:");
+
+  // ══════════════════════════════════════════════════════════════════════
+  // PRIORITY 1: SPECIES IDENTITY LOCK — Must be FIRST thing Veo reads!
+  // Veo prioritizes the beginning and end of prompts; the middle gets
+  // deprioritized. Place species anti-confusion BEFORE the scene body.
+  // ══════════════════════════════════════════════════════════════════════
+  const veoSpeciesKeywords: Array<{name: string; key: string; anatomy: string; forbidden: string}> = [
+    { name: "Turtle/Tortoise", key: "turtle|tortoise|rùa", anatomy: "hard shell on back, short stubby legs, small rounded head, scaly reptile skin", forbidden: "long ears, fluffy tail, fur, soft skin" },
+    { name: "Rabbit/Bunny", key: "rabbit|bunny|hare|thỏ", anatomy: "two long upright ears with pink inner panels, fluffy round cotton-ball tail, soft white fur, small pink triangular nose, NO shell ever", forbidden: "shell, scales, short round ears like a bear, thick stocky body, protruding snout" },
+    { name: "Monkey", key: "monkey|ape|khỉ", anatomy: "curly prehensile tail, agile hands with individual fingers, round flat face", forbidden: "shell, long rabbit ears, hooves, wings" },
+    { name: "Elephant", key: "elephant|voi", anatomy: "long flexible trunk, large floppy ears, thick pillar legs, grey wrinkled skin", forbidden: "fur, shell, horns, wings" },
+    { name: "Bear", key: "bear|gấu", anatomy: "small round semi-circular ears on top of head, thick plush fur, stocky wide body, stubby limbs, round face with NO long ears", forbidden: "shell, long upright rabbit ears, trunk, pink nose triangle, cotton-ball tail" },
+    { name: "Fox", key: "fox|cáo", anatomy: "bushy tail with white tip, pointed triangular ears, orange-red fur, narrow snout", forbidden: "shell, trunk, mane, round bear ears" },
+    { name: "Lion", key: "lion|sư tử", anatomy: "majestic fluffy mane around face, golden-tawny fur, powerful paws, tufted tail", forbidden: "stripes, shell, trunk, long rabbit ears" },
+    { name: "Tiger", key: "tiger|hổ|cọp", anatomy: "bold black stripes on orange fur, powerful muscular build, long striped tail", forbidden: "mane, shell, trunk, spots" },
+    { name: "Pig", key: "pig|piglet|heo|lợn", anatomy: "round pink body, short curly tail, flat disc-shaped snout with nostrils", forbidden: "shell, long ears, mane, fur" },
+    { name: "Frog", key: "frog|toad|ếch|cóc", anatomy: "smooth moist green skin, wide flat head, large bulging eyes, webbed feet, squat body, wide mouth", forbidden: "fur, long ears, tail, shell, snout" },
+  ];
+
+  const veoPromptLower = cleanPrompt.toLowerCase();
+  const veoDetectedSpecies = veoSpeciesKeywords.filter(s => new RegExp(s.key, 'i').test(veoPromptLower));
+
+  if (veoDetectedSpecies.length >= 2) {
+    let speciesBlock = "⚠️ CRITICAL — SPECIES IDENTITY LOCK (READ THIS FIRST): " +
+      "This scene features MULTIPLE DIFFERENT animal species that must NEVER be confused or blended. " +
+      "Each character's species-defining anatomy is IMMUTABLE throughout the entire video.";
+    for (const sp of veoDetectedSpecies) {
+      speciesBlock += `\n• ${sp.name}: MUST always show ${sp.anatomy}. ABSOLUTELY NEVER give this character: ${sp.forbidden}.`;
+    }
+    speciesBlock += "\n• NEVER swap ears, tails, body shapes, or skin textures between different species!";
+    // Add specific bear-vs-rabbit disambiguation if both present
+    const hasBear = veoDetectedSpecies.some(s => s.name === "Bear");
+    const hasRabbit = veoDetectedSpecies.some(s => s.name.includes("Rabbit"));
+    if (hasBear && hasRabbit) {
+      speciesBlock += "\n• BEAR vs RABBIT CRITICAL DIFFERENCE: Bears have SMALL ROUND ears on top of head + STOCKY wide body. Rabbits have LONG UPRIGHT ears (3x head height) + SLIM body. These are COMPLETELY DIFFERENT silhouettes — NEVER mix them!";
+    }
+    sections.push(speciesBlock);
   }
 
-  // ── Section 1: User's scene description (the actual action/story) ──
+  // ── Section 2: User's scene description (the actual action/story & character bible) ──
   sections.push(cleanPrompt);
 
-  // ── Section 2: Visual style (3D Bear aesthetic) ──
-  if (!/chibi.*proportion|maintain.*proportion|plush.*toy/i.test(cleanPrompt)) {
+  // ── Section 3: Only add framing if not already mentioned in prompt ──
+  if (!/9:16|vertical.*frame|portrait.*orientation|YouTube Shorts/i.test(cleanPrompt)) {
     sections.push(
-      "STYLE: Premium 3D CGI in the '3D Bear' animation style — ultra-soft fluffy fur rendering with warm subsurface scattering, " +
-      "soft dreamy volumetric lighting, warm pastel color grading, shallow depth of field, 4K. " +
-      "Characters must look like cute fluffy plush toys with clean smooth renders — no noisy artifacts, no extra limbs, no distorted faces. " +
-      "DuDu = pure white fluffy fur everywhere (body, face, ears, paws) — absolutely NO dark eye-rings or panda markings. " +
-      "BuBu = warm chocolate-brown fluffy fur everywhere — no black patches."
+      "FRAMING: Vertical 9:16 aspect ratio for YouTube Shorts. All characters within central vertical safe zone with clean headroom and visible feet."
     );
-  } else if (!/cinematic|3d animation/i.test(cleanPrompt)) {
-    sections.push("STYLE: Premium 3D Bear animation style, warm soft lighting, fluffy fur rendering, 4K.");
   }
 
-  // ── Section 3: Dialogue & Voice (NEW — was previously missing entirely) ──
+  // ── Section 4: Only add style if not already mentioned ──
+  if (!/cinematic|3d animation|pixar|disney/i.test(cleanPrompt)) {
+    sections.push(
+      "STYLE: Premium 3D Pixar/Disney cinematic animation, warm volumetric lighting, vibrant colors, 4K quality."
+    );
+  }
+
+  // ── Section 5: Dialogue & Voice ──
   if (dialogueText) {
-    // Parse dialogue lines to identify speakers and add natural voice direction
     const dialogueLines = dialogueText.split(/\n/).filter(l => l.trim());
-    const formattedDialogue = dialogueLines.map(line => {
-      const trimmed = line.trim();
-      // If line already has speaker label like "BuBu: ..." or "DuDu: ..."
-      if (/^(BuBu|DuDu)\s*:/i.test(trimmed)) {
-        return trimmed;
-      }
-      // Return as-is for narrator or unlabeled lines
-      return trimmed;
-    }).join("\n");
+    const formattedDialogue = dialogueLines.map(line => line.trim()).join("\n");
 
+    // Only add voice direction if not already in prompt
+    if (!/DIALOGUE.*VOICE|lip.*movement|lip-sync/i.test(cleanPrompt)) {
+      sections.push(
+        "DIALOGUE & VOICE:\n" +
+        "Characters speak with matching lip movements and expressive body language.\n\n" +
+        formattedDialogue
+      );
+    } else {
+      sections.push(formattedDialogue);
+    }
+  } else if (!/ambient.*sound|non-verbal/i.test(cleanPrompt)) {
     sections.push(
-      "DIALOGUE & VOICE ACTING:\n" +
-      "Characters speak naturally with matching lip movements and expressive body language. " +
-      "BuBu has a warm, playful, slightly deeper cute voice. DuDu has a soft, gentle, higher-pitched sweet voice. " +
-      "Dialogue should feel conversational and spontaneous — NOT robotic or monotone. " +
-      "Characters react to each other naturally: nodding, tilting head, gesturing with paws while speaking.\n\n" +
-      formattedDialogue
-    );
-  } else {
-    // Even without explicit dialogue, add ambient sound/emotion direction
-    sections.push(
-      "AUDIO: Natural ambient sounds matching the scene (wind, birds, footsteps, etc.). " +
-      "Characters may make cute non-verbal sounds — giggles, gasps, happy hums — matching their expressions and actions."
+      "AUDIO: Natural ambient sounds. Characters may make cute non-verbal sounds matching their expressions."
     );
   }
 
-  // ── Section 4: Motion constraints (concise) ──
-  if (!/minimal.*movement|subtle.*motion|static.*camera/i.test(cleanPrompt)) {
+  // ── Section 6: Motion — only if not covered ──
+  if (!/no morphing|smooth.*camera|cinematic.*camera/i.test(cleanPrompt)) {
     sections.push(
-      "MOTION: Smooth, minimal camera movement. Characters maintain consistent body shapes and sizes. " +
-      "No morphing or stretching. Subtle environmental motion only (wind, particles, gentle swaying)."
+      "MOTION: Smooth cinematic camera. No morphing, no stretching. Characters maintain consistent shapes and scale."
     );
   }
 
-  // ── Section 5: Accessory lock (dynamic detection — unchanged) ──
+  // ── Section 7: Accessory lock (dynamic detection) ──
   const detectedAccessories: string[] = [];
   const seen = new Set<string>();
 
@@ -1486,38 +1507,12 @@ export function buildVeoScenePrompt(
     { pattern: /\b(?:yellow|blue|red|green|pink|white|black|orange|purple)\s+(?:puffer\s+)?jacket\b/i, label: "jacket" },
     { pattern: /\bhelmet\b/i, label: "helmet" },
     { pattern: /\bbackpack\b|ba\s*lô/i, label: "backpack" },
-    { pattern: /\bGoPro\b/i, label: "GoPro" },
-    { pattern: /\bselfie\s*stick\b/i, label: "selfie stick" },
-    { pattern: /\bdrone\b/i, label: "drone" },
     { pattern: /\bscarf\b|khăn/i, label: "scarf" },
-    { pattern: /\bsweater\b/i, label: "sweater" },
-    { pattern: /\bwatch\b|đồng\s*hồ/i, label: "watch" },
     { pattern: /\bglasses\b|sunglasses|kính/i, label: "glasses" },
     { pattern: /\bhat\b|mũ|nón/i, label: "hat" },
-    { pattern: /\bbow\s*tie\b|nơ/i, label: "bow tie" },
-    { pattern: /\bcamera\b/i, label: "camera" },
     { pattern: /\bmotorcycle\b|mô\s*tô|xe\s*máy/i, label: "motorcycle" },
-    { pattern: /\bscooter\b|\bVespa\b/i, label: "scooter" },
-    { pattern: /\bbicycle\b|\bbike\b|xe\s*đạp/i, label: "bicycle" },
-    { pattern: /\bumbrella\b|ô\s*dù/i, label: "umbrella" },
-    { pattern: /\blantern\b|đèn\s*lồng/i, label: "lantern" },
-    { pattern: /\bguitar\b/i, label: "guitar" },
-    { pattern: /\bfishing\s*rod\b|cần\s*câu/i, label: "fishing rod" },
-    { pattern: /\bteddy\b|\bplush\b|\bstuffed\b/i, label: "plush toy" },
-    { pattern: /\bbag\b|\bpurse\b|túi\s*xách/i, label: "bag" },
-    { pattern: /\bapron\b|tạp\s*dề/i, label: "apron" },
     { pattern: /\bcrown\b|vương\s*miện/i, label: "crown" },
     { pattern: /\bcape\b|áo\s*choàng/i, label: "cape" },
-    { pattern: /\bboots\b|\bshoes\b|giày/i, label: "footwear" },
-    { pattern: /\bnecklace\b|vòng\s*cổ/i, label: "necklace" },
-    { pattern: /\bbracelet\b|vòng\s*tay/i, label: "bracelet" },
-    { pattern: /\bribbon\b|ruy\s*băng/i, label: "ribbon" },
-    { pattern: /\bflower\s*crown\b|vòng\s*hoa/i, label: "flower crown" },
-    { pattern: /\bmap\b|bản\s*đồ/i, label: "map" },
-    { pattern: /\btelescope\b|kính\s*thiên\s*văn/i, label: "telescope" },
-    { pattern: /\bbinoculars\b|ống\s*nhòm/i, label: "binoculars" },
-    { pattern: /\bsword\b|kiếm/i, label: "sword" },
-    { pattern: /\bshield\b|khiên/i, label: "shield" },
     { pattern: /\bwand\b|đũa\s*phép/i, label: "wand" },
   ];
 
@@ -1536,16 +1531,26 @@ export function buildVeoScenePrompt(
     );
   }
 
-  // ── Section 6: Final constraints (concise — one clean block instead of repeating) ──
-  if (!/no morphing|no.*style.*drift/i.test(cleanPrompt)) {
+  // ── Section 8: Final anti-morphing reinforcement at END (Veo also reads ending carefully) ──
+  if (veoDetectedSpecies.length >= 2) {
+    const speciesNames = veoDetectedSpecies.map(s => s.name).join(", ");
     sections.push(
-      "STRICT CONSTRAINTS (ANTI-AGING & PROPORTION LOCK): " +
-      "Baby toddler chibi proportions locked in every frame — giant round head, flat kawaii baby face, tiny stub limbs, soft plush fur. " +
-      "ABSOLUTELY NO realistic bear snout, NO protruding animal muzzle, NO animal teeth or claws, NO adult facial features, NO tall humanoid bodies, NO aged or wrinkled expressions. " +
-      "No morphing, no style drift. White bear DuDu stays pure white with brown neck scarf. Brown bear BuBu stays warm caramel brown. " +
-      "Preserve exact character designs, clothing, and props consistently throughout the entire video."
+      `FINAL REMINDER — SPECIES LOCK: This video contains ${speciesNames}. ` +
+      "Each character MUST keep their exact species anatomy from first frame to last frame. " +
+      "Bears keep small round ears. Rabbits keep long upright ears. Frogs keep smooth green skin. " +
+      "ZERO species morphing, ZERO feature swapping between characters!"
+    );
+  } else if (!/no morphing|no.*style.*drift|species/i.test(cleanPrompt)) {
+    sections.push(
+      "CHARACTER CONSISTENCY: Preserve exact character identity, species, proportions, and coloring across all frames. No morphing, no style drift."
     );
   }
+
+  // ── Section 9: Explicit Output Format Lock ──
+  sections.push(
+    "OUTPUT FORMAT: A vertical 9:16 video animation with cinematic camera motion. Do NOT output a still picture or static image. " +
+    "PACING: Play all dialogue and key actions at natural speed right from the start; once the last line/action is finished, hold a brief reaction beat and END. Do NOT add idle waiting, empty staring or silent filler at the end."
+  );
 
   return sections.join("\n\n");
 }
@@ -1799,14 +1804,13 @@ async function runSingleVeoAutomation(
     });
 
     // ── Navigate to Gemini Video section ─────────────────────────────────────
-    // Direct URL navigation is more reliable than clicking sidebar links
-    console.log(`🎥 [VeoAuto-Tab ${index + 1}] Navigating directly to Gemini Video page...`);
+    console.log(`🎥 [VeoAuto-Tab ${index + 1}] Navigating to Gemini Video page...`);
     try {
-      // Strategy 1: Direct URL navigation to Video page
+      // Strategy 1: Direct URL navigation to Video page (/app/videos or /app/video)
       const currentUrl = await page.url();
       if (!currentUrl.includes("/video")) {
-        await page.goto("https://gemini.google.com/app/video", { waitUntil: "networkidle2", timeout: 30_000 });
-        await new Promise(r => setTimeout(r, 3000));
+        await page.goto("https://gemini.google.com/app/videos", { waitUntil: "networkidle2", timeout: 30_000 }).catch(() => {});
+        await new Promise(r => setTimeout(r, 2500));
       }
 
       // Verify we're on the Video page
@@ -1819,19 +1823,22 @@ async function runSingleVeoAutomation(
       });
       console.log(`🎥 [VeoAuto-Tab ${index + 1}] Video page check — URL: ${videoPageCheck.hasVideoUrl}, Heading: ${videoPageCheck.hasVideoHeading}`);
 
-      // Strategy 2: If URL navigation failed, try sidebar click
+      // Strategy 2: If URL navigation failed, try sidebar button / link click
       if (!videoPageCheck.hasVideoUrl && !videoPageCheck.hasVideoHeading) {
-        console.log(`⚠️  [VeoAuto-Tab ${index + 1}] Direct URL nav failed, trying sidebar click...`);
+        console.log(`⚠️  [VeoAuto-Tab ${index + 1}] Direct URL nav failed, trying sidebar Video button...`);
         const sidebarClicked = await page.evaluate(() => {
-          const link = document.querySelector('[data-test-id="videos-side-nav-entry-button"] a') as HTMLAnchorElement
-            || document.querySelector('a[href="/videos"]') as HTMLAnchorElement
-            || document.querySelector('a[href*="video"]') as HTMLAnchorElement
-            || Array.from(document.querySelectorAll('a')).find(a => {
-              const text = (a.textContent || '').toLowerCase();
-              return text === 'video' || text === 'videos';
-            }) as HTMLAnchorElement;
-          if (link) {
-            link.click();
+          const allEls = Array.from(document.querySelectorAll('a, button, [role="button"], [role="menuitem"], side-nav-item, .side-nav-button, div, span'));
+          const videoBtn = allEls.find(el => {
+            const inNav = el.closest('side-navigation-v2, bard-sidenav-container, bard-sidenav-content, [role="navigation"], aside, nav, .sidebar');
+            const text = (el.textContent || '').trim().toLowerCase();
+            const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+            const testId = (el.getAttribute('data-test-id') || '').toLowerCase();
+            const isVideoLabel = text === 'video' || text === 'videos' || text === 'tạo video';
+            const hasVideoAttr = aria.includes('video') || testId.includes('video');
+            return isVideoLabel || (inNav && hasVideoAttr);
+          }) as HTMLElement | undefined;
+          if (videoBtn) {
+            videoBtn.click();
             return true;
           }
           return false;
@@ -2230,6 +2237,32 @@ async function runSingleVeoAutomation(
         }
       }
 
+      // Early detection: If Gemini mistakenly generated an image instead of a video
+      if (elapsed >= 35 && !found) {
+        const imageMistake = await page.evaluate(() => {
+          const videos = Array.from(document.querySelectorAll("video"));
+          if (videos.length > 0) return false;
+          const respImages = Array.from(document.querySelectorAll('message-content img, .model-response img, .response-container img, [data-test-id*="image-response"] img, img.generated-image')) as HTMLImageElement[];
+          return respImages.some(img => {
+            const src = img.src || "";
+            return (src.includes("googleusercontent.com") || src.includes("aiusercontent.com") || src.includes("blob:")) && (img.naturalWidth > 150 || img.width > 150);
+          });
+        }).catch(() => false);
+
+        if (imageMistake) {
+          console.warn(`⚠️ [VeoAuto-Tab ${index + 1}] Gemini generated an IMAGE instead of a VIDEO!`);
+          const ssDir = path.resolve(__dirname, "../data/debug");
+          if (!fs.existsSync(ssDir)) fs.mkdirSync(ssDir, { recursive: true });
+          await page.screenshot({ path: path.join(ssDir, `veo_tab${index + 1}_image_mistake.png`) }).catch(() => {});
+          return {
+            success: false,
+            error: "Gemini đã tạo nhầm hình ảnh tĩnh (Imagen) thay vì video (Veo). Hãy nhấn Render lại, hệ thống đã nạp chỉ thị ép buộc Video.",
+            prompt,
+            durationMs: Date.now() - startTime,
+          };
+        }
+      }
+
       if (!hasRefreshed && elapsed >= 300) {
         hasRefreshed = true;
         console.log(`🔄 [VeoAuto-Tab ${index + 1}] Reloading page to fix freeze...`);
@@ -2453,6 +2486,14 @@ async function runSingleVeoAutomation(
     if (!downloadedFile || !fs.existsSync(targetPath) || fs.statSync(targetPath).size < 300_000) {
       const size = fs.existsSync(targetPath) ? fs.statSync(targetPath).size : 0;
       throw new Error(`File video Part ${index + 1} không hợp lệ hoặc chưa tải xong (${size} bytes). Gemini chưa hoàn tất render video!`);
+    }
+
+    // Cut meaningless idle tail: keep only the real content of this step
+    try {
+      const { autoTrimSceneTail } = await import("./autoTrimScene.js");
+      await autoTrimSceneTail(targetPath, prompt);
+    } catch (trimErr: any) {
+      console.warn(`⚠️  [VeoAuto-Tab ${index + 1}] Auto-trim skipped: ${trimErr?.message || trimErr}`);
     }
 
     const durationMs = Date.now() - startTime;

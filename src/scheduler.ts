@@ -17,21 +17,31 @@ import { createRequire } from "module";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-const PRODUCTS_FILE = path.resolve(__dirname, "../data/products.json");
+import {
+  loadProducts as dbLoadProducts,
+  updateProduct as dbUpdateProduct,
+  type Product,
+} from "./database.js";
 
-export interface Product {
+export type { Product };
+
+export interface EpisodeDefinition {
+  id?: string;
+  title: string;
+  startScene: number;
+  endScene: number;
+}
+
+export interface GeneratedEpisode {
   id: string;
-  name: string;
-  category: string;
-  affiliate_url: string;
-  hashtags: string[];
-  image_url?: string;
-  images?: string[];
-  description?: string;
-  promptsObj?: any; // Saved prompt object (prompt1..6, dialogue1..6, story_title, etc.)
-  enabled: boolean;
-  created_at?: string;
-  updated_at?: string;
+  title: string;
+  startScene: number;
+  endScene: number;
+  filename: string;
+  local_path: string;
+  video_url: string;
+  voiced_path?: string | null;
+  voiced_url?: string | null;
 }
 
 export interface PipelineResult {
@@ -43,6 +53,7 @@ export interface PipelineResult {
   video_url?: string;
   voiced_path?: string | null;
   voiced_url?: string | null;
+  episodes?: GeneratedEpisode[];
   scene_images?: string[];
   s3_url?: string;
   s3_key?: string;
@@ -251,37 +262,7 @@ function slugify(text: string): string {
 }
 
 export async function loadProducts(): Promise<Product[]> {
-  if (!existsSync(PRODUCTS_FILE)) return [];
-  const raw = await fs.readFile(PRODUCTS_FILE, "utf-8");
-  let parsedList: Product[] = [];
-  try {
-    parsedList = JSON.parse(raw) as Product[];
-  } catch (err: any) {
-    console.warn(`⚠️ [loadProducts] Direct JSON parse failed (${err.message}). Attempting recovery...`);
-    let recovered = false;
-    let searchPos = raw.length;
-    while (!recovered && searchPos > 0) {
-      const bracketIdx = raw.lastIndexOf("]", searchPos - 1);
-      if (bracketIdx === -1) break;
-      try {
-        parsedList = JSON.parse(raw.slice(0, bracketIdx + 1)) as Product[];
-        console.log(`✅ [loadProducts] Successfully recovered ${parsedList.length} products (at offset ${bracketIdx}).`);
-        recovered = true;
-      } catch {
-        searchPos = bracketIdx;
-      }
-    }
-    if (!recovered) {
-      console.error(`❌ [loadProducts] Recovery failed: Could not find valid JSON array.`);
-      return [];
-    }
-  }
-  const list = (Array.isArray(parsedList) ? parsedList : []).filter((p) => p && p.enabled !== false);
-  return list.sort((a, b) => {
-    const tA = a.created_at ? new Date(a.created_at).getTime() : 0;
-    const tB = b.created_at ? new Date(b.created_at).getTime() : 0;
-    return tB - tA;
-  });
+  return dbLoadProducts();
 }
 
 export function parseTextPromptToObj(input: any): any {
@@ -453,6 +434,7 @@ export async function runPipelineForProduct(
     userFeedback?: string;
     sceneImagePaths?: string[];
     autoGenerateSceneImages?: boolean;
+    sceneCount?: number;
   } = {}
 ): Promise<PipelineResult> {
   const {
@@ -464,6 +446,7 @@ export async function runPipelineForProduct(
     userFeedback,
     sceneImagePaths = [],
     autoGenerateSceneImages = true,
+    sceneCount = 8,
   } = options;
   isRunning = true;
   isCancelled = false;
@@ -475,7 +458,7 @@ export async function runPipelineForProduct(
 
   console.log(`\n${"─".repeat(60)}`);
   console.log(`🚀 [Pipeline] Starting (Multi-Segment): ${product.name} (${product.id})`);
-  console.log(`   DryRun: ${dryRun} | S3: ${uploadToS3} | TikTok: ${publishTikTok} | 2-AI Consensus: ${useAiConsensus} | Auto Scene Images: ${autoGenerateSceneImages}`);
+  console.log(`   DryRun: ${dryRun} | S3: ${uploadToS3} | TikTok: ${publishTikTok} | 2-AI Consensus: ${useAiConsensus} | Auto Scene Images: ${autoGenerateSceneImages} | Target Scenes: ${sceneCount}`);
   if (userFeedback) {
     console.log(`   User Director Feedback: "${userFeedback}"`);
   }
@@ -493,38 +476,30 @@ export async function runPipelineForProduct(
     if (hasValidPrompts) {
       console.log(`📌 [Pipeline 1/4] Using PRESET/CUSTOM prompts for "${product.name}" (${Object.keys(promptsObj).length} keys parsed, skipping AI re-generation)...`);
     } else if (useAiConsensus) {
-      console.log(`\n🤝 [Pipeline 1/4] Generating 6 Veo prompts via 2-AI validation (AGY Gemini 3.8 + Zhipu AI GLM-5)...`);
+      console.log(`\n🤝 [Pipeline 1/4] Generating ${sceneCount} Veo prompts via 2-AI validation (AGY Gemini 3.8 + Zhipu AI GLM-5)...`);
       const consensusRes = await generatePromptsWithAiConsensus(
         product.name,
         product.category,
         product.image_url,
         product.description,
-        6,
+        sceneCount,
         30,
         undefined,
         userFeedback
       );
       promptsObj = consensusRes.promptsObj;
     } else {
-      console.log(`\n📝 [Pipeline 1/4] Generating 6 consistent Veo prompts & Vietnamese caption via AI...`);
+      console.log(`\n📝 [Pipeline 1/4] Generating ${sceneCount} consistent Veo prompts & Vietnamese caption via AI...`);
       promptsObj = await generateSixVideoPrompts(product.name, product.category, product.image_url, product.description);
     }
 
-    // Persist promptsObj back to product in products.json if product exists in products.json
+    // Persist promptsObj back to product in SQLite
     try {
-      if (existsSync(PRODUCTS_FILE)) {
-        const raw = await fs.readFile(PRODUCTS_FILE, "utf-8");
-        const allProducts = JSON.parse(raw) as Product[];
-        const pIdx = allProducts.findIndex((p) => p.id === product.id);
-        if (pIdx !== -1) {
-          allProducts[pIdx].promptsObj = promptsObj;
-          product.promptsObj = promptsObj;
-          await fs.writeFile(PRODUCTS_FILE, JSON.stringify(allProducts, null, 2), "utf-8");
-          console.log(`💾 [Pipeline] Saved/Updated promptsObj into products.json for product: ${product.id}`);
-        }
-      }
+      dbUpdateProduct(product.id, { promptsObj });
+      product.promptsObj = promptsObj;
+      console.log(`💾 [Pipeline] Saved/Updated promptsObj into SQLite for product: ${product.id}`);
     } catch (saveErr: any) {
-      console.warn(`⚠️ [Pipeline] Could not persist promptsObj to products.json: ${saveErr.message}`);
+      console.warn(`⚠️ [Pipeline] Could not persist promptsObj to SQLite: ${saveErr.message}`);
     }
 
     const descriptionVi = await generateVideoDescriptionVi(product.name, product.category, product.image_url);
@@ -546,7 +521,18 @@ export async function runPipelineForProduct(
       };
     }
 
-    const prompts = [1, 2, 3, 4, 5, 6].map((i) => {
+    // Extract dynamic prompt list from promptsObj
+    const sceneNumbers: number[] = [];
+    if (promptsObj && typeof promptsObj === "object") {
+      for (const k of Object.keys(promptsObj)) {
+        const m = k.match(/^prompt(\d+)$/i);
+        if (m) sceneNumbers.push(parseInt(m[1], 10));
+      }
+    }
+    const maxScene = sceneNumbers.length > 0 ? Math.max(...sceneNumbers) : 0;
+    const dynamicCount = maxScene > 0 ? maxScene : (promptsObj?.prompt ? 1 : sceneCount);
+    const prompts = Array.from({ length: dynamicCount }, (_, idx) => {
+      const i = idx + 1;
       const p = promptsObj[`prompt${i}`] || (i === 1 ? promptsObj.prompt : "");
       return p ? p.trim() : "";
     }).filter(Boolean);
@@ -563,48 +549,52 @@ export async function runPipelineForProduct(
     const scenesDir = path.join(downloadsDir, "scenes");
     if (!existsSync(scenesDir)) await fs.mkdir(scenesDir, { recursive: true });
 
-    // Step 2: Check for existing 6 Scene Keyframe Images or generate new ones
+    // Step 2: Check for existing Scene Keyframe Images or generate new ones
     if (activeSceneImages.length === 0 && existsSync(scenesDir)) {
-      const existingScenes = [1, 2, 3, 4, 5, 6]
-        .map((i) => path.join(scenesDir, `scene_${i}.png`))
-        .filter((p) => existsSync(p));
-      if (existingScenes.length === 6) {
-        console.log(`✨ [Pipeline] Tìm thấy đầy đủ 6 ảnh phân cảnh có sẵn trong ${scenesDir}! Tái sử dụng.`);
+      const existingScenes = Array.from({ length: prompts.length }, (_, idx) =>
+        path.join(scenesDir, `scene_${idx + 1}.png`)
+      ).filter((p) => existsSync(p));
+      if (existingScenes.length === prompts.length && prompts.length > 0) {
+        console.log(`✨ [Pipeline] Tìm thấy đầy đủ ${prompts.length} ảnh phân cảnh có sẵn trong ${scenesDir}! Tái sử dụng.`);
         activeSceneImages = existingScenes;
       }
     }
 
-    const dialogues = [1, 2, 3, 4, 5, 6].map((i) => (promptsObj && promptsObj[`dialogue${i}`]) ? promptsObj[`dialogue${i}`] : "");
+    const dialogues = Array.from({ length: prompts.length }, (_, idx) => {
+      const i = idx + 1;
+      return (promptsObj && promptsObj[`dialogue${i}`]) ? promptsObj[`dialogue${i}`] : "";
+    });
 
     // ── Auto-generate dialogues if custom prompts lack them ──────────────
     const hasDialogues = dialogues.some(d => d && d.trim().length > 0);
-    if (!hasDialogues && promptsObj) {
-      console.log(`⚠️  [Pipeline] Custom prompts detected WITHOUT dialogues (dialogue1-6 missing). Auto-generating Vietnamese dialogues...`);
+    if (!hasDialogues && promptsObj && prompts.length > 0) {
+      console.log(`⚠️  [Pipeline] Custom prompts detected WITHOUT dialogues (dialogue1-${prompts.length} missing). Auto-generating Vietnamese dialogues...`);
       try {
         const { callAgy, isAgyEnabled } = await import("./agyClient.js");
         if (!isAgyEnabled()) throw new Error("AGY is disabled");
 
-        const promptSummary = [1, 2, 3, 4, 5, 6]
-          .map(i => `Scene ${i}: ${promptsObj[`prompt${i}`] || ""}`)
-          .filter(s => !s.endsWith(": "))
-          .join("\n");
+        const promptSummary = Array.from({ length: prompts.length }, (_, idx) => {
+          const i = idx + 1;
+          return `Scene ${i}: ${promptsObj[`prompt${i}`] || ""}`;
+        }).filter(s => !s.endsWith(": ")).join("\n");
 
-        const systemPrompt = `You are a Vietnamese dialogue writer for animated children's videos featuring two cute chibi 3D bears: BuBu (brown bear, playful, energetic) and DuDu (white bear, gentle, sweet).
+        const systemPrompt = `You are a Vietnamese dialogue writer for animated children's videos featuring cute chibi characters.
 Write natural, heartwarming Vietnamese dialogue for each scene.
 RULES:
-- Each scene gets 2-4 lines of dialogue between BuBu and DuDu
+- Each scene gets 2-4 lines of dialogue between characters
 - Format each line as: CharacterName: "Spoken text"
 - Vietnamese must be colloquial, cute, natural — how real Vietnamese friends talk
 - NOT advertising copy, NOT formal
 - Include cute reactions like "Waaaa!", "Hihi", "Ê ê!"`;
 
-        const userPrompt = `SCENES:\n${promptSummary}\n\nPRODUCT/TOPIC: ${product.name}\n\nReply in STRICT JSON:\n{"dialogue1":"BuBu: \\"...\\"\\nDuDu: \\"...\\"","dialogue2":"...","dialogue3":"...","dialogue4":"...","dialogue5":"...","dialogue6":"..."}`;
+        const dialogueKeys = Array.from({ length: prompts.length }, (_, idx) => `"dialogue${idx + 1}": "..."`).join(", ");
+        const userPrompt = `SCENES:\n${promptSummary}\n\nPRODUCT/TOPIC: ${product.name}\n\nReply in STRICT JSON:\n{${dialogueKeys}}`;
 
         const raw = await callAgy(systemPrompt, userPrompt, true);
         const jsonMatch = raw.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
           const parsed = JSON.parse(jsonMatch[0]);
-          for (let i = 1; i <= 6; i++) {
+          for (let i = 1; i <= prompts.length; i++) {
             const d = parsed[`dialogue${i}`];
             if (d && typeof d === "string" && d.trim()) {
               dialogues[i - 1] = d.trim();
@@ -613,20 +603,14 @@ RULES:
           }
           console.log(`✅ [Pipeline] Auto-generated Vietnamese dialogues for ${dialogues.filter(d => d).length} scenes`);
 
-          // Persist the newly generated dialogues back to products.json
-          if (product.id && existsSync(PRODUCTS_FILE)) {
+          // Persist the newly generated dialogues back to SQLite
+          if (product.id) {
             try {
-              const raw = await fs.readFile(PRODUCTS_FILE, "utf-8");
-              const allProducts = JSON.parse(raw);
-              const pIdx = allProducts.findIndex((p: any) => p.id === product.id);
-              if (pIdx !== -1) {
-                allProducts[pIdx].promptsObj = promptsObj;
-                product.promptsObj = promptsObj;
-                await fs.writeFile(PRODUCTS_FILE, JSON.stringify(allProducts, null, 2), "utf-8");
-                console.log(`💾 [Pipeline] Saved auto-generated dialogues into products.json for product: ${product.id}`);
-              }
+              dbUpdateProduct(product.id, { promptsObj });
+              product.promptsObj = promptsObj;
+              console.log(`💾 [Pipeline] Saved auto-generated dialogues into SQLite for product: ${product.id}`);
             } catch (saveErr: any) {
-              console.warn(`⚠️ [Pipeline] Could not persist auto-generated dialogues to products.json: ${saveErr.message}`);
+              console.warn(`⚠️ [Pipeline] Could not persist auto-generated dialogues to SQLite: ${saveErr.message}`);
             }
           }
         }
@@ -636,7 +620,7 @@ RULES:
     }
 
     if (activeSceneImages.length === 0 && product.image_url && autoGenerateSceneImages) {
-      console.log(`\n🎨 [Pipeline 2/4] Generating 6 detailed 3D Pixar scene images via Gemini before video creation...`);
+      console.log(`\n🎨 [Pipeline 2/4] Generating ${prompts.length} detailed 3D Pixar scene images via Gemini before video creation...`);
       try {
         const { generateAllSceneImages } = await import("./sceneImageGenerator.js");
         console.log(`📁 [Pipeline] Scene images will be saved in: ${scenesDir}`);
@@ -656,8 +640,8 @@ RULES:
       }
     }
 
-    // Step 3: Generate 6 video segments sequentially using Puppeteer + Veo (using generated scene images)
-    console.log(`\n🎬 [Pipeline 3/4] Generating 6 Veo video segments sequentially using scene images & prompts...`);
+    // Step 3: Generate video segments sequentially using Puppeteer + Veo (using generated scene images)
+    console.log(`\n🎬 [Pipeline 3/4] Generating ${prompts.length} Veo video segments sequentially using scene images & prompts...`);
     const { generateVeoVideoParallel } = await import("./veoAutomation.js");
     const { unlinkSync } = await import("fs");
 
@@ -785,21 +769,13 @@ RULES:
     const localStreamUrl = `/downloads/${jobFolder}/${filename}`;
     const finalVideoUrl = s3Url || localStreamUrl;
 
-    // Automatically update the product in products.json with the generated image/thumbnail
-    if ((s3ThumbUrl || product.image_url) && product.id) {
+    // Automatically update the product in SQLite with the generated image/thumbnail
+    if (s3ThumbUrl && product.id) {
       try {
-        if (existsSync(PRODUCTS_FILE)) {
-          const rawProds = await fs.readFile(PRODUCTS_FILE, "utf-8");
-          const prods = JSON.parse(rawProds) as any[];
-          const idx = prods.findIndex(p => p.id === product.id);
-          if (idx !== -1 && s3ThumbUrl) {
-            prods[idx].image_url = s3ThumbUrl;
-            await fs.writeFile(PRODUCTS_FILE, JSON.stringify(prods, null, 2), "utf-8");
-            console.log(`⚙️  [Pipeline] Updated product ${product.id} image_url in products.json`);
-          }
-        }
+        dbUpdateProduct(product.id, { image_url: s3ThumbUrl });
+        console.log(`⚙️  [Pipeline] Updated product ${product.id} image_url in SQLite`);
       } catch (prodErr: any) {
-        console.warn(`⚠️  [Pipeline] Failed to update products.json: ${prodErr.message}`);
+        console.warn(`⚠️  [Pipeline] Failed to update product in SQLite: ${prodErr.message}`);
       }
     }
 
@@ -1046,7 +1022,8 @@ export async function mergeJobVideoSegments(
   jobFolder?: string,
   product?: any,
   uploadToS3: boolean = true,
-  publishTikTok: boolean = false
+  publishTikTok: boolean = false,
+  episodesConfig?: EpisodeDefinition[]
 ): Promise<PipelineResult> {
   const startTime = Date.now();
   const startedAt = new Date().toISOString();
@@ -1113,6 +1090,66 @@ export async function mergeJobVideoSegments(
   } else if (existsSync(potentialVoicedPath)) {
     voicedVideoPath = potentialVoicedPath;
     console.log(`ℹ️ [MergeJob] Đã tìm thấy Bản Lồng Tiếng Đi Kèm có sẵn: ${potentialVoicedPath}`);
+  }
+
+  // 2.7. Process Episode Cuts if specified or found in product metadata
+  const effectiveEpisodes: EpisodeDefinition[] = (episodesConfig && episodesConfig.length > 0)
+    ? episodesConfig
+    : (Array.isArray(product?.episodes) && product.episodes.length > 0)
+      ? product.episodes
+      : (Array.isArray(product?.promptsObj?.episodes) && product.promptsObj.episodes.length > 0)
+        ? product.promptsObj.episodes
+        : [];
+
+  const generatedEpisodes: GeneratedEpisode[] = [];
+  if (effectiveEpisodes.length > 0) {
+    console.log(`\n✂️ [MergeJob] Generating ${effectiveEpisodes.length} episode cut(s) for ${productSlug}...`);
+    for (let idx = 0; idx < effectiveEpisodes.length; idx++) {
+      const ep = effectiveEpisodes[idx];
+      const startScene = Number(ep.startScene) || 1;
+      const endScene = Number(ep.endScene) || sortedParts[sortedParts.length - 1];
+      const epParts = sortedParts.filter(p => p >= startScene && p <= endScene);
+      if (epParts.length === 0) {
+        console.warn(`⚠️ [MergeJob] Episode "${ep.title}" has no matching parts in range [${startScene}..${endScene}]`);
+        continue;
+      }
+
+      const epSegmentFiles = epParts.map(p => partMap.get(p)!.fullPath);
+      const epId = ep.id || `ep${idx + 1}`;
+      const epFilename = `${productSlug}_${epId}.mp4`;
+      const epVideoPath = path.join(downloadsDir, epFilename);
+
+      console.log(`🎬 [MergeJob] Exporting Episode "${ep.title}" (Parts ${epParts.join(', ')}) -> ${epVideoPath}`);
+      try {
+        await mergeVideoSegments(epSegmentFiles, epVideoPath);
+
+        let epVoicedPath: string | null = null;
+        let epVoicedUrl: string | null = null;
+        if (voicedPartMap.size > 0) {
+          const epVoicedSegmentFiles = epParts.map(p => voicedPartMap.get(p)?.fullPath || partMap.get(p)!.fullPath);
+          const epVoicedFilename = `${productSlug}_${epId}_voiced.mp4`;
+          const potentialVoicedPath = path.join(downloadsDir, epVoicedFilename);
+          await mergeVideoSegments(epVoicedSegmentFiles, potentialVoicedPath);
+          epVoicedPath = potentialVoicedPath;
+          epVoicedUrl = `/downloads/${activeJobFolder}/${epVoicedFilename}`;
+        }
+
+        generatedEpisodes.push({
+          id: epId,
+          title: ep.title || `Tập ${idx + 1}`,
+          startScene,
+          endScene,
+          filename: epFilename,
+          local_path: epVideoPath,
+          video_url: `/downloads/${activeJobFolder}/${epFilename}`,
+          voiced_path: epVoicedPath,
+          voiced_url: epVoicedUrl,
+        });
+      } catch (epErr: any) {
+        console.error(`❌ [MergeJob] Error creating Episode "${ep.title}": ${epErr.message}`);
+      }
+    }
+    console.log(`✅ [MergeJob] Successfully created ${generatedEpisodes.length} Episode cuts!`);
   }
 
   // 3. Extract thumbnail
@@ -1241,6 +1278,7 @@ export async function mergeJobVideoSegments(
     tiktok_video_id: tiktokVideoId || undefined,
     tiktok_status: (tiktokStatus === "mock" ? "mock" : undefined) as any,
     images: product?.images || [],
+    episodes: generatedEpisodes.length > 0 ? generatedEpisodes : undefined,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
@@ -1268,6 +1306,7 @@ export async function mergeJobVideoSegments(
     video_url: finalVideoUrl,
     voiced_path: voicedVideoPath,     // Bản lồng tiếng đi kèm
     voiced_url: finalVoicedUrl,
+    episodes: generatedEpisodes,
     s3_url: s3Url,
     s3_key: s3Key,
     metadata_id: metadataId,

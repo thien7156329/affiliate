@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { VideoItem } from '../../types';
 import { useToast } from '../../context/ToastContext';
+import { YouTubePublishModal } from '../modals/YouTubePublishModal';
+import { FacebookPublishModal } from '../modals/FacebookPublishModal';
 
 interface VideoPlayerModalProps {
   video: VideoItem | null;
@@ -28,12 +30,17 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   const [images, setImages] = useState<string[]>([]);
   const [s3Url, setS3Url] = useState('');
   const [streamUrl, setStreamUrl] = useState('');
+  const [selectedEpisodeId, setSelectedEpisodeId] = useState<string>('full');
   const [videoDuration, setVideoDuration] = useState(0);
   const [videoReloadKey, setVideoReloadKey] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [isVoiceSyncing, setIsVoiceSyncing] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [showYouTubeModal, setShowYouTubeModal] = useState(false);
+  const [showFacebookModal, setShowFacebookModal] = useState(false);
+
 
   useEffect(() => {
     if (video) {
@@ -43,6 +50,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
       setImages(video.images || []);
       setS3Url(video.s3_url || '');
       setStreamUrl(video.stream_url || video.s3_url || '');
+      setSelectedEpisodeId('full');
       setVideoDuration(0);
       setVideoReloadKey((key) => key + 1);
     }
@@ -117,6 +125,26 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
     } finally {
       setIsVoiceSyncing(false);
     }
+  };
+
+  const handleDownloadVideo = () => {
+    const rawTarget = streamUrl || video.stream_url || video.s3_url || (video.local_path ? `/downloads/${video.local_path.split('/downloads/')[1] || video.local_path}` : '');
+    if (!rawTarget && !video.id) {
+      showToast('⚠️ Không tìm thấy đường dẫn video để tải!');
+      return;
+    }
+    const baseClean = (title || video.title || 'video').trim().replace(/[^a-zA-Z0-9_\-\u00C0-\u024F\u1EA0-\u1EF9\s]/gu, '').replace(/\s+/g, '_') || 'video';
+    const suffix = selectedEpisodeId === 'full' ? '_full' : `_${selectedEpisodeId}`;
+    const cleanName = `${baseClean}${suffix}`;
+    showToast('⬇️ Đang tải video về máy...');
+
+    const downloadEndpoint = `/api/videos/download?id=${encodeURIComponent(video.id || '')}&url=${encodeURIComponent(rawTarget)}&filename=${encodeURIComponent(cleanName)}`;
+    const a = document.createElement('a');
+    a.href = downloadEndpoint;
+    a.download = `${cleanName}.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   };
 
   const handleSaveDetails = async () => {
@@ -317,6 +345,54 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
               flexShrink: 0,
             }}
           >
+            {video.episodes && video.episodes.length > 0 && (
+              <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '4px', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedEpisodeId('full');
+                    setStreamUrl(video.stream_url || video.s3_url || (video.local_path ? `/downloads/${video.local_path.split('/downloads/')[1] || video.local_path}` : ''));
+                  }}
+                  style={{
+                    background: selectedEpisodeId === 'full' ? 'linear-gradient(135deg, #6366f1 0%, #3b82f6 100%)' : 'var(--bg3)',
+                    border: selectedEpisodeId === 'full' ? '1px solid #60a5fa' : '1px solid var(--border)',
+                    color: selectedEpisodeId === 'full' ? '#fff' : 'var(--text)',
+                    borderRadius: '20px',
+                    padding: '4px 12px',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  🎬 Bản Full Story
+                </button>
+                {video.episodes.map((ep, idx) => (
+                  <button
+                    key={ep.id || idx}
+                    type="button"
+                    onClick={() => {
+                      setSelectedEpisodeId(ep.id || `ep_${idx + 1}`);
+                      setStreamUrl(ep.video_url);
+                    }}
+                    style={{
+                      background: selectedEpisodeId === (ep.id || `ep_${idx + 1}`) ? 'linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%)' : 'var(--bg3)',
+                      border: selectedEpisodeId === (ep.id || `ep_${idx + 1}`) ? '1px solid #f472b6' : '1px solid var(--border)',
+                      color: selectedEpisodeId === (ep.id || `ep_${idx + 1}`) ? '#fff' : 'var(--text)',
+                      borderRadius: '20px',
+                      padding: '4px 12px',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    ✂️ {ep.title} (Scene {ep.startScene}..{ep.endScene})
+                  </button>
+                ))}
+              </div>
+            )}
+
             <div
               id="videoPlayerContainer"
               style={{
@@ -562,8 +638,8 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
-            gap: '10px',
-            paddingTop: '14px',
+            gap: '6px',
+            paddingTop: '12px',
             borderTop: '1px solid var(--border)',
             background: 'var(--bg2)',
             flexShrink: 0,
@@ -571,28 +647,30 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
             marginTop: 0,
           }}
         >
-          <div id="videoModalFooterLeft" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-            <button
-              type="button"
-              className="btn-cancel"
-              onClick={handleDelete}
-              style={{
-                background: 'rgba(239,68,68,0.1)',
-                color: '#f87171',
-                border: '1px solid rgba(239,68,68,0.2)',
-                padding: '8px 12px',
-                fontSize: '12px',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                whiteSpace: 'nowrap',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '5px',
-              }}
-            >
-              🗑️ Delete
-            </button>
+          {/* Left: Destructive action */}
+          <button
+            type="button"
+            onClick={handleDelete}
+            style={{
+              background: 'rgba(239,68,68,0.1)',
+              color: '#f87171',
+              border: '1px solid rgba(239,68,68,0.2)',
+              padding: '6px 10px',
+              fontSize: '11px',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px',
+            }}
+            title="Xoá video"
+          >
+            🗑️ Xoá
+          </button>
 
+          {/* Center: Action buttons */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', justifyContent: 'center' }}>
             <button
               type="button"
               onClick={handleVoiceSync}
@@ -601,29 +679,123 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                 background: 'rgba(124,58,237,0.15)',
                 color: '#a78bfa',
                 border: '1px solid rgba(124,58,237,0.35)',
-                padding: '8px 12px',
-                borderRadius: '8px',
-                fontSize: '12px',
+                padding: '6px 10px',
+                borderRadius: '6px',
+                fontSize: '11px',
                 fontWeight: 600,
+                cursor: isVoiceSyncing ? 'not-allowed' : 'pointer',
+                whiteSpace: 'nowrap',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+              }}
+              title="Lồng giọng AI cho video"
+            >
+              {isVoiceSyncing ? '⏳ Đang lồng...' : '🎙️ Lồng giọng'}
+            </button>
+            {video?.youtube_url && (
+              <a
+                href={video.youtube_shorts_url || video.youtube_url}
+                target="_blank"
+                rel="noreferrer"
+                style={{
+                  background: 'rgba(239, 68, 68, 0.1)',
+                  border: '1px solid rgba(239, 68, 68, 0.3)',
+                  color: '#f87171',
+                  padding: '6px 10px',
+                  borderRadius: '6px',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  textDecoration: 'none',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '3px',
+                  whiteSpace: 'nowrap',
+                }}
+                title="Xem trên YouTube"
+              >
+                ▶️ YouTube
+              </a>
+            )}
+            <button
+              type="button"
+              onClick={() => setShowYouTubeModal(true)}
+              style={{
+                background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
+                color: '#fff',
+                border: 'none',
+                padding: '6px 10px',
+                borderRadius: '6px',
+                fontSize: '11px',
+                fontWeight: 700,
                 cursor: 'pointer',
                 whiteSpace: 'nowrap',
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: '5px',
+                gap: '4px',
+                boxShadow: '0 1px 6px rgba(239, 68, 68, 0.25)',
               }}
+              title="Đăng video lên YouTube"
             >
-              <span>{isVoiceSyncing ? '⏳ Đang lồng giọng...' : '🎙️ Lồng Giọng AI'}</span>
+              🚀 Đăng YT
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowFacebookModal(true)}
+              style={{
+                background: 'linear-gradient(135deg, #1877f2 0%, #0064e0 100%)',
+                color: '#fff',
+                border: 'none',
+                padding: '6px 10px',
+                borderRadius: '6px',
+                fontSize: '11px',
+                fontWeight: 700,
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                boxShadow: '0 1px 6px rgba(24, 119, 242, 0.3)',
+              }}
+              title="Đăng video lên Facebook (Reels hoặc Video Fanpage)"
+            >
+              🔵 Đăng FB
+            </button>
+
+            <button
+              type="button"
+              onClick={handleDownloadVideo}
+              disabled={isDownloading}
+              style={{
+                background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                color: '#fff',
+                border: 'none',
+                padding: '6px 10px',
+                borderRadius: '6px',
+                fontSize: '11px',
+                fontWeight: 700,
+                cursor: isDownloading ? 'not-allowed' : 'pointer',
+                whiteSpace: 'nowrap',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                boxShadow: '0 1px 6px rgba(16,185,129,0.25)',
+              }}
+              title="Tải file video MP4"
+            >
+              {isDownloading ? '⏳ Đang tải...' : '⬇️ Tải MP4'}
             </button>
           </div>
 
-          <div id="videoModalFooterRight" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {/* Right: Close + Save */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <button
               type="button"
               className="btn-cancel"
               onClick={onClose}
-              style={{ padding: '8px 14px', fontSize: '12px', borderRadius: '8px', whiteSpace: 'nowrap' }}
+              style={{ padding: '6px 12px', fontSize: '11px', borderRadius: '6px', whiteSpace: 'nowrap' }}
             >
-              Close
+              Đóng
             </button>
             <button
               type="button"
@@ -635,33 +807,66 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                 border: '1px solid var(--border)',
                 color: 'var(--text)',
                 boxShadow: 'none',
-                padding: '8px 14px',
-                fontSize: '12px',
-                borderRadius: '8px',
+                padding: '6px 12px',
+                fontSize: '11px',
+                borderRadius: '6px',
                 whiteSpace: 'nowrap',
               }}
             >
-              <span>{isSaving ? 'Saving...' : '💾 Save'}</span>
-            </button>
-            <button
-              type="button"
-              className="btn-submit"
-              onClick={handlePublish}
-              disabled={isPublishing || isPublished}
-              style={{
-                padding: '8px 16px',
-                fontSize: '12px',
-                fontWeight: 700,
-                borderRadius: '8px',
-                whiteSpace: 'nowrap',
-                opacity: isPublished ? 0.6 : 1,
-              }}
-            >
-              <span>{isPublished ? '✓ Published' : isPublishing ? 'Publishing...' : '📱 Publish to TikTok'}</span>
+              {isSaving ? '⏳' : '💾'} Lưu
             </button>
           </div>
         </div>
       </div>
+
+      {showYouTubeModal && video && (
+        <YouTubePublishModal
+          isOpen={showYouTubeModal}
+          onClose={() => setShowYouTubeModal(false)}
+          defaultTitle={title || video.title}
+          defaultDescription={caption || video.description || video.caption || ''}
+          defaultTags={tags ? tags.split(/[\s,]+/).map((t) => t.trim().replace(/^#/, '')).filter(Boolean) : (video.tags || []).map((t) => t.replace(/^#/, ''))}
+          defaultThumbnailUrl={video.thumbnail_url || video.source_image_url || ''}
+          videoUrl={streamUrl || video.video_url}
+          videoId={video.id}
+          episodes={video.episodes?.map((ep) => ({
+            id: ep.id,
+            title: ep.title,
+            video_url: ep.voiced_url || ep.video_url,
+            local_path: ep.voiced_path || ep.local_path,
+            thumbnail_url: ep.thumbnail_url || video.thumbnail_url || video.source_image_url || '',
+          }))}
+          initialTarget={selectedEpisodeId !== 'full' ? selectedEpisodeId : 'full'}
+          onSuccess={() => {
+            onUpdateSuccess();
+          }}
+        />
+      )}
+
+      {showFacebookModal && video && (
+        <FacebookPublishModal
+          isOpen={showFacebookModal}
+          onClose={() => setShowFacebookModal(false)}
+          defaultTitle={title || video.title}
+          defaultDescription={caption || video.description || video.caption || ''}
+          defaultTags={tags ? tags.split(/[\s,]+/).map((t) => t.trim().replace(/^#/, '')).filter(Boolean) : (video.tags || []).map((t) => t.replace(/^#/, ''))}
+          defaultThumbnailUrl={video.thumbnail_url || video.source_image_url || ''}
+          videoUrl={streamUrl || video.video_url}
+          videoId={video.id}
+          episodes={video.episodes?.map((ep) => ({
+            id: ep.id,
+            title: ep.title,
+            video_url: ep.voiced_url || ep.video_url,
+            local_path: ep.voiced_path || ep.local_path,
+            thumbnail_url: ep.thumbnail_url || video.thumbnail_url || video.source_image_url || '',
+          }))}
+          initialTarget={selectedEpisodeId !== 'full' ? selectedEpisodeId : 'full'}
+          onSuccess={() => {
+            onUpdateSuccess();
+          }}
+        />
+      )}
     </div>
+
   );
 };

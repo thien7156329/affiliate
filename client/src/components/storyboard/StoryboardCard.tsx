@@ -311,22 +311,35 @@ export const StoryboardCard: React.FC<StoryboardCardProps> = memo(({
             </a>
 
             {vidExists && (
-              <div
+              <a
+                href={videoUrl || undefined}
+                download={`part_${partNum}.mp4`}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(e) => e.stopPropagation()}
                 style={{
                   position: 'absolute',
                   top: '6px',
                   right: '6px',
-                  background: 'rgba(124,58,237,0.9)',
+                  background: 'rgba(16,185,129,0.92)',
                   backdropFilter: 'blur(4px)',
                   color: '#fff',
                   fontSize: '10px',
-                  padding: '2px 7px',
-                  borderRadius: '4px',
-                  fontWeight: 600,
+                  padding: '2px 8px',
+                  borderRadius: '5px',
+                  fontWeight: 700,
+                  textDecoration: 'none',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '3px',
+                  boxShadow: '0 2px 6px rgba(0,0,0,0.3)',
+                  cursor: 'pointer',
+                  zIndex: 2,
                 }}
+                title={`Tải video Part ${partNum} (.mp4) về máy`}
               >
-                ▶️ Video OK
-              </div>
+                ⬇️ Tải Part {partNum}
+              </a>
             )}
           </>
         ) : (

@@ -6,6 +6,7 @@ import { fileURLToPath } from "url";
 import { generateSpeechWithVieneu } from "./vieneuClient.js";
 import { mergeJobVideoSegments } from "./scheduler.js";
 import { loadCharacters } from "./characterRegistry.js";
+import { loadProducts as dbLoadProducts } from "./database.js";
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -70,20 +71,20 @@ export interface DubVideoResult {
   error?: string;
 }
 
-// Preset default dialogue lines for the 60-second animated story
+// Preset default dialogue lines for the 60-second animated story (generic — no hardcoded character names)
 const DEFAULT_PRESET_LINES = [
-  { part: 1, startSec: 0.5, speaker: "DuDu_NamChinh", text: "BuBu đi sát bên anh nhé, hôm nay anh em mình cùng bắt cá ở suối!" },
-  { part: 1, startSec: 4.8, speaker: "Mai Bé Phương", text: "Dạ! Em sẽ theo anh DuDu thật ngoan!" },
-  { part: 2, startSec: 10.5, speaker: "Mai Bé Phương", text: "Anh DuDu ơi, đá ướt quá… em sợ bị trượt." },
-  { part: 2, startSec: 14.5, speaker: "DuDu_NamChinh", text: "Có anh đây rồi. Em bước chậm thôi, chúng mình sẽ qua an toàn." },
-  { part: 3, startSec: 20.5, speaker: "DuDu_NamChinh", text: "BuBu nhìn kìa, cá đang bơi về phía chúng mình. Em giữ vợt thật nhẹ nhé!" },
-  { part: 3, startSec: 24.8, speaker: "Mai Bé Phương", text: "Em thấy rồi! Chúng lấp lánh như những đồng xu bạc!" },
-  { part: 4, startSec: 30.5, speaker: "Mai Bé Phương", text: "Anh DuDu ơi, chúng mình bắt được một bạn cá rồi!" },
-  { part: 4, startSec: 34.5, speaker: "DuDu_NamChinh", text: "Giỏi lắm! Vì hai anh em biết bình tĩnh và phối hợp cùng nhau đấy." },
-  { part: 5, startSec: 40.5, speaker: "Mai Bé Phương", text: "Anh DuDu, mình thả bạn cá về nhà nhé? Bạn ấy chắc đang nhớ gia đình." },
-  { part: 5, startSec: 44.8, speaker: "DuDu_NamChinh", text: "Ừ, em gái của anh thật tốt bụng. Niềm vui đẹp nhất là biết yêu thương." },
-  { part: 6, startSec: 50.5, speaker: "Mai Bé Phương", text: "Hôm nay em học được cách bắt cá, lại còn giúp bạn cá trở về nhà!" },
-  { part: 6, startSec: 54.5, speaker: "DuDu_NamChinh", text: "Anh cũng học được rằng chuyến đi vui nhất là chuyến đi có hai anh em mình bên nhau." }
+  { part: 1, startSec: 0.5, speaker: "NamChinh", text: "Hôm nay chúng mình cùng nhau khám phá nhé!" },
+  { part: 1, startSec: 4.8, speaker: "NuChinh", text: "Dạ! Em sẽ đi theo thật ngoan!" },
+  { part: 2, startSec: 10.5, speaker: "NuChinh", text: "Ôi, đường trơn quá… em hơi sợ." },
+  { part: 2, startSec: 14.5, speaker: "NamChinh", text: "Có anh đây rồi. Em bước chậm thôi, chúng mình sẽ qua an toàn." },
+  { part: 3, startSec: 20.5, speaker: "NamChinh", text: "Nhìn kìa, phía trước có gì đẹp lắm! Mình đến gần xem nhé!" },
+  { part: 3, startSec: 24.8, speaker: "NuChinh", text: "Em thấy rồi! Đẹp quá đi!" },
+  { part: 4, startSec: 30.5, speaker: "NuChinh", text: "Chúng mình làm được rồi!" },
+  { part: 4, startSec: 34.5, speaker: "NamChinh", text: "Giỏi lắm! Vì chúng mình biết bình tĩnh và phối hợp cùng nhau đấy." },
+  { part: 5, startSec: 40.5, speaker: "NuChinh", text: "Mình giúp bạn ấy trở về nhà nhé? Bạn ấy chắc đang nhớ gia đình." },
+  { part: 5, startSec: 44.8, speaker: "NamChinh", text: "Ừ, em thật tốt bụng. Niềm vui đẹp nhất là biết yêu thương." },
+  { part: 6, startSec: 50.5, speaker: "NuChinh", text: "Hôm nay em học được nhiều điều bổ ích quá!" },
+  { part: 6, startSec: 54.5, speaker: "NamChinh", text: "Anh cũng vậy. Chuyến đi vui nhất là chuyến đi có nhau bên cạnh." }
 ];
 
 /**
@@ -485,29 +486,26 @@ export async function dubVideoWithVieneu(options: DubVideoOptions & { promptsObj
       }
 
       if (!pObj) {
-        const productsJsonPath = path.resolve(__dirname, "../data/products.json");
-        if (fs.existsSync(productsJsonPath)) {
-          try {
-            const prods = JSON.parse(fs.readFileSync(productsJsonPath, "utf-8"));
-            const normSlug = (s: string) =>
-              s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim().replace(/[^a-z0-9\s-_]/g, "").replace(/[\s_]+/g, "-");
-            const targetNorm = normSlug(productSlug);
-            const matched = prods.find((p: any) => {
-              if (!p.name) return false;
-              const pn = normSlug(p.name);
-              return pn === targetNorm || pn.includes(targetNorm) || targetNorm.includes(pn);
-            });
-            if (matched) {
-              pObj = matched.promptsObj || matched.prompts_obj;
-              if (!pObj && matched.description && matched.description.startsWith("{")) {
-                try { pObj = JSON.parse(matched.description); } catch {}
-              }
-              if (pObj) {
-                console.log(`📦 [VideoDubbing] Tự động tìm thấy kịch bản thoại từ sản phẩm: "${matched.name}"`);
-              }
+        try {
+          const prods = dbLoadProducts();
+          const normSlug = (s: string) =>
+            s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim().replace(/[^a-z0-9\s-_]/g, "").replace(/[\s_]+/g, "-");
+          const targetNorm = normSlug(productSlug);
+          const matched = prods.find((p: any) => {
+            if (!p.name) return false;
+            const pn = normSlug(p.name);
+            return pn === targetNorm || pn.includes(targetNorm) || targetNorm.includes(pn);
+          });
+          if (matched) {
+            pObj = matched.promptsObj || (matched as any).prompts_obj;
+            if (!pObj && matched.description && matched.description.startsWith("{")) {
+              try { pObj = JSON.parse(matched.description); } catch {}
             }
-          } catch {}
-        }
+            if (pObj) {
+              console.log(`📦 [VideoDubbing] Tự động tìm thấy kịch bản thoại từ sản phẩm: "${matched.name}"`);
+            }
+          }
+        } catch {}
       }
 
       if (pObj) {

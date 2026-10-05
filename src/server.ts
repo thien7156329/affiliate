@@ -54,7 +54,30 @@ import {
   startScheduler,
   parseTextPromptToObj,
 } from "./scheduler.js";
+import {
+  findProductById as dbFindProduct,
+  createProduct as dbCreateProduct,
+  updateProduct as dbUpdateProduct,
+  deleteProduct as dbDeleteProduct,
+  loadProductsPaginated as dbLoadProductsPaginated,
+} from "./database.js";
 import { startChromeBridge } from "./chromeBridge.js";
+import {
+  getYoutubeStatus,
+  saveYoutubeConfig,
+  getYoutubeAuthUrl,
+  handleYoutubeAuthCallback,
+  disconnectYoutube,
+  uploadVideoToYouTube,
+  updateVideoThumbnail,
+} from "./youtubeService.js";
+import {
+  getFacebookStatus,
+  saveFacebookConfig,
+  uploadVideoToFacebook,
+  getFacebookConfig,
+} from "./facebookService.js";
+
 // ─── Process Error Handlers (Prevents nodemon crashes on network ECONNRESET) ──
 process.on("uncaughtException", (err: any) => {
   if (err?.code === "ECONNRESET" || err?.message?.includes("aborted") || err?.message?.includes("socket")) {
@@ -1036,6 +1059,558 @@ app.get("/health", async (_req, res) => {
   });
 });
 
+// ── REST: Direct File Download with Content-Disposition Attachment ──────────
+app.get("/api/videos/download", async (req: any, res: any) => {
+  try {
+    const { url, filename, path: queryPath, id } = req.query;
+    let targetFilePath: string | null = null;
+    let outFilename = (typeof filename === "string" && filename.trim()) ? filename.trim() : "video.mp4";
+    if (!outFilename.endsWith(".mp4")) outFilename += ".mp4";
+
+    const downloadsDir = path.resolve(__dirname, "../data/downloads");
+
+    if (id) {
+      const meta = await loadMetadata();
+      const item = meta.find((m: any) => m.id === id);
+      if (item) {
+        if (item.local_path && existsSync(item.local_path)) {
+          targetFilePath = item.local_path;
+        } else if (item.source_url && item.source_url.startsWith("/downloads/")) {
+          targetFilePath = path.join(downloadsDir, item.source_url.replace(/^\/downloads\//, ""));
+        }
+        if (!filename && item.title) {
+          outFilename = `${item.title.trim().replace(/[^a-zA-Z0-9_\-\u00C0-\u024F\u1EA0-\u1EF9\s]/gu, "").replace(/\s+/g, "_")}.mp4`;
+        }
+      }
+    }
+
+    if (!targetFilePath && queryPath && typeof queryPath === "string") {
+      const resolved = path.resolve(queryPath);
+      if (existsSync(resolved)) {
+        targetFilePath = resolved;
+      }
+    }
+
+    if (!targetFilePath && url && typeof url === "string") {
+      if (url.startsWith("/downloads/")) {
+        const cleanRel = url.replace(/^\/downloads\//, "").split("?")[0];
+        const resolved = path.join(downloadsDir, cleanRel);
+        if (existsSync(resolved)) {
+          targetFilePath = resolved;
+        }
+      } else if (url.startsWith("http://") || url.startsWith("https://")) {
+        const fetchRes = await fetch(url);
+        if (!fetchRes.ok) throw new Error(`HTTP ${fetchRes.status}`);
+        res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(outFilename)}"`);
+        res.setHeader("Content-Type", "video/mp4");
+        if (fetchRes.body) {
+          const { Readable } = await import("stream");
+          // @ts-ignore
+          Readable.fromWeb(fetchRes.body).pipe(res);
+          return;
+        }
+      }
+    }
+
+    if (targetFilePath && existsSync(targetFilePath)) {
+      res.download(targetFilePath, outFilename);
+      return;
+    }
+
+    return res.status(404).json({ success: false, error: "File video không tồn tại để tải" });
+  } catch (err: any) {
+    console.error(`❌ [Download API Error]: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── REST: YouTube Integration ──────────────────────────────────────────────
+app.get("/api/youtube/status", async (_req: any, res: any) => {
+  try {
+    const status = await getYoutubeStatus();
+    res.json({ success: true, ...status });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/youtube/config", async (req: any, res: any) => {
+  try {
+    const { client_id, client_secret, redirect_uri } = req.body || {};
+    const updated = saveYoutubeConfig({
+      clientId: client_id,
+      clientSecret: client_secret,
+      redirectUri: redirect_uri,
+    });
+    const status = await getYoutubeStatus();
+    res.json({ success: true, config: updated, ...status });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/youtube/auth-url", (_req: any, res: any) => {
+  try {
+    const url = getYoutubeAuthUrl();
+    res.json({ success: true, url });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/youtube/callback", async (req: any, res: any) => {
+  try {
+    const { code, error } = req.query;
+    if (error) {
+      return res.status(400).send(`<h3>Đăng nhập YouTube bị từ chối:</h3><p>${error}</p>`);
+    }
+    if (!code || typeof code !== "string") {
+      return res.status(400).send("<h3>Mã xác thực không hợp lệ!</h3>");
+    }
+    await handleYoutubeAuthCallback(code);
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head><title>YouTube Connected</title></head>
+        <body style="font-family: system-ui; text-align: center; padding: 40px; background: #0f172a; color: #fff;">
+          <h2 style="color: #34d399;">🎉 Đã kết nối kênh YouTube thành công!</h2>
+          <p>Cửa sổ này sẽ tự động đóng lại...</p>
+          <script>
+            try {
+              if (window.opener) {
+                window.opener.postMessage({ type: 'YOUTUBE_AUTH_SUCCESS' }, '*');
+                setTimeout(() => window.close(), 1000);
+              } else {
+                setTimeout(() => window.location.href = '/', 1500);
+              }
+            } catch (e) {
+              window.close();
+            }
+          </script>
+        </body>
+      </html>
+    `);
+  } catch (err: any) {
+    res.status(500).send(`<h3>Lỗi xác thực YouTube:</h3><p>${err.message}</p>`);
+  }
+});
+
+app.post("/api/youtube/disconnect", (_req: any, res: any) => {
+  try {
+    disconnectYoutube();
+    res.json({ success: true, message: "Đã hủy liên kết tài khoản YouTube" });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/youtube/upload", async (req: any, res: any) => {
+  if (req.setTimeout) req.setTimeout(600000); // 10 minutes upload timeout
+  if (res.setTimeout) res.setTimeout(600000);
+  try {
+    const {
+      video_url,
+      local_path,
+      video_id,
+      thumbnail_url,
+      thumbnail_path,
+      title = "Video mới",
+      description = "",
+      tags = [],
+      privacy_status = "public",
+      made_for_kids = true,
+      category_id = "1",
+    } = req.body || {};
+
+    let targetFilePath: string | null = null;
+    const downloadsDir = path.resolve(__dirname, "../data/downloads");
+
+    // 1. Resolve local file path
+    if (local_path && existsSync(local_path)) {
+      targetFilePath = local_path;
+    } else if (video_id) {
+      const meta = await loadMetadata();
+      const found = meta.find((m: any) => m.id === video_id);
+      if (found?.local_path && existsSync(found.local_path)) {
+        targetFilePath = found.local_path;
+      } else if (found?.source_url && found.source_url.startsWith("/downloads/")) {
+        const p = path.join(downloadsDir, found.source_url.replace(/^\/downloads\//, ""));
+        if (existsSync(p)) targetFilePath = p;
+      }
+    }
+
+    if (!targetFilePath && video_url && typeof video_url === "string") {
+      if (video_url.startsWith("/downloads/")) {
+        const cleanRel = video_url.replace(/^\/downloads\//, "").split("?")[0];
+        const p = path.join(downloadsDir, cleanRel);
+        if (existsSync(p)) targetFilePath = p;
+      } else if (video_url.startsWith("http://") || video_url.startsWith("https://")) {
+        const tempFilename = `temp_yt_${Date.now()}.mp4`;
+        const tempPath = path.join(downloadsDir, tempFilename);
+        const fetchRes = await fetch(video_url);
+        if (!fetchRes.ok) throw new Error(`Không tải được video từ URL: ${fetchRes.status}`);
+        const buffer = Buffer.from(await fetchRes.arrayBuffer());
+        await fs.writeFile(tempPath, buffer);
+        targetFilePath = tempPath;
+      }
+    }
+
+    if (!targetFilePath || !existsSync(targetFilePath)) {
+      return res.status(404).json({
+        success: false,
+        error: `Không tìm thấy file video để upload lên YouTube (đường dẫn: ${targetFilePath || video_url})`,
+      });
+    }
+
+    // 2. Resolve thumbnail / avatar image path
+    let targetThumbnailPath: string | null = null;
+    if (thumbnail_path && existsSync(thumbnail_path)) {
+      targetThumbnailPath = thumbnail_path;
+    } else if (thumbnail_url && typeof thumbnail_url === "string") {
+      const cleanThumb = thumbnail_url.trim();
+      if (cleanThumb.startsWith("data:image/")) {
+        try {
+          const base64Data = cleanThumb.replace(/^data:image\/\w+;base64,/, "");
+          const ext = cleanThumb.includes("png") ? ".png" : ".jpg";
+          const tempThumbFile = path.join(downloadsDir, `temp_thumb_${Date.now()}${ext}`);
+          await fs.writeFile(tempThumbFile, Buffer.from(base64Data, "base64"));
+          targetThumbnailPath = tempThumbFile;
+        } catch (e: any) {
+          console.warn("⚠️ [YouTube] Could not save base64 thumbnail:", e.message);
+        }
+      } else if (cleanThumb.startsWith("/downloads/")) {
+        const p = path.join(downloadsDir, cleanThumb.replace(/^\/downloads\//, "").split("?")[0]);
+        if (existsSync(p)) targetThumbnailPath = p;
+      } else if (cleanThumb.startsWith("/outputs/")) {
+        const outputsDir = path.resolve(__dirname, "../outputs");
+        const p = path.join(outputsDir, cleanThumb.replace(/^\/outputs\//, "").split("?")[0]);
+        if (existsSync(p)) targetThumbnailPath = p;
+      } else if (cleanThumb.startsWith("http://") || cleanThumb.startsWith("https://")) {
+        try {
+          const fetchThumb = await fetch(cleanThumb);
+          if (fetchThumb.ok) {
+            const ext = cleanThumb.toLowerCase().includes(".png") ? ".png" : ".jpg";
+            const tempThumbFile = path.join(downloadsDir, `temp_thumb_${Date.now()}${ext}`);
+            await fs.writeFile(tempThumbFile, Buffer.from(await fetchThumb.arrayBuffer()));
+            targetThumbnailPath = tempThumbFile;
+          }
+        } catch (e: any) {
+          console.warn("⚠️ [YouTube] Could not fetch remote thumbnail:", e.message);
+        }
+      } else if (existsSync(cleanThumb)) {
+        targetThumbnailPath = cleanThumb;
+      }
+    } else if (video_id) {
+      try {
+        const meta = await loadMetadata();
+        const found = meta.find((m: any) => m.id === video_id) as any;
+        const autoThumb = found?.thumbnail_url || found?.source_image_url;
+        if (autoThumb) {
+          if (autoThumb.startsWith("/downloads/")) {
+            const p = path.join(downloadsDir, autoThumb.replace(/^\/downloads\//, "").split("?")[0]);
+            if (existsSync(p)) targetThumbnailPath = p;
+          } else if (autoThumb.startsWith("/outputs/")) {
+            const outputsDir = path.resolve(__dirname, "../outputs");
+            const p = path.join(outputsDir, autoThumb.replace(/^\/outputs\//, "").split("?")[0]);
+            if (existsSync(p)) targetThumbnailPath = p;
+          }
+        }
+      } catch {}
+    }
+
+    // 3. Parse tags
+    let parsedTags: string[] = [];
+    if (Array.isArray(tags)) {
+      parsedTags = tags.map((t: string) => t.trim()).filter(Boolean);
+    } else if (typeof tags === "string") {
+      parsedTags = tags.split(/[\s,#]+/).map((t: string) => t.trim()).filter(Boolean);
+    }
+
+    // 4. Upload to YouTube
+    const result = await uploadVideoToYouTube({
+      filePath: targetFilePath,
+      thumbnailPath: targetThumbnailPath || undefined,
+      title: title.trim(),
+      description: description.trim(),
+      tags: parsedTags,
+      privacyStatus: privacy_status,
+      madeForKids: Boolean(made_for_kids),
+      categoryId: category_id,
+    });
+
+    // 4. Update metadata if matching record found
+    try {
+      const meta = await loadMetadata();
+      let updatedAny = false;
+      const updatedMeta = meta.map((item: any) => {
+        if ((video_id && item.id === video_id) || (item.local_path && path.resolve(item.local_path) === path.resolve(targetFilePath!))) {
+          updatedAny = true;
+          return {
+            ...item,
+            youtube_video_id: result.videoId,
+            youtube_url: result.youtubeUrl,
+            youtube_shorts_url: result.shortsUrl,
+            youtube_published_at: new Date().toISOString(),
+          };
+        }
+        return item;
+      });
+      if (updatedAny) {
+        await saveMetadata(updatedMeta);
+      }
+    } catch (saveErr) {
+      console.warn("⚠️ [YouTube] Could not update metadata with YouTube info:", saveErr);
+    }
+
+    res.json(result);
+  } catch (err: any) {
+    console.error(`❌ [YouTube Upload API Error]: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/youtube/thumbnail", async (req, res) => {
+  try {
+    const { video_id, thumbnail_url, thumbnail_path } = req.body;
+    if (!video_id) {
+      return res.status(400).json({ success: false, error: "Thiếu video_id" });
+    }
+
+    const downloadsDir = path.resolve(__dirname, "../data/downloads");
+    let targetThumbnailPath: string | null = null;
+
+    if (thumbnail_path && existsSync(thumbnail_path)) {
+      targetThumbnailPath = thumbnail_path;
+    } else if (thumbnail_url && typeof thumbnail_url === "string") {
+      const cleanThumb = thumbnail_url.trim();
+      if (cleanThumb.startsWith("data:image/")) {
+        const base64Data = cleanThumb.replace(/^data:image\/\w+;base64,/, "");
+        const ext = cleanThumb.includes("png") ? ".png" : ".jpg";
+        const tempThumbFile = path.join(downloadsDir, `temp_thumb_${Date.now()}${ext}`);
+        await fs.writeFile(tempThumbFile, Buffer.from(base64Data, "base64"));
+        targetThumbnailPath = tempThumbFile;
+      } else if (cleanThumb.startsWith("/downloads/")) {
+        const p = path.join(downloadsDir, cleanThumb.replace(/^\/downloads\//, "").split("?")[0]);
+        if (existsSync(p)) targetThumbnailPath = p;
+      } else if (cleanThumb.startsWith("/outputs/")) {
+        const outputsDir = path.resolve(__dirname, "../outputs");
+        const p = path.join(outputsDir, cleanThumb.replace(/^\/outputs\//, "").split("?")[0]);
+        if (existsSync(p)) targetThumbnailPath = p;
+      } else if (cleanThumb.startsWith("http://") || cleanThumb.startsWith("https://")) {
+        const fetchThumb = await fetch(cleanThumb);
+        if (fetchThumb.ok) {
+          const ext = cleanThumb.toLowerCase().includes(".png") ? ".png" : ".jpg";
+          const tempThumbFile = path.join(downloadsDir, `temp_thumb_${Date.now()}${ext}`);
+          await fs.writeFile(tempThumbFile, Buffer.from(await fetchThumb.arrayBuffer()));
+          targetThumbnailPath = tempThumbFile;
+        }
+      } else if (existsSync(cleanThumb)) {
+        targetThumbnailPath = cleanThumb;
+      }
+    }
+
+    if (!targetThumbnailPath || !existsSync(targetThumbnailPath)) {
+      return res.status(404).json({ success: false, error: "Không tìm thấy file avatar/thumbnail để cập nhật" });
+    }
+
+    await updateVideoThumbnail(video_id, targetThumbnailPath);
+    res.json({ success: true, message: `Đã cập nhật thumbnail thành công cho video ${video_id}!` });
+  } catch (err: any) {
+    console.error(`❌ [YouTube Set Thumbnail Error]: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── REST: Facebook Integration (Reels & Videos) ────────────────────────────
+app.get("/api/facebook/status", async (_req: any, res: any) => {
+  try {
+    const status = await getFacebookStatus();
+    res.json(status);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/facebook/config", async (req: any, res: any) => {
+  try {
+    const { access_token, accessToken, page_id, pageId } = req.body || {};
+    const updated = saveFacebookConfig({
+      accessToken: access_token || accessToken,
+      pageId: page_id || pageId,
+    });
+    const status = await getFacebookStatus();
+    res.json({ ...status, config: updated });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/facebook/upload", async (req: any, res: any) => {
+  if (req.setTimeout) req.setTimeout(600000); // 10 minutes upload timeout
+  if (res.setTimeout) res.setTimeout(600000);
+  try {
+    const {
+      video_url,
+      local_path,
+      video_id,
+      page_id,
+      title = "Video mới",
+      description = "",
+      video_type = "reel", // 'reel' (Facebook Reels/Shorts) hoặc 'feed' (Video thông thường)
+    } = req.body || {};
+
+    let targetFilePath: string | null = null;
+    const downloadsDir = path.resolve(__dirname, "../data/downloads");
+
+    // 1. Resolve local file path
+    if (local_path && existsSync(local_path)) {
+      targetFilePath = local_path;
+    } else if (video_id) {
+      const meta = await loadMetadata();
+      const found = meta.find((m: any) => m.id === video_id);
+      if (found?.local_path && existsSync(found.local_path)) {
+        targetFilePath = found.local_path;
+      } else if (found?.source_url && found.source_url.startsWith("/downloads/")) {
+        const p = path.join(downloadsDir, found.source_url.replace(/^\/downloads\//, ""));
+        if (existsSync(p)) targetFilePath = p;
+      }
+    }
+
+    if (!targetFilePath && video_url && typeof video_url === "string") {
+      if (video_url.startsWith("/downloads/")) {
+        const cleanRel = video_url.replace(/^\/downloads\//, "").split("?")[0];
+        const p = path.join(downloadsDir, cleanRel);
+        if (existsSync(p)) targetFilePath = p;
+      } else if (video_url.startsWith("/outputs/")) {
+        const outputsDir = path.resolve(__dirname, "../outputs");
+        const cleanRel = video_url.replace(/^\/outputs\//, "").split("?")[0];
+        const p = path.join(outputsDir, cleanRel);
+        if (existsSync(p)) targetFilePath = p;
+      } else if (video_url.startsWith("http://") || video_url.startsWith("https://")) {
+        const tempFilename = `temp_fb_${Date.now()}.mp4`;
+        const tempPath = path.join(downloadsDir, tempFilename);
+        const fetchRes = await fetch(video_url);
+        if (!fetchRes.ok) throw new Error(`Không tải được video từ URL: ${fetchRes.status}`);
+        const buffer = Buffer.from(await fetchRes.arrayBuffer());
+        await fs.writeFile(tempPath, buffer);
+        targetFilePath = tempPath;
+      }
+    }
+
+    if (!targetFilePath || !existsSync(targetFilePath)) {
+      return res.status(404).json({
+        success: false,
+        error: `Không tìm thấy file video để upload lên Facebook (đường dẫn: ${targetFilePath || video_url})`,
+      });
+    }
+
+    // 2. Upload to Facebook
+    const result = await uploadVideoToFacebook({
+      filePath: targetFilePath,
+      title: title.trim(),
+      description: description.trim(),
+      pageId: page_id,
+      videoType: video_type,
+    });
+
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+
+    // 3. Update metadata if matching record found
+    try {
+      const meta = await loadMetadata();
+      let updatedAny = false;
+      const updatedMeta = meta.map((item: any) => {
+        if (
+          (video_id && item.id === video_id) ||
+          (item.local_path && path.resolve(item.local_path) === path.resolve(targetFilePath!))
+        ) {
+          updatedAny = true;
+          return {
+            ...item,
+            fb_video_id: result.videoId,
+            fb_post_url: result.postUrl,
+            fb_reel_url: result.reelUrl,
+            fb_page_id: result.pageId,
+            fb_published_at: new Date().toISOString(),
+          };
+        }
+        return item;
+      });
+      if (updatedAny) {
+        await saveMetadata(updatedMeta);
+      }
+    } catch (saveErr) {
+      console.warn("⚠️ [Facebook] Could not update metadata with Facebook info:", saveErr);
+    }
+
+    res.json(result);
+  } catch (err: any) {
+    console.error(`❌ [Facebook Upload API Error]: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+function getCleanStorySummary(v: any): string {
+
+  const rawDesc = v.description;
+  if (rawDesc && typeof rawDesc === "string") {
+    const trimmed = rawDesc.trim();
+    if (
+      !trimmed.startsWith("{") &&
+      !trimmed.includes('"prompt1"') &&
+      !trimmed.includes("CHARACTER BIBLE") &&
+      !trimmed.includes("Cinematic 3D") &&
+      !trimmed.includes("DUB_TIMELINE:")
+    ) {
+      return trimmed;
+    }
+  }
+
+  // If description is missing or is raw prompt JSON, extract clean story summary
+  const title = v.title || v.product_name || "Câu chuyện hoạt hình";
+  let promptObj: any = null;
+  if (typeof v.prompt === "string" && v.prompt.trim().startsWith("{")) {
+    try {
+      promptObj = JSON.parse(v.prompt);
+    } catch {}
+  } else if (typeof v.prompt === "object" && v.prompt !== null) {
+    promptObj = v.prompt;
+  }
+
+  if (promptObj) {
+    const storyTitle = promptObj.story_title || title;
+    const storyTheme = promptObj.story_theme || "";
+    const highlights: string[] = [];
+    for (let i = 1; i <= 6; i++) {
+      const d = promptObj[`dialogue${i}`];
+      if (d && typeof d === "string") {
+        const firstLine = d.split("\n")[0]?.trim();
+        if (firstLine && highlights.length < 3) {
+          highlights.push(firstLine);
+        }
+      }
+    }
+
+    let summary = `Cùng theo dõi câu chuyện hoạt hình chibi đáng yêu: "${storyTitle}".`;
+    if (storyTheme) {
+      summary += `\n${storyTheme}`;
+    } else {
+      summary += `\nMột câu chuyện dễ thương, ấm áp và ngập tràn tiếng cười của các bạn nhỏ!`;
+    }
+
+    if (highlights.length > 0) {
+      summary += `\n\n💬 Điểm nhấn câu chuyện:\n` + highlights.map((l) => `• ${l}`).join("\n");
+    }
+
+    summary += `\n\nĐừng quên nhấn Like & Đăng ký kênh để đón xem những tập mới nhất nhé!\n#hoathinh #chibi #shorts`;
+    return summary;
+  }
+
+  return `Cùng theo dõi câu chuyện hoạt hình chibi đáng yêu: "${title}". Chúc các bạn xem video vui vẻ!\n\n#hoathinh #chibi #shorts`;
+}
+
 // ── REST: List all videos ─────────────────────────────────────────────────────
 app.get("/api/videos", async (req: any, res: any) => {
   try {
@@ -1061,7 +1636,7 @@ app.get("/api/videos", async (req: any, res: any) => {
         return {
           ...v,
           title: v.title || v.product_name || "Untitled",
-          description: v.description || v.prompt || "No description available",
+          description: getCleanStorySummary(v),
           tags: v.tags || (v.category ? [`#${v.category}`] : []),
           stream_url: streamUrl
         };
@@ -1104,7 +1679,7 @@ app.get("/api/videos/:id", async (req: any, res: any) => {
     const normalized = {
       ...video,
       title: video.title || video.product_name || "Untitled",
-      description: video.description || video.prompt || "No description available",
+      description: getCleanStorySummary(video),
       tags: video.tags || (video.category ? [`#${video.category}`] : []),
       stream_url: streamUrl
     };
@@ -1754,27 +2329,18 @@ app.post("/api/videos/trim-start", async (req: any, res: any) => {
 
 app.get("/api/products", async (req: any, res: any) => {
   try {
-    const products = await loadProducts();
-    // Sort strictly by created_at descending (newest first)
-    products.sort((a: any, b: any) => {
-      const tA = a.created_at ? new Date(a.created_at).getTime() : 0;
-      const tB = b.created_at ? new Date(b.created_at).getTime() : 0;
-      return tB - tA;
-    });
-
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
-    const start = (page - 1) * limit;
-    const paginated = products.slice(start, start + limit);
+    const result = dbLoadProductsPaginated(page, limit);
     res.json({
       success: true,
-      data: paginated,
-      products: paginated,
-      total: products.length,
+      data: result.products,
+      products: result.products,
+      total: result.total,
       page,
       limit,
-      totalPages: Math.ceil(products.length / limit) || 1,
-      has_more: start + limit < products.length
+      totalPages: result.totalPages,
+      has_more: result.has_more
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -1800,15 +2366,8 @@ app.post("/api/products", async (req: any, res: any) => {
       ).then((res) => res.filter(Boolean));
     }
 
-    const DATA_FILE = path.resolve(__dirname, "../data/products.json");
-    let products = [];
-    if (existsSync(DATA_FILE)) {
-      const raw = await fs.readFile(DATA_FILE, "utf-8");
-      products = JSON.parse(raw);
-    }
-
     const nowIso = new Date().toISOString();
-    const newProduct = {
+    const newProduct = dbCreateProduct({
       id: `prod_${randomUUID().split("-")[0]}`,
       name,
       category,
@@ -1826,9 +2385,7 @@ app.post("/api/products", async (req: any, res: any) => {
       consensus_feedback: req.body.consensus_feedback || undefined,
       debate_messages: req.body.debate_messages || undefined,
       part_feedback: req.body.part_feedback || undefined,
-    };
-    products.unshift(newProduct);
-    await fs.writeFile(DATA_FILE, JSON.stringify(products, null, 2), "utf-8");
+    });
     res.json({ success: true, data: newProduct });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -1843,41 +2400,33 @@ app.put("/api/products/:id", async (req: any, res: any) => {
       images, promptsObj, scene_images, scene_urls, consensus_feedback,
       debate_messages, part_feedback
     } = req.body;
-    const DATA_FILE = path.resolve(__dirname, "../data/products.json");
-    if (!existsSync(DATA_FILE)) {
-      return res.status(404).json({ success: false, error: "Products file not found" });
-    }
-    const raw = await fs.readFile(DATA_FILE, "utf-8");
-    const products = JSON.parse(raw) as any[];
-    const idx = products.findIndex((p) => p.id === req.params.id);
-    if (idx === -1) {
+
+    const existing = dbFindProduct(req.params.id);
+    if (!existing) {
       return res.status(404).json({ success: false, error: "Product not found" });
     }
-    
-    // Update fields if provided
-    products[idx].updated_at = new Date().toISOString();
-    if (!products[idx].created_at) {
-      products[idx].created_at = products[idx].updated_at;
-    }
-    if (name !== undefined) products[idx].name = name;
-    if (category !== undefined) products[idx].category = category;
-    if (affiliate_url !== undefined) products[idx].affiliate_url = affiliate_url;
-    if (hashtags !== undefined) products[idx].hashtags = hashtags;
-    if (enabled !== undefined) products[idx].enabled = enabled;
-    if (description !== undefined) products[idx].description = description;
-    if (promptsObj !== undefined) products[idx].promptsObj = promptsObj;
-    if (scene_images !== undefined) products[idx].scene_images = scene_images;
-    if (scene_urls !== undefined) products[idx].scene_urls = scene_urls;
-    if (consensus_feedback !== undefined) products[idx].consensus_feedback = consensus_feedback;
-    if (debate_messages !== undefined) products[idx].debate_messages = debate_messages;
-    if (part_feedback !== undefined) products[idx].part_feedback = part_feedback;
+
+    // Handle S3 image uploads before updating
+    const updates: any = {};
+    if (name !== undefined) updates.name = name;
+    if (category !== undefined) updates.category = category;
+    if (affiliate_url !== undefined) updates.affiliate_url = affiliate_url;
+    if (hashtags !== undefined) updates.hashtags = hashtags;
+    if (enabled !== undefined) updates.enabled = enabled;
+    if (description !== undefined) updates.description = description;
+    if (promptsObj !== undefined) updates.promptsObj = promptsObj;
+    if (scene_images !== undefined) updates.scene_images = scene_images;
+    if (scene_urls !== undefined) updates.scene_urls = scene_urls;
+    if (consensus_feedback !== undefined) updates.consensus_feedback = consensus_feedback;
+    if (debate_messages !== undefined) updates.debate_messages = debate_messages;
+    if (part_feedback !== undefined) updates.part_feedback = part_feedback;
 
     if (image_url !== undefined) {
       let finalImageUrl = image_url;
       if (image_url && !image_url.includes(".amazonaws.com/")) {
         finalImageUrl = await uploadImageToS3(image_url);
       }
-      products[idx].image_url = finalImageUrl;
+      updates.image_url = finalImageUrl;
     }
 
     if (images !== undefined && Array.isArray(images)) {
@@ -1888,11 +2437,11 @@ app.put("/api/products/:id", async (req: any, res: any) => {
           finalImagesList.push(uploaded);
         }
       }
-      products[idx].images = finalImagesList;
+      updates.images = finalImagesList;
     }
 
-    await fs.writeFile(DATA_FILE, JSON.stringify(products, null, 2), "utf-8");
-    res.json({ success: true, data: products[idx] });
+    const updated = dbUpdateProduct(req.params.id, updates);
+    res.json({ success: true, data: updated });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -1901,19 +2450,10 @@ app.put("/api/products/:id", async (req: any, res: any) => {
 // ── REST: Xóa sản phẩm ────────────────────────────────────────────────────────
 app.delete("/api/products/:id", async (req: any, res: any) => {
   try {
-    const DATA_FILE = path.resolve(__dirname, "../data/products.json");
-    if (!existsSync(DATA_FILE)) {
-      return res.status(404).json({ success: false, error: "Products file not found" });
-    }
-    const raw = await fs.readFile(DATA_FILE, "utf-8");
-    const products = JSON.parse(raw) as any[];
-    const filtered = products.filter((p) => p.id !== req.params.id);
-    
-    if (products.length === filtered.length) {
+    const deleted = dbDeleteProduct(req.params.id);
+    if (!deleted) {
       return res.status(404).json({ success: false, error: "Product not found" });
     }
-
-    await fs.writeFile(DATA_FILE, JSON.stringify(filtered, null, 2), "utf-8");
     res.json({ success: true, message: "Product deleted successfully" });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -3134,6 +3674,27 @@ app.post("/api/prompts/feedback", (req: any, res: any) => {
   }
 });
 
+// ── REST: Suggest Optimal Scene Count Based on Story Description ───────────
+app.post("/api/prompts/suggest-scenes", async (req: any, res: any) => {
+  try {
+    const { description = "", product_name = "", use_ai = false } = req.body || {};
+    if (!description || !String(description).trim()) {
+      return res.status(400).json({ success: false, error: "Nội dung cốt truyện (description) không được để trống" });
+    }
+    const { suggestScenesWithAi, analyzeStorySceneCountHeuristic } = await import("./sceneAnalyzer.js");
+    let result;
+    if (use_ai) {
+      result = await suggestScenesWithAi(String(description), String(product_name));
+    } else {
+      result = analyzeStorySceneCountHeuristic(String(description));
+    }
+    return res.json({ success: true, ...result });
+  } catch (err: any) {
+    console.error(`❌ [API /prompts/suggest-scenes] Error: ${err.message}`);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ── REST: Revise Specific Scene Prompts via AI ─────────────────────────────
 app.post("/api/prompts/revise-scene", async (req: any, res: any) => {
   if (req.setTimeout) req.setTimeout(180000);
@@ -3259,11 +3820,12 @@ app.post("/api/prompts/consensus", async (req: any, res: any) => {
     res.socket?.setTimeout(0);
   } catch {}
   try {
-    const { product_name, category = "tech", product_image_url, product_description, scene_count = 6, user_feedback } = req.body;
+    const { product_name, category = "tech", product_image_url, product_description, scene_count = 8, user_feedback } = req.body;
     if (!product_name) {
       return res.status(400).json({ success: false, error: "product_name is required" });
     }
-    const count = parseInt(scene_count, 10) === 3 ? 3 : 6;
+    const parsedCount = parseInt(scene_count, 10);
+    const count = Number.isInteger(parsedCount) && parsedCount >= 1 && parsedCount <= 25 ? parsedCount : 8;
     const result = await generatePromptsWithAiConsensus(
       product_name,
       category,
@@ -3316,7 +3878,7 @@ app.post("/api/prompts/consensus-stream", async (req: any, res: any) => {
       category = "tech",
       product_image_url,
       product_description,
-      scene_count = 6,
+      scene_count = 8,
       user_feedback,
       session_id,
       previous_proposal,
@@ -3332,12 +3894,28 @@ app.post("/api/prompts/consensus-stream", async (req: any, res: any) => {
     const actualSessionId = session_id || randomUUID();
     sendEvent({ type: "connected", session_id: actualSessionId });
 
-    const count = parseInt(scene_count, 10) === 3 ? 3 : 6;
+    let finalDescription = product_description;
+    if (!finalDescription) {
+      try {
+        const products = await loadProducts();
+        const matched = products.find((p: any) =>
+          (p.id && (p.id === req.body.product_id || p.id === product_name)) ||
+          (p.name && (p.name === product_name || p.name.trim().toLowerCase() === product_name.trim().toLowerCase()))
+        );
+        if (matched?.description) {
+          finalDescription = matched.description;
+          console.log(`📖 [API /prompts/consensus-stream] Loaded story description from product "${matched.name}" (${finalDescription.length} chars)`);
+        }
+      } catch {}
+    }
+
+    const parsedCount = parseInt(scene_count, 10);
+    const count = Number.isInteger(parsedCount) && parsedCount >= 1 && parsedCount <= 25 ? parsedCount : 8;
     const result = await generatePromptsWithAiConsensus(
       product_name,
       category,
       product_image_url,
-      product_description,
+      finalDescription,
       count,
       30,
       (evt) => {
@@ -3390,9 +3968,11 @@ app.post("/api/pipeline/generate-scene-images", async (req: any, res: any) => {
         targetImageUrl = targetImageUrl || product.image_url || (product.images && product.images[0]);
         if (!prompts && product.promptsObj) {
           const parsed = parseTextPromptToObj(product.promptsObj);
-          if (parsed) {
-            promptList = [1, 2, 3, 4, 5, 6].map(i => parsed[`prompt${i}`] || (i === 1 ? parsed.prompt : "")).filter(Boolean);
-            dialogueList = [1, 2, 3, 4, 5, 6].map(i => parsed[`dialogue${i}`] || "");
+          if (parsed && typeof parsed === "object") {
+            const indices = Object.keys(parsed).map(k => k.match(/^prompt(\d+)$/i)).filter(Boolean).map(m => parseInt(m![1], 10));
+            const maxScene = indices.length > 0 ? Math.max(...indices) : (parsed.prompt ? 1 : 10);
+            promptList = Array.from({ length: maxScene }, (_, idx) => parsed[`prompt${idx + 1}`] || (idx === 0 ? parsed.prompt : "")).filter(Boolean);
+            dialogueList = Array.from({ length: promptList.length }, (_, idx) => parsed[`dialogue${idx + 1}`] || "");
           }
         }
       }
@@ -3400,9 +3980,11 @@ app.post("/api/pipeline/generate-scene-images", async (req: any, res: any) => {
 
     if (prompts_obj) {
       const parsed = parseTextPromptToObj(prompts_obj);
-      if (parsed) {
-        promptList = [1, 2, 3, 4, 5, 6].map(i => parsed[`prompt${i}`] || (i === 1 ? parsed.prompt : "")).filter(Boolean);
-        dialogueList = [1, 2, 3, 4, 5, 6].map(i => parsed[`dialogue${i}`] || "");
+      if (parsed && typeof parsed === "object") {
+        const indices = Object.keys(parsed).map(k => k.match(/^prompt(\d+)$/i)).filter(Boolean).map(m => parseInt(m![1], 10));
+        const maxScene = indices.length > 0 ? Math.max(...indices) : (parsed.prompt ? 1 : 10);
+        promptList = Array.from({ length: maxScene }, (_, idx) => parsed[`prompt${idx + 1}`] || (idx === 0 ? parsed.prompt : "")).filter(Boolean);
+        dialogueList = Array.from({ length: promptList.length }, (_, idx) => parsed[`dialogue${idx + 1}`] || "");
       }
     } else if (Array.isArray(prompts) && prompts.length > 0) {
       promptList = prompts;
@@ -3418,14 +4000,16 @@ app.post("/api/pipeline/generate-scene-images", async (req: any, res: any) => {
 
     let generatedPromptsObj: any = null;
     if (promptList.length === 0) {
-      console.log(`🤖 [API /generate-scene-images] Chưa có prompt phân cảnh, tự động sinh 6 prompts bằng AI cho "${targetProductName}"...`);
+      console.log(`🤖 [API /generate-scene-images] Chưa có prompt phân cảnh, tự động sinh prompts bằng AI cho "${targetProductName}"...`);
       try {
         const { generatePromptsWithAiConsensus } = await import("./promptGenerator.js");
-        const autoGen = await generatePromptsWithAiConsensus(targetProductName, "pets", targetImageUrl);
+        const autoGen = await generatePromptsWithAiConsensus(targetProductName, "pets", targetImageUrl, undefined, 8);
         if (autoGen && autoGen.promptsObj) {
           generatedPromptsObj = autoGen.promptsObj;
-          promptList = [1, 2, 3, 4, 5, 6].map((i) => autoGen.promptsObj[`prompt${i}`] || (i === 1 ? autoGen.promptsObj.prompt : "")).filter(Boolean);
-          dialogueList = [1, 2, 3, 4, 5, 6].map((i) => autoGen.promptsObj[`dialogue${i}`] || "");
+          const indices = Object.keys(autoGen.promptsObj).map(k => k.match(/^prompt(\d+)$/i)).filter(Boolean).map(m => parseInt(m![1], 10));
+          const maxScene = indices.length > 0 ? Math.max(...indices) : (autoGen.promptsObj.prompt ? 1 : 8);
+          promptList = Array.from({ length: maxScene }, (_, idx) => autoGen.promptsObj[`prompt${idx + 1}`] || (idx === 0 ? autoGen.promptsObj.prompt : "")).filter(Boolean);
+          dialogueList = Array.from({ length: promptList.length }, (_, idx) => autoGen.promptsObj[`dialogue${idx + 1}`] || "");
         }
       } catch (promptGenErr: any) {
         console.warn(`⚠️ [API /generate-scene-images] Tự động sinh prompt thất bại: ${promptGenErr.message}`);
@@ -3597,7 +4181,7 @@ app.post("/api/pipeline/generate-single-scene-video", async (req: any, res: any)
       scene_image_path,
       job_folder,
       render_mode = "browser",
-      aspect_ratio = "16:9",
+      aspect_ratio = "9:16",
       duration_seconds = 10,
     } = req.body || {};
 
@@ -3881,6 +4465,7 @@ app.post("/api/pipeline/merge-job-videos", async (req: any, res: any) => {
       job_folder,
       upload_s3 = true,
       publish_tiktok = false,
+      episodes,
     } = req.body || {};
 
     const productSlug = product_name
@@ -3919,7 +4504,8 @@ app.post("/api/pipeline/merge-job-videos", async (req: any, res: any) => {
       activeJobFolder,
       product,
       upload_s3,
-      publish_tiktok
+      publish_tiktok,
+      Array.isArray(episodes) ? episodes : undefined
     );
 
     res.json(result);
@@ -4101,8 +4687,61 @@ app.get("/api/pipeline/job-parts-status", async (req: any, res: any) => {
     const downloadsDir = path.resolve(__dirname, `../data/downloads/${activeJobFolder}`);
     const scenesDir = path.join(downloadsDir, "scenes");
 
+    // Determine total part count dynamically
+    const explicitCount = parseInt(req.query.scene_count as string) || 0;
+    let maxPart = explicitCount;
+
+    if (!explicitCount) {
+      // Check product promptsObj in products.json (source of truth for active script)
+      try {
+        const products = await loadProducts();
+        const matchedProd = products.find((p: any) =>
+          (p.id && (p.id === req.query.product_id || p.id === product_name)) ||
+          (p.name && (p.name === product_name || p.name.trim().toLowerCase() === product_name.trim().toLowerCase()))
+        );
+        if (matchedProd?.promptsObj) {
+          for (const k of Object.keys(matchedProd.promptsObj)) {
+            const m = k.match(/^prompt(\d+)$/i);
+            if (m) {
+              const num = parseInt(m[1], 10);
+              if (num > maxPart) maxPart = num;
+            }
+          }
+        }
+      } catch {}
+
+      // Fallback: check existing files on disk only if no explicit count and no promptsObj
+      if (maxPart === 0) {
+        if (existsSync(scenesDir)) {
+          try {
+            const sceneFiles = await fs.readdir(scenesDir);
+            for (const f of sceneFiles) {
+              const m = f.match(/^scene_(\d+)\.(png|jpg|jpeg|webp)$/i);
+              if (m) {
+                const num = parseInt(m[1], 10);
+                if (num > maxPart) maxPart = num;
+              }
+            }
+          } catch {}
+        }
+        if (existsSync(downloadsDir)) {
+          try {
+            const dlFiles = await fs.readdir(downloadsDir);
+            for (const f of dlFiles) {
+              const m = f.match(/_part(\d+)_/i);
+              if (m) {
+                const num = parseInt(m[1], 10);
+                if (num > maxPart) maxPart = num;
+              }
+            }
+          } catch {}
+        }
+      }
+    }
+
+    const totalParts = maxPart > 0 ? maxPart : 8;
     const parts: any[] = [];
-    for (let i = 1; i <= 6; i++) {
+    for (let i = 1; i <= totalParts; i++) {
       // Check scene image
       const imgPath = path.join(scenesDir, `scene_${i}.png`);
       const hasImg = existsSync(imgPath);
@@ -4237,24 +4876,14 @@ app.post("/api/pipeline/run", async (req: any, res: any) => {
 
     let product;
     if (product_id) {
-      const products = await loadProducts();
-      product = products.find((p: any) => p.id === product_id);
+      product = dbFindProduct(product_id);
       if (!product) return res.status(404).json({ success: false, error: `Product not found: ${product_id}` });
       
-      // Save prompt immediately to products.json if custom prompt was supplied
+      // Save prompt immediately to SQLite if custom prompt was supplied
       if (customPromptsObj) {
-        const DATA_FILE = path.resolve(__dirname, "../data/products.json");
-        if (existsSync(DATA_FILE)) {
-          const raw = await fs.readFile(DATA_FILE, "utf-8");
-          const allProds = JSON.parse(raw) as any[];
-          const idx = allProds.findIndex(p => p.id === product_id);
-          if (idx !== -1) {
-            allProds[idx].promptsObj = customPromptsObj;
-            product.promptsObj = customPromptsObj;
-            await fs.writeFile(DATA_FILE, JSON.stringify(allProds, null, 2), "utf-8");
-            console.log(`💾 [API] Saved custom prompt into products.json for product ID: ${product_id}`);
-          }
-        }
+        dbUpdateProduct(product_id, { promptsObj: customPromptsObj });
+        product.promptsObj = customPromptsObj;
+        console.log(`💾 [API] Saved custom prompt into SQLite for product ID: ${product_id}`);
       }
     } else if (product_name) {
       product = {
@@ -4290,6 +4919,7 @@ app.post("/api/pipeline/run", async (req: any, res: any) => {
       userFeedback: user_feedback ? String(user_feedback).trim() : undefined,
       sceneImagePaths: Array.isArray(scene_image_paths) ? scene_image_paths : undefined,
       autoGenerateSceneImages: Boolean(auto_generate_scene_images),
+      sceneCount: req.body.scene_count ? parseInt(req.body.scene_count, 10) : undefined,
     }).then((result) => {
       console.log(`\n📊 [API /pipeline/run] Kết quả run_id=${runId}:`, JSON.stringify(result, null, 2));
     });
