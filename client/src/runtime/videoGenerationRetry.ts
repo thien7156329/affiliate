@@ -1,7 +1,7 @@
 const nativeFetch = window.fetch.bind(window);
 
 const TARGET_ENDPOINT = '/api/pipeline/generate-single-scene-video';
-const MAX_ATTEMPTS = 2;
+const MAX_ATTEMPTS = 1;
 const RETRY_DELAY_MS = 1800;
 
 function getRequestUrl(input: RequestInfo | URL): string {

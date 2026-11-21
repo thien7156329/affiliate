@@ -21,6 +21,9 @@ import { execSync, execFileSync, execFile, spawn } from "child_process";
 import os from "os";
 import axios from "axios";
 import { randomUUID } from "crypto";
+import { optimizeImageBuffer } from "./imageOptimizer.js";
+import { normalizeVisualStyle, sanitizePromptForVisualStyle } from "./worldStyles.js";
+import { sanitizePromptForVeoPolicy, sanitizeVeoDialogueForLipSync } from "./promptValidator.js";
 
 /**
  * Gets the name of the currently active macOS application process.
@@ -67,15 +70,37 @@ export async function ensureWindowOffscreen(page: any): Promise<void> {
         windowId,
         bounds: {
           windowState: "normal",
-          left: 3000,
-          top: 100,
-          width: 1280,
+          right: 2100,
+          top: 30,
+          width: 900,
           height: 900,
         },
       });
     }
     await session.detach();
   } catch {}
+}
+
+const activeVeoPages = new Set<any>();
+let lastVeoAbortTimestamp = 0;
+
+export function isVeoTaskAborted(taskStartTime: number): boolean {
+  return lastVeoAbortTimestamp > 0 && taskStartTime <= lastVeoAbortTimestamp;
+}
+
+export async function abortAllActiveVeoTasks(): Promise<number> {
+  lastVeoAbortTimestamp = Date.now();
+  const pages = Array.from(activeVeoPages);
+  activeVeoPages.clear();
+  let closed = 0;
+  for (const p of pages) {
+    try {
+      await p.close();
+      closed++;
+    } catch {}
+  }
+  console.log(`⛔ [VeoAuto] Aborted all active Veo/Image tasks (closed ${closed} browser tabs).`);
+  return closed;
 }
 
 /**
@@ -88,6 +113,12 @@ export async function ensureWindowOffscreen(page: any): Promise<void> {
 export async function createBackgroundPage(browser: any): Promise<any> {
   const prevApp = getFrontmostApp();
   const page = await browser.newPage();
+  activeVeoPages.add(page);
+  try {
+    page.on?.("close", () => {
+      activeVeoPages.delete(page);
+    });
+  } catch {}
   await ensureWindowOffscreen(page);
   restoreUserFocus(prevApp);
   return page;
@@ -174,7 +205,8 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
     console.warn(`⚠️  [VeoAuto] Failed to run downloads cleanup: ${err.message}`);
   }
 
-  console.log(`🎬 [VeoAuto] Starting video generation for prompt:\n   "${prompt.slice(0, 80)}..."`);
+  const finalPrompt = buildVeoScenePrompt(prompt);
+  console.log(`🎬 [VeoAuto] Starting video generation for prompt:\n   "${finalPrompt.slice(0, 80)}..."`);
   if (imageUrl) {
     console.log(`   Product image: ${imageUrl}`);
   }
@@ -197,12 +229,20 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
       }
 
       const response = await axios.get(fetchUrl, { responseType: "arraybuffer", timeout: 15000 });
-      const contentType = String(response.headers["content-type"] ?? "image/jpeg");
-      const ext = contentType.split("/")[1] || "jpg";
-      const tempFilename = `gemini_upload_${randomUUID().split("-")[0]}.${ext}`;
+      const rawContentType = String(response.headers["content-type"] ?? "image/jpeg");
+      const mime = rawContentType.split(";")[0].trim().toLowerCase();
+      const cleanExt = mime.split("/")[1]?.replace(/[^a-z0-9]/gi, "").toLowerCase() || "jpg";
+      const ext = cleanExt === "jpeg" ? "jpg" : cleanExt;
+      const rawBuffer = Buffer.from(response.data);
+      const { buffer, ext: optimizedExt } = await optimizeImageBuffer(rawBuffer, {
+        maxWidth: 1920,
+        maxHeight: 1920,
+        quality: 82,
+      });
+      const tempFilename = `gemini_upload_${randomUUID().split("-")[0]}.${optimizedExt || ext}`;
       localImagePath = path.join(DOWNLOADS_DIR, tempFilename);
-      fs.writeFileSync(localImagePath, response.data);
-      console.log(`✅ [VeoAuto] Downloaded product image to local path: ${localImagePath}`);
+      fs.writeFileSync(localImagePath, buffer);
+      console.log(`✅ [VeoAuto] Downloaded and optimized product image to local path: ${localImagePath}`);
     } catch (err: any) {
       console.warn(`⚠️  [VeoAuto] Failed to download product image for upload: ${err.message}`);
       localImagePath = null;
@@ -412,43 +452,34 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
     if (localImagePath && fs.existsSync(localImagePath)) {
       console.log(`📤 [VeoAuto] Uploading image to Gemini: ${localImagePath}`);
       try {
-        // 1. Click the upload button (+ icon)
-        console.log("🖱️ [VeoAuto] Finding and clicking the upload/tools button...");
-        const btnClicked = await page.evaluate(() => {
-          const btn = document.querySelector('button[aria-label*="Nội dung tải lên"]') as HTMLButtonElement
-            || document.querySelector('button[aria-label*="Upload"]') as HTMLButtonElement
-            || document.querySelector('button[aria-label*="công cụ"]') as HTMLButtonElement
-            || Array.from(document.querySelectorAll('button')).find(b => b.innerHTML.includes('plus') || b.getAttribute('aria-label')?.includes('Nội dung tải lên'));
-          if (btn) {
-            btn.click();
-            return true;
-          }
-          return false;
+        // Step 0: Check if input[type="file"] already exists in DOM to avoid opening menu unnecessarily
+        let fileInputHandle = await page.evaluateHandle(() => {
+          const imageInput = document.querySelector('input[type="file"][accept*="image"]') as HTMLInputElement;
+          if (imageInput) return imageInput;
+          const activeArea = document.querySelector('rich-textarea, chat-input, .input-area, .text-input-container');
+          return (activeArea?.querySelector('input[type="file"]') as HTMLInputElement) || null;
         });
-        console.log(`🖱️ [VeoAuto] Upload button clicked: ${btnClicked}`);
-        await new Promise(r => setTimeout(r, 1000));
 
-        // 2. Click the "Tải lên từ máy tính" option
-        console.log("🖱️ [VeoAuto] Finding and clicking 'Tải lên từ máy tính' menu option...");
-        const optionClicked = await page.evaluate(() => {
-          const items = Array.from(document.querySelectorAll('button, [role="menuitem"], .mat-mdc-menu-item, span, div'));
-          const uploadItem = items.find(el => {
-            const text = el.textContent?.trim() || "";
-            return text === "Tải lên từ máy tính" || 
-                   text === "Upload from computer" || 
-                   text === "Tải lên từ thiết bị" || 
-                   text === "Upload from device" ||
-                   text.includes("máy tính") ||
-                   text.includes("computer");
-          }) as HTMLElement;
-          if (uploadItem) {
-            uploadItem.click();
-            return true;
-          }
-          return false;
-        });
-        console.log(`🖱️ [VeoAuto] Menu uploader option clicked: ${optionClicked}`);
-        await new Promise(r => setTimeout(r, 1000));
+        if (!fileInputHandle || (await fileInputHandle.jsonValue()) === null) {
+          // 1. Click the upload button (+ icon)
+          console.log("🖱️ [VeoAuto] Finding and clicking the upload/tools button...");
+          const btnClicked = await page.evaluate(() => {
+            const btn = document.querySelector('button[aria-label*="Nội dung tải lên"]') as HTMLButtonElement
+              || document.querySelector('button[aria-label*="Upload"]') as HTMLButtonElement
+              || document.querySelector('button[aria-label*="công cụ"]') as HTMLButtonElement
+              || Array.from(document.querySelectorAll('button')).find(b => b.innerHTML.includes('plus') || b.getAttribute('aria-label')?.includes('Nội dung tải lên'));
+            if (btn) {
+              btn.click();
+              return true;
+            }
+            return false;
+          });
+          console.log(`🖱️ [VeoAuto] Upload button clicked: ${btnClicked}`);
+          // Note: In Gemini, clicking the (+) button ALREADY mounts the <input type="file"> elements in DOM.
+          // DO NOT click 'Tệp' / 'Upload from computer' because that triggers input.click(),
+          // which opens the OS-level native Finder / File Dialog modal that cannot be closed by script!
+          await new Promise(r => setTimeout(r, 600));
+        }
 
         // Wait for at least one file input to appear on the page
         await page.waitForSelector('input[type="file"]', { timeout: 8000 });
@@ -462,7 +493,8 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
         console.log(`ℹ️ [VeoAuto] Found inputs:`, allInputsInfo);
         
         // Find the correct file input using advanced heuristic search
-        const fileInputHandle = await page.evaluateHandle(() => {
+        if (!fileInputHandle || (await fileInputHandle.jsonValue()) === null) {
+          fileInputHandle = await page.evaluateHandle(() => {
           const inputs = Array.from(document.querySelectorAll('input[type="file"]')) as HTMLInputElement[];
           if (inputs.length === 0) return null;
           
@@ -498,6 +530,7 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
           // Heuristic 3: Fallback to the last file input on the page
           return inputs[inputs.length - 1];
         });
+        }
 
         if (fileInputHandle) {
           // Focus the input first
@@ -511,6 +544,16 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
           
           // Wait 4.5s for upload progress to complete and display thumbnail preview
           await new Promise(r => setTimeout(r, 4500));
+
+          // Automatically close any open menu, dialog, or overlay backdrop
+          await page.evaluate(() => {
+            const backdrops = Array.from(document.querySelectorAll('.cdk-overlay-backdrop, .mat-overlay-backdrop, .modal-backdrop'));
+            backdrops.forEach(b => (b as HTMLElement).click());
+            const closeBtn = document.querySelector('button[aria-label*="Đóng" i], button[aria-label*="Close" i], .mat-mdc-dialog-container button[aria-label*="close" i]') as HTMLElement;
+            if (closeBtn) closeBtn.click();
+          });
+          await page.keyboard.press('Escape').catch(() => {});
+          await new Promise(r => setTimeout(r, 500));
         } else {
           console.warn("⚠️  [VeoAuto] File input element not found via handle search");
         }
@@ -535,7 +578,7 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
         el.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true }));
         el.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', code: 'Space', bubbles: true }));
       }
-    }, inputSelector, prompt);
+    }, inputSelector, finalPrompt);
 
     await new Promise(r => setTimeout(r, 1000));
 
@@ -701,7 +744,13 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
     let downloadButtonClicked = false;
 
     while (Date.now() - pollStart < MAX_WAIT_MS) {
+      if (isVeoTaskAborted(startTime)) {
+        throw new Error("Đã hủy tiến trình render video theo yêu cầu");
+      }
       await new Promise(r => setTimeout(r, 5000));
+      if (isVeoTaskAborted(startTime)) {
+        throw new Error("Đã hủy tiến trình render video theo yêu cầu");
+      }
       const elapsed = Math.round((Date.now() - pollStart) / 1000);
 
       // Network-intercepted MP4 → done immediately
@@ -750,14 +799,17 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
 
       // Check DOM: video ready text + download button
       const pageResult = await page.evaluate(() => {
-        // Detect "Your video is ready!" message (English + Vietnamese)
+        // Detect "Your video is ready!" message (English + Vietnamese), excluding loading message "check back to see when your video is ready"
         const bodyText = document.body?.innerText || "";
-        const videoReady = bodyText.includes("Your video is ready") ||
-                           bodyText.includes("video is ready") ||
+        const isGeneratingMsg = bodyText.includes("when your video is ready") ||
+                                bodyText.includes("I'm generating your video") ||
+                                bodyText.includes("Đang tạo video");
+        const videoReady = !isGeneratingMsg && (
+                           bodyText.includes("Your video is ready") ||
                            bodyText.includes("Video của bạn đã sẵn sàng") ||
                            bodyText.includes("video đã sẵn sàng") ||
                            bodyText.includes("video đã được tạo") ||
-                           bodyText.includes("video đã xong");
+                           bodyText.includes("video đã xong"));
 
         // Find genuine download video button (exclude upload buttons like 'Nội dung tải lên' / 'Upload')
         const allBtns = Array.from(document.querySelectorAll('button, a[download]'));
@@ -1358,11 +1410,22 @@ export async function extractThreeKeyframes(
  * Structure: Character Design → User Scene → Style → Dialogue → Motion → Accessories → Constraints
  * Designed for clean renders with natural dialogue flow.
  */
+export interface VeoUploadContext {
+  hasSceneKeyframe?: boolean;
+  hasPrevVideoFrame?: boolean;
+  totalUploaded?: number;
+}
+
 export function buildVeoScenePrompt(
   prompt: string,
   dialogue?: string,
-  sceneIndex?: number
+  sceneIndex?: number,
+  visualStyle: string = "real",
+  uploadContext?: VeoUploadContext
 ): string {
+  const mode = normalizeVisualStyle(visualStyle);
+  const isReal = mode === "real";
+  const isStickman = mode === "stickman";
   let cleanPrompt = prompt ? prompt.trim() : "";
   let dialogueText = dialogue ? dialogue.trim() : "";
 
@@ -1381,230 +1444,223 @@ export function buildVeoScenePrompt(
     }
   }
 
+  // 1. Sanitize according to visualStyle ("real" vs "3d" vs "stickman") and Veo 3 safety policies
+  cleanPrompt = sanitizePromptForVisualStyle(cleanPrompt, mode)
+    .replace(/^(Scene \d+:?\s*|Phân cảnh \d+:?\s*)/i, "")
+    .trim();
+  cleanPrompt = sanitizeVeoDialogueForLipSync(sanitizePromptForVeoPolicy(cleanPrompt, mode).sanitized);
+
+  // 2. Strip legacy boilerplate if present
+  cleanPrompt = cleanPrompt.replace(/WORLD STYLE BIBLE —[\s\S]*?(?=\n\n|$)/gi, '').trim();
+
   const sections: string[] = [];
+  const hasStoryboard = Boolean(uploadContext?.hasSceneKeyframe);
+  const hasPrevFrame = Boolean(uploadContext?.hasPrevVideoFrame);
+  const hasAnyUpload = (uploadContext?.totalUploaded ?? (hasStoryboard || hasPrevFrame ? 1 : 0)) > 0;
 
-  // ══════════════════════════════════════════════════════════════════════
-  // PRIORITY 0: EXPLICIT VIDEO GENERATION DIRECTIVE (MANDATORY)
-  // Forces Gemini multimodal router to activate Veo (Video AI) and NEVER Imagen (Image AI)
-  // ══════════════════════════════════════════════════════════════════════
-  sections.push("🎬 CREATE A SHORT CINEMATIC VIDEO (VEO AI) — max 10 seconds, paced to the scene content:");
-
-  // ══════════════════════════════════════════════════════════════════════
-  // PRIORITY 1: SPECIES IDENTITY LOCK — Must be FIRST thing Veo reads!
-  // Veo prioritizes the beginning and end of prompts; the middle gets
-  // deprioritized. Place species anti-confusion BEFORE the scene body.
-  // ══════════════════════════════════════════════════════════════════════
-  const veoSpeciesKeywords: Array<{name: string; key: string; anatomy: string; forbidden: string}> = [
-    { name: "Turtle/Tortoise", key: "turtle|tortoise|rùa", anatomy: "hard shell on back, short stubby legs, small rounded head, scaly reptile skin", forbidden: "long ears, fluffy tail, fur, soft skin" },
-    { name: "Rabbit/Bunny", key: "rabbit|bunny|hare|thỏ", anatomy: "two long upright ears with pink inner panels, fluffy round cotton-ball tail, soft white fur, small pink triangular nose, NO shell ever", forbidden: "shell, scales, short round ears like a bear, thick stocky body, protruding snout" },
-    { name: "Monkey", key: "monkey|ape|khỉ", anatomy: "curly prehensile tail, agile hands with individual fingers, round flat face", forbidden: "shell, long rabbit ears, hooves, wings" },
-    { name: "Elephant", key: "elephant|voi", anatomy: "long flexible trunk, large floppy ears, thick pillar legs, grey wrinkled skin", forbidden: "fur, shell, horns, wings" },
-    { name: "Bear", key: "bear|gấu", anatomy: "small round semi-circular ears on top of head, thick plush fur, stocky wide body, stubby limbs, round face with NO long ears", forbidden: "shell, long upright rabbit ears, trunk, pink nose triangle, cotton-ball tail" },
-    { name: "Fox", key: "fox|cáo", anatomy: "bushy tail with white tip, pointed triangular ears, orange-red fur, narrow snout", forbidden: "shell, trunk, mane, round bear ears" },
-    { name: "Lion", key: "lion|sư tử", anatomy: "majestic fluffy mane around face, golden-tawny fur, powerful paws, tufted tail", forbidden: "stripes, shell, trunk, long rabbit ears" },
-    { name: "Tiger", key: "tiger|hổ|cọp", anatomy: "bold black stripes on orange fur, powerful muscular build, long striped tail", forbidden: "mane, shell, trunk, spots" },
-    { name: "Pig", key: "pig|piglet|heo|lợn", anatomy: "round pink body, short curly tail, flat disc-shaped snout with nostrils", forbidden: "shell, long ears, mane, fur" },
-    { name: "Frog", key: "frog|toad|ếch|cóc", anatomy: "smooth moist green skin, wide flat head, large bulging eyes, webbed feet, squat body, wide mouth", forbidden: "fur, long ears, tail, shell, snout" },
-  ];
-
-  const veoPromptLower = cleanPrompt.toLowerCase();
-  const veoDetectedSpecies = veoSpeciesKeywords.filter(s => new RegExp(s.key, 'i').test(veoPromptLower));
-
-  if (veoDetectedSpecies.length >= 2) {
-    let speciesBlock = "⚠️ CRITICAL — SPECIES IDENTITY LOCK (READ THIS FIRST): " +
-      "This scene features MULTIPLE DIFFERENT animal species that must NEVER be confused or blended. " +
-      "Each character's species-defining anatomy is IMMUTABLE throughout the entire video.";
-    for (const sp of veoDetectedSpecies) {
-      speciesBlock += `\n• ${sp.name}: MUST always show ${sp.anatomy}. ABSOLUTELY NEVER give this character: ${sp.forbidden}.`;
-    }
-    speciesBlock += "\n• NEVER swap ears, tails, body shapes, or skin textures between different species!";
-    // Add specific bear-vs-rabbit disambiguation if both present
-    const hasBear = veoDetectedSpecies.some(s => s.name === "Bear");
-    const hasRabbit = veoDetectedSpecies.some(s => s.name.includes("Rabbit"));
-    if (hasBear && hasRabbit) {
-      speciesBlock += "\n• BEAR vs RABBIT CRITICAL DIFFERENCE: Bears have SMALL ROUND ears on top of head + STOCKY wide body. Rabbits have LONG UPRIGHT ears (3x head height) + SLIM body. These are COMPLETELY DIFFERENT silhouettes — NEVER mix them!";
-    }
-    sections.push(speciesBlock);
+  // Clear, unambiguous directive teaching Veo 3 how to combine the 9:16 continuity frame + 2x3 sequential storyboard into ONE seamless 9:16 video
+  // while keeping the Scene Prompt as the supreme authority for cast, outfits, props, and plot!
+  if (isReal) {
+    sections.push(
+      hasStoryboard && hasPrevFrame
+        ? "Using Image 1 (previous scene's 9:16 frame) for recurring character facial likeness & 9:16 vertical framing, follow Image 2 (the 2x3 sequential storyboard sheet: top-left Panel 1 = 0.0s start → bottom-right Panel 6 = end) and the Scene Prompt below for THIS scene's exact cast, outfits, props, setting, and chronological action beats to render ONE continuous borderless LIVE-ACTION 9:16 vertical cinema shot (no grid lines or split panels in the output video):"
+        : hasStoryboard
+          ? "Follow the sequential action beats in the attached 2x3 storyboard sheet chronologically (top-left Panel 1 = 0.0s start → bottom-right Panel 6 = end) and the Scene Prompt below to render ONE continuous borderless LIVE-ACTION 9:16 vertical cinema shot (no grid lines or split panels in the output video):"
+          : hasAnyUpload
+            ? "Using the attached reference image for recurring character likeness & visual style while strictly obeying the Scene Prompt below for THIS scene's cast, outfits, props, and actions, render ONE continuous photorealistic LIVE-ACTION 9:16 vertical cinema shot:"
+            : "Render ONE continuous borderless photorealistic LIVE-ACTION 9:16 vertical cinema shot strictly following the Scene Prompt below:"
+    );
+  } else if (isStickman) {
+    sections.push(
+      hasStoryboard && hasPrevFrame
+        ? "Using Image 1 for recurring character continuity and following Image 2 (the 2x3 sequential storyboard sheet: Panel 1 → Panel 6) plus the Scene Prompt below for THIS scene's cast, outfits, props, setting, and timeline action, render ONE continuous borderless 2D Chibi Comic Marshmallow Stickman 9:16 vertical video (no grid lines in video):"
+        : hasStoryboard
+          ? "Follow the sequential action beats in the attached 2x3 storyboard sheet chronologically (Panel 1 → Panel 6) and the Scene Prompt below to render ONE continuous borderless 2D Chibi Comic Marshmallow Stickman 9:16 vertical video (no grid lines or split panels in the output video):"
+          : hasAnyUpload
+            ? "Using the attached reference frame for style continuity while strictly following the Scene Prompt below for THIS scene's cast, outfits, props, and actions, render ONE continuous 2D Chibi Comic Marshmallow Stickman 9:16 vertical video:"
+            : "Render ONE continuous borderless 2D Chibi Comic Marshmallow Stickman 9:16 vertical video strictly following the Scene Prompt below:"
+    );
+  } else {
+    sections.push(
+      hasStoryboard && hasPrevFrame
+        ? "Using Image 1 (previous scene's 9:16 frame) for recurring character likeness & 9:16 vertical framing, follow Image 2 (the 2x3 sequential storyboard sheet: top-left Panel 1 = 0.0s start → bottom-right Panel 6 = end) and the Scene Prompt below for THIS scene's exact cast, outfits, props, setting, and chronological action beats to render ONE continuous borderless cinematic 3D 9:16 vertical shot (no grid lines or split panels in the video):"
+        : hasStoryboard
+          ? "Follow the sequential action beats in the attached 2x3 storyboard sheet chronologically (top-left Panel 1 = 0.0s start → bottom-right Panel 6 = end) and the Scene Prompt below to render ONE continuous borderless cinematic 3D 9:16 vertical shot (no grid lines or split panels in the video):"
+          : hasAnyUpload
+            ? "Using the attached reference image for recurring character likeness & visual style while strictly obeying the Scene Prompt below for THIS scene's cast, outfits, props, and actions, render ONE continuous high-fidelity cinematic 3D 9:16 vertical shot:"
+            : "Render ONE continuous borderless high-fidelity cinematic 3D 9:16 vertical shot strictly following the Scene Prompt below:"
+    );
   }
-
-  // ── Section 2: User's scene description (the actual action/story & character bible) ──
   sections.push(cleanPrompt);
 
-  // ── Section 3: Only add framing if not already mentioned in prompt ──
-  if (!/9:16|vertical.*frame|portrait.*orientation|YouTube Shorts/i.test(cleanPrompt)) {
+  // Only append standalone dialogue block if DUB_TIMELINE does NOT already embed the spoken lines
+  const alreadyHasDubTimeline = /DUB_TIMELINE\s*:/i.test(cleanPrompt);
+  if (dialogueText && !alreadyHasDubTimeline) {
+    const safeDialogue = sanitizeVeoDialogueForLipSync(dialogueText);
+    const formattedDialogue = safeDialogue.split(/\n/).map(l => l.trim()).filter(Boolean).join("\n");
     sections.push(
-      "FRAMING: Vertical 9:16 aspect ratio for YouTube Shorts. All characters within central vertical safe zone with clean headroom and visible feet."
+      `Vietnamese lip-sync performance (3/4 inward angle, natural eye contact):\n${formattedDialogue}`
     );
   }
 
-  // ── Section 4: Only add style if not already mentioned ──
-  if (!/cinematic|3d animation|pixar|disney/i.test(cleanPrompt)) {
+  // Concise, high-signal Single-Take Motion & Object Permanence Lock
+  if (isReal) {
     sections.push(
-      "STYLE: Premium 3D Pixar/Disney cinematic animation, warm volumetric lighting, vibrant colors, 4K quality."
+      "Continuity & Object Permanence Lock: Single continuous camera take (no split grids). Every held prop, container, and garment stays 100% solid, intact, and naturally held from first to last frame without vanishing or morphing. Maintain steady 0.3s lead-in and lead-out motion beats for smooth scene transitions. Photorealistic live-action cinema (no 3D CGI, no cartoon)."
+    );
+  } else if (isStickman) {
+    sections.push(
+      "Continuity & Object Permanence Lock: Single continuous 2D cel-shaded take (no split grids). Bold black outlines, white round marshmallow heads, and all held cosplay props stay 100% solid and intact throughout the shot without vanishing."
+    );
+  } else {
+    sections.push(
+      "Continuity & Object Permanence Lock: Single continuous cinematic 3D camera take (no split grids). Realistic PBR textures and all held props/accessories stay 100% solid and naturally held from first to last frame without vanishing or morphing, with smooth lead-in/lead-out motion for seamless transitions."
     );
   }
-
-  // ── Section 5: Dialogue & Voice ──
-  if (dialogueText) {
-    const dialogueLines = dialogueText.split(/\n/).filter(l => l.trim());
-    const formattedDialogue = dialogueLines.map(line => line.trim()).join("\n");
-
-    // Only add voice direction if not already in prompt
-    if (!/DIALOGUE.*VOICE|lip.*movement|lip-sync/i.test(cleanPrompt)) {
-      sections.push(
-        "DIALOGUE & VOICE:\n" +
-        "Characters speak with matching lip movements and expressive body language.\n\n" +
-        formattedDialogue
-      );
-    } else {
-      sections.push(formattedDialogue);
-    }
-  } else if (!/ambient.*sound|non-verbal/i.test(cleanPrompt)) {
-    sections.push(
-      "AUDIO: Natural ambient sounds. Characters may make cute non-verbal sounds matching their expressions."
-    );
-  }
-
-  // ── Section 6: Motion — only if not covered ──
-  if (!/no morphing|smooth.*camera|cinematic.*camera/i.test(cleanPrompt)) {
-    sections.push(
-      "MOTION: Smooth cinematic camera. No morphing, no stretching. Characters maintain consistent shapes and scale."
-    );
-  }
-
-  // ── Section 7: Accessory lock (dynamic detection) ──
-  const detectedAccessories: string[] = [];
-  const seen = new Set<string>();
-
-  const actionPatterns = [
-    /(?:wearing|wears|dressed in|clad in)\s+(?:a\s+)?(.+?)(?:\.|,|;|\bon\b|\bin\b|$)/gi,
-    /(?:holding|holds|carrying|carries|gripping|grips)\s+(?:a\s+)?(.+?)(?:\.|,|;|\bin\b|\bwith\b|$)/gi,
-    /(?:riding|rides|driving|drives|sitting on)\s+(?:a\s+)?(.+?)(?:\.|,|;|\bthrough\b|\balong\b|$)/gi,
-    /(?:with\s+(?:a|an|his|her|their)\s+)(.+?)(?:\s+(?:on|in|at|around|behind|beside|near)\b|\.|,|;|$)/gi,
-    /(?:có|đeo|mặc|cầm|giữ|đội|mang|đi|ngồi trên)\s+(.+?)(?:\.|,|;|$)/gi,
-  ];
-
-  for (const pattern of actionPatterns) {
-    let match;
-    pattern.lastIndex = 0;
-    while ((match = pattern.exec(cleanPrompt)) !== null) {
-      if (match.index === pattern.lastIndex) {
-        pattern.lastIndex++;
-      }
-      const item = match[1]?.trim().replace(/\s+/g, " ");
-      if (item && item.length > 1 && item.length < 60) {
-        const cleaned = item.replace(/\s+(and|while|as|then|who|which|that|looking|facing|turned).*$/i, "").trim();
-        const key = cleaned.toLowerCase();
-        if (!seen.has(key) && cleaned.length > 1) {
-          seen.add(key);
-          detectedAccessories.push(cleaned);
-        }
-      }
-    }
-  }
-
-  const fallbackKeywords: { pattern: RegExp; label: string }[] = [
-    { pattern: /\b(?:yellow|blue|red|green|pink|white|black|orange|purple)\s+(?:puffer\s+)?jacket\b/i, label: "jacket" },
-    { pattern: /\bhelmet\b/i, label: "helmet" },
-    { pattern: /\bbackpack\b|ba\s*lô/i, label: "backpack" },
-    { pattern: /\bscarf\b|khăn/i, label: "scarf" },
-    { pattern: /\bglasses\b|sunglasses|kính/i, label: "glasses" },
-    { pattern: /\bhat\b|mũ|nón/i, label: "hat" },
-    { pattern: /\bmotorcycle\b|mô\s*tô|xe\s*máy/i, label: "motorcycle" },
-    { pattern: /\bcrown\b|vương\s*miện/i, label: "crown" },
-    { pattern: /\bcape\b|áo\s*choàng/i, label: "cape" },
-    { pattern: /\bwand\b|đũa\s*phép/i, label: "wand" },
-  ];
-
-  for (const { pattern, label } of fallbackKeywords) {
-    const key = label.toLowerCase();
-    if (!seen.has(key) && pattern.test(cleanPrompt)) {
-      seen.add(key);
-      detectedAccessories.push(label);
-    }
-  }
-
-  if (detectedAccessories.length > 0 && !/ACCESSORY LOCK|must remain visible/i.test(cleanPrompt)) {
-    const lockLines = detectedAccessories.map(a => `- ${a}`).join("\n");
-    sections.push(
-      `ACCESSORY LOCK — keep these items visible and unchanged throughout:\n${lockLines}`
-    );
-  }
-
-  // ── Section 8: Final anti-morphing reinforcement at END (Veo also reads ending carefully) ──
-  if (veoDetectedSpecies.length >= 2) {
-    const speciesNames = veoDetectedSpecies.map(s => s.name).join(", ");
-    sections.push(
-      `FINAL REMINDER — SPECIES LOCK: This video contains ${speciesNames}. ` +
-      "Each character MUST keep their exact species anatomy from first frame to last frame. " +
-      "Bears keep small round ears. Rabbits keep long upright ears. Frogs keep smooth green skin. " +
-      "ZERO species morphing, ZERO feature swapping between characters!"
-    );
-  } else if (!/no morphing|no.*style.*drift|species/i.test(cleanPrompt)) {
-    sections.push(
-      "CHARACTER CONSISTENCY: Preserve exact character identity, species, proportions, and coloring across all frames. No morphing, no style drift."
-    );
-  }
-
-  // ── Section 9: Explicit Output Format Lock ──
-  sections.push(
-    "OUTPUT FORMAT: A vertical 9:16 video animation with cinematic camera motion. Do NOT output a still picture or static image. " +
-    "PACING: Play all dialogue and key actions at natural speed right from the start; once the last line/action is finished, hold a brief reaction beat and END. Do NOT add idle waiting, empty staring or silent filler at the end."
-  );
 
   return sections.join("\n\n");
 }
 
-export async function generateVeoVideoParallel(
-  prompts: string[],
-  imageUrl?: string,
-  productSlug: string = "video",
-  customOutputDir?: string,
-  sceneImagePaths?: string[],
-  dialogues?: string[]
-): Promise<{ success: boolean; localPaths: string[]; errors: string[]; durationMs: number }> {
-  const startTime = Date.now();
-  let browser: any = null;
-  let ownsBrowser = false;
-  let localImagePath: string | null = null;
-  const outputDir = customOutputDir || DOWNLOADS_DIR;
-  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+/**
+ * Resolves a list of image URLs or local file paths into local accessible file paths.
+ * Downloads remote images, optimizes them, and keeps track of temporary downloaded files to clean up.
+ */
+async function resolveAndDownloadImages(
+  sources: (string | undefined | null)[],
+  outputDir: string,
+  prefix: string = "ref_upload",
+  maxImages: number = 6
+): Promise<{ localImagePaths: string[]; tempFilesToClean: string[] }> {
+  const localImagePaths: string[] = [];
+  const tempFilesToClean: string[] = [];
+  const seenPathsOrUrls = new Set<string>();
 
-  // Note: Old files are preserved for review and cleaned up daily at 10:00 AM UTC+7 via Cron Job
+  for (const rawSource of sources) {
+    if (localImagePaths.length >= maxImages) break;
+    if (!rawSource || typeof rawSource !== "string") continue;
+    const src = rawSource.trim();
+    if (!src || seenPathsOrUrls.has(src)) continue;
+    seenPathsOrUrls.add(src);
 
-  console.log(`🎬 [VeoAuto] Starting PARALLEL video generation for ${prompts.length} prompts...`);
-  if (sceneImagePaths && sceneImagePaths.length > 0) {
-    console.log(`🖼️  [VeoAuto] Received ${sceneImagePaths.length} pre-generated scene keyframe image(s) from Gemini.`);
-  }
+    // 1. Direct local file check
+    if (fs.existsSync(src)) {
+      const resolved = path.resolve(src);
+      if (!localImagePaths.includes(resolved)) {
+        localImagePaths.push(resolved);
+      }
+      continue;
+    }
 
-  // Download image if imageUrl is provided
-  if (imageUrl) {
+    // 2. Local downloads folder check
+    if (src.startsWith("/downloads/")) {
+      const relPath = src.split("?")[0].replace("/downloads/", "");
+      const fullPath = path.resolve(DOWNLOADS_DIR, relPath);
+      if (fs.existsSync(fullPath)) {
+        if (!localImagePaths.includes(fullPath)) {
+          localImagePaths.push(fullPath);
+        }
+        continue;
+      }
+    }
+
+    // 3. Relative to outputDir
+    const relOutputDirPath = path.resolve(outputDir, src);
+    if (fs.existsSync(relOutputDirPath)) {
+      if (!localImagePaths.includes(relOutputDirPath)) {
+        localImagePaths.push(relOutputDirPath);
+      }
+      continue;
+    }
+
+    // 4. Remote URL download (http, https, s3, etc.)
     try {
-      console.log(`📸 [VeoAuto] Downloading product image for Gemini: ${imageUrl}`);
-      let fetchUrl = imageUrl;
-      if (imageUrl.includes(".amazonaws.com/")) {
-        const parts = imageUrl.split(".amazonaws.com/");
+      let fetchUrl = src;
+      if (src.includes(".amazonaws.com/")) {
+        const parts = src.split(".amazonaws.com/");
         if (parts.length > 1) {
           const key = parts[1];
           const port = process.env.PORT || "3400";
           fetchUrl = `http://127.0.0.1:${port}/api/products/image-proxy?key=${encodeURIComponent(key)}`;
         }
-      } else if (imageUrl.startsWith("/")) {
+      } else if (src.startsWith("/")) {
         const port = process.env.PORT || "3400";
-        fetchUrl = `http://127.0.0.1:${port}${imageUrl}`;
+        fetchUrl = `http://127.0.0.1:${port}${src}`;
       }
 
-      const response = await axios.get(fetchUrl, { responseType: "arraybuffer", timeout: 15000 });
-      const contentType = String(response.headers["content-type"] ?? "image/jpeg");
-      const ext = contentType.split("/")[1] || "jpg";
-      const tempFilename = `gemini_upload_${randomUUID().split("-")[0]}.${ext}`;
-      localImagePath = path.join(DOWNLOADS_DIR, tempFilename);
-      fs.writeFileSync(localImagePath, response.data);
-      console.log(`✅ [VeoAuto] Downloaded product image to local path: ${localImagePath}`);
+      console.log(`📸 [VeoAuto] Downloading reference image: ${fetchUrl.slice(0, 80)}...`);
+      const response = await axios.get(fetchUrl, { responseType: "arraybuffer", timeout: 20000 });
+      const rawContentType = String(response.headers["content-type"] ?? "image/jpeg");
+      const mime = rawContentType.split(";")[0].trim().toLowerCase();
+      const cleanExt = mime.split("/")[1]?.replace(/[^a-z0-9]/gi, "").toLowerCase() || "jpg";
+      const ext = cleanExt === "jpeg" ? "jpg" : cleanExt;
+      const rawBuffer = Buffer.from(response.data);
+      const { buffer, ext: optimizedExt } = await optimizeImageBuffer(rawBuffer, {
+        maxWidth: 1920,
+        maxHeight: 1920,
+        quality: 82,
+      });
+
+      const tempFilename = `${prefix}_${randomUUID().split("-")[0]}.${optimizedExt || ext}`;
+      const tempPath = path.join(DOWNLOADS_DIR, tempFilename);
+      fs.writeFileSync(tempPath, buffer);
+      localImagePaths.push(tempPath);
+      tempFilesToClean.push(tempPath);
+      console.log(`✅ [VeoAuto] Downloaded and optimized reference image: ${path.basename(tempPath)}`);
     } catch (err: any) {
-      console.warn(`⚠️  [VeoAuto] Failed to download product image: ${err.message}`);
-      localImagePath = null;
+      console.warn(`⚠️  [VeoAuto] Failed to download reference image (${src.slice(0, 50)}...): ${err.message}`);
     }
+  }
+
+  return { localImagePaths, tempFilesToClean };
+}
+
+export async function generateVeoVideoParallel(
+  prompts: string[],
+  imageUrl?: string | string[],
+  productSlug: string = "video",
+  customOutputDir?: string,
+  sceneImagePaths?: string[],
+  dialogues?: string[],
+  referenceImagePaths?: string[],
+  options?: {
+    includePrevFrame?: boolean | string;
+    refImagesMode?: string;
+    prevFrameParts?: number[];
+    visualStyle?: string;
+  }
+): Promise<{ success: boolean; localPaths: string[]; errors: string[]; durationMs: number }> {
+  const startTime = Date.now();
+  let browser: any = null;
+  let ownsBrowser = false;
+  const outputDir = customOutputDir || DOWNLOADS_DIR;
+  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+
+  const rawPrevOpt = options?.includePrevFrame;
+  const includePrev = rawPrevOpt !== false && rawPrevOpt !== 'no' && rawPrevOpt !== 'false';
+  const refMode = options?.refImagesMode || 'all';
+
+  // Note: Old files are preserved for review and cleaned up daily at 10:00 AM UTC+7 via Cron Job
+
+  console.log(`🎬 [VeoAuto] Starting PARALLEL video generation for ${prompts.length} prompts (PrevFrame: ${includePrev ? 'CÓ' : 'KHÔNG'}, RefMode: ${refMode})...`);
+  if (sceneImagePaths && sceneImagePaths.length > 0) {
+    console.log(`🖼️  [VeoAuto] Received ${sceneImagePaths.length} pre-generated scene keyframe image(s) from Gemini.`);
+  }
+
+  // Collect and resolve reference images according to refMode
+  const rawRefSources: string[] = [];
+  if (refMode !== 'none') {
+    if (Array.isArray(referenceImagePaths)) rawRefSources.push(...referenceImagePaths);
+    if (Array.isArray(imageUrl)) rawRefSources.push(...imageUrl);
+    else if (typeof imageUrl === "string" && imageUrl.trim()) rawRefSources.push(imageUrl.trim());
+  }
+
+  const { localImagePaths: allLocalReferenceImages, tempFilesToClean } = await resolveAndDownloadImages(
+    rawRefSources,
+    outputDir,
+    "ref_orig"
+  );
+  if (allLocalReferenceImages.length > 0) {
+    console.log(`🖼️  [VeoAuto] Đã tải/chuẩn bị sẵn ${allLocalReferenceImages.length} ảnh gốc liên quan: [${allLocalReferenceImages.map(p => path.basename(p)).join(", ")}]`);
   }
 
   try {
@@ -1665,39 +1721,64 @@ export async function generateVeoVideoParallel(
     for (let i = 0; i < prompts.length; i++) {
       console.log(`🎬 [VeoAuto] Starting segment ${i + 1}/${prompts.length}...`);
       
-      let uploadFilePath: string | string[] | null = localImagePath;
       const dialogueText = (dialogues && dialogues[i]) ? dialogues[i] : undefined;
-      let finalPrompt = buildVeoScenePrompt(prompts[i], dialogueText, i);
-      
-      // Check if pre-generated scene keyframe image exists for this segment
-      if (i > 0) {
-        // Chain visual continuity by attaching the ending keyframe of the previous video
-        let foundPrevSuccessful = false;
+      const pathsToUpload: string[] = [];
+      let hasSceneKeyframe = false;
+      let hasPrevVideoFrame = false;
+
+      // 1. Ảnh #1: Frame cuối 9:16 của Part trước (khóa tỷ lệ toàn màn hình 9:16 không viền + đồng nhất mặt/trang phục)
+      if (includePrev && i > 0) {
         for (let j = i - 1; j >= 0; j--) {
           const prevRes = results[j];
           if (prevRes && prevRes.success && prevRes.localPath && fs.existsSync(prevRes.localPath)) {
             const keyframes = await extractThreeKeyframes(prevRes.localPath, outputDir);
             if (keyframes.length > 0) {
               const endFrame = keyframes[keyframes.length - 1];
-              if (sceneImagePaths && sceneImagePaths[i] && fs.existsSync(sceneImagePaths[i])) {
-                uploadFilePath = [endFrame, sceneImagePaths[i]];
-              } else {
-                uploadFilePath = keyframes;
+              if (endFrame && fs.existsSync(endFrame) && !pathsToUpload.includes(endFrame)) {
+                pathsToUpload.push(endFrame);
+                hasPrevVideoFrame = true;
+                console.log(`🔗 [VeoAuto] Segment ${i + 1}: Ảnh #1 (Frame 9:16 nối nhân vật từ Part ${j + 1}) = ${path.basename(endFrame)}.`);
               }
-              console.log(`🔗 [VeoAuto] Segment ${i + 1} chaining continuity from Part ${j + 1} video ending frame!`);
-              foundPrevSuccessful = true;
               break;
             }
           }
         }
-        if (!foundPrevSuccessful && sceneImagePaths && sceneImagePaths[i] && fs.existsSync(sceneImagePaths[i])) {
-          uploadFilePath = sceneImagePaths[i];
-          console.log(`📸 [VeoAuto] Segment ${i + 1} will upload pre-generated scene keyframe image: ${path.basename(sceneImagePaths[i])}`);
-        }
-      } else if (sceneImagePaths && sceneImagePaths[0] && fs.existsSync(sceneImagePaths[0])) {
-        uploadFilePath = sceneImagePaths[0];
-        console.log(`📸 [VeoAuto] Segment 1 using pre-generated scene keyframe image: ${path.basename(sceneImagePaths[0])}`);
       }
+
+      // 2. Ảnh #2: Bảng Storyboard 2x3 6 nhịp thời gian của chính Part này (scene_X.png)
+      const currentSceneImg = (refMode !== 'none' && sceneImagePaths && sceneImagePaths[i] && fs.existsSync(sceneImagePaths[i]))
+        ? sceneImagePaths[i]
+        : null;
+      if (currentSceneImg && !pathsToUpload.includes(currentSceneImg)) {
+        pathsToUpload.push(currentSceneImg);
+        hasSceneKeyframe = true;
+        console.log(`📸 [VeoAuto] Segment ${i + 1}: Ảnh #${pathsToUpload.length} (Storyboard 6 nhịp của cảnh) = ${path.basename(currentSceneImg)}.`);
+      }
+
+      // 3. Nếu chưa có scene_X.png mới fallback sang ảnh gốc tham chiếu
+      if (refMode !== 'none' && !currentSceneImg) {
+        if (refMode === 'current_only' && allLocalReferenceImages.length > 0 && !pathsToUpload.includes(allLocalReferenceImages[0])) {
+          pathsToUpload.push(allLocalReferenceImages[0]);
+          console.log(`📸 [VeoAuto] Segment ${i + 1}: Kèm 1 ảnh gốc hiện tại (${path.basename(allLocalReferenceImages[0])}).`);
+        } else if (refMode === 'all') {
+          for (const origImg of allLocalReferenceImages) {
+            if (origImg && fs.existsSync(origImg) && !pathsToUpload.includes(origImg)) {
+              pathsToUpload.push(origImg);
+            }
+          }
+        }
+      }
+
+      const finalPrompt = buildVeoScenePrompt(
+        prompts[i],
+        dialogueText,
+        i,
+        options?.visualStyle || "real",
+        { hasSceneKeyframe, hasPrevVideoFrame, totalUploaded: pathsToUpload.length }
+      );
+
+      console.log(`🚀 [VeoAuto] Segment ${i + 1} [PrevFrame: ${includePrev ? 'CÓ' : 'KHÔNG'}, RefMode: ${refMode}] sẽ upload TỔNG CỘNG ${pathsToUpload.length} tấm ảnh: [${pathsToUpload.map(p => path.basename(p)).join(", ")}]`);
+      const uploadParam = pathsToUpload.length === 0 ? null : (pathsToUpload.length === 1 ? pathsToUpload[0] : pathsToUpload);
 
       // Wait a few seconds between segments to avoid hitting Google's rate limits
       if (i > 0) {
@@ -1706,8 +1787,12 @@ export async function generateVeoVideoParallel(
         await new Promise(resolve => setTimeout(resolve, delayMs));
       }
       
-      const res = await runSingleVeoAutomation(browser, finalPrompt, uploadFilePath, i, productSlug, outputDir);
+      const res = await runSingleVeoAutomation(browser, finalPrompt, uploadParam, i, productSlug, outputDir);
       results.push(res);
+      if (!res.success || !res.localPath) {
+        console.error(`⛔ [VeoAuto] Segment ${i + 1} thất bại (${res.error || "Không tạo được video"}). Dừng ngay không tự upload/render lại.`);
+        break;
+      }
     }
 
     const localPaths: string[] = [];
@@ -1738,9 +1823,11 @@ export async function generateVeoVideoParallel(
       durationMs: Date.now() - startTime
     };
   } finally {
-    // Cleanup local image upload file
-    if (localImagePath && fs.existsSync(localImagePath)) {
-      try { fs.unlinkSync(localImagePath); } catch {}
+    // Cleanup temporary downloaded reference files
+    for (const tempPath of tempFilesToClean) {
+      if (fs.existsSync(tempPath)) {
+        try { fs.unlinkSync(tempPath); } catch {}
+      }
     }
     // Close browser if we launched it
     if (ownsBrowser && browser) {
@@ -1905,8 +1992,10 @@ async function runSingleVeoAutomation(
       const isVideo = pathsToUpload.some(p => p.endsWith(".mp4") || p.endsWith(".webm"));
       console.log(`📤 [VeoAuto-Tab ${index + 1}] Uploading ${pathsToUpload.length} file(s) (isVideo=${isVideo})...`);
       try {
-        // Step 1: Detect if a file input already exists in the active input container to prevent opening the menu again
+        // Step 1: Detect if a file input already exists in DOM or container to prevent opening the menu unnecessarily
         let fileInputHandle = await page.evaluateHandle(() => {
+          const imageInput = document.querySelector('input[type="file"][accept*="image"]') as HTMLInputElement;
+          if (imageInput) return imageInput;
           const activeInputArea = document.querySelector('rich-textarea, chat-input, .input-area, .text-input-container');
           if (activeInputArea) {
             const input = activeInputArea.querySelector('input[type="file"]') as HTMLInputElement;
@@ -1946,31 +2035,20 @@ async function runSingleVeoAutomation(
           restoreUserFocus(prevApp);
           await new Promise(r => setTimeout(r, 1200));
 
-          await page.evaluate(() => {
-            const container = document.querySelector('.cdk-overlay-container') || document;
-            const items = Array.from(container.querySelectorAll('button, [role="menuitem"], .mat-mdc-menu-item, .menu-item'));
-            const uploadItem = items.find(el => {
-              const text = el.textContent?.trim() || "";
-              return text === "Tải lên từ máy tính" || 
-                     text === "Upload from computer" || 
-                     text === "Tải lên từ thiết bị" || 
-                     text === "Upload from device" ||
-                     text === "Tải lên" ||
-                     text.includes("máy tính") ||
-                     text.includes("computer");
-            }) as HTMLElement;
-            if (uploadItem) {
-              uploadItem.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-            }
-          });
-          restoreUserFocus(prevApp);
-          await new Promise(r => setTimeout(r, 1200));
+          // Note: In Gemini, clicking the (+) button ALREADY mounts the <input type="file"> elements in DOM.
+          // DO NOT click 'Tệp' / 'Upload from computer' because that triggers input.click(),
+          // which opens the OS-level native Finder / File Dialog modal that cannot be closed by script!
+          await new Promise(r => setTimeout(r, 600));
         }
 
         // Wait up to 10s for the file input to appear/be active if we had to open it
         await page.waitForSelector('input[type="file"]', { timeout: 10000 });
 
         fileInputHandle = await page.evaluateHandle(() => {
+          // Priority 1: image-specific file input
+          const imageInput = document.querySelector('input[type="file"][accept*="image"]') as HTMLInputElement;
+          if (imageInput) return imageInput;
+
           const activeInputArea = document.querySelector('rich-textarea, chat-input, .input-area, .text-input-container');
           if (activeInputArea) {
             const input = activeInputArea.querySelector('input[type="file"]') as HTMLInputElement;
@@ -2000,14 +2078,26 @@ async function runSingleVeoAutomation(
           await (fileInputHandle as any).uploadFile(...hostPaths);
           restoreUserFocus(prevApp);
           
-          // Wait for upload processing (images are fast: 4.5s vs 35s for videos)
-          const waitTime = isVideo ? 35000 : 4500;
+          // Wait for upload processing (scaled based on number of images: min 5s, 1.8s per image)
+          const waitTime = isVideo ? 35000 : Math.max(5000, pathsToUpload.length * 1800);
           await new Promise(r => setTimeout(r, waitTime));
+
+          // Automatically close any open menu, modal, dialog, or overlay backdrop
+          await page.evaluate(() => {
+            const backdrops = Array.from(document.querySelectorAll('.cdk-overlay-backdrop, .mat-overlay-backdrop, .modal-backdrop'));
+            backdrops.forEach(b => (b as HTMLElement).click());
+            const closeBtn = document.querySelector('button[aria-label*="Đóng" i], button[aria-label*="Close" i], .mat-mdc-dialog-container button[aria-label*="close" i]') as HTMLElement;
+            if (closeBtn) closeBtn.click();
+          });
+          await page.keyboard.press('Escape').catch(() => {});
+          await new Promise(r => setTimeout(r, 400));
         }
       } catch (uploadErr: any) {
         console.warn(`⚠️  [VeoAuto-Tab ${index + 1}] File upload failed: ${uploadErr.message}`);
       } finally {
         restoreUserFocus(prevApp);
+        // Ensure any lingering menu or backdrop is closed
+        await page.keyboard.press('Escape').catch(() => {});
       }
     }
 
@@ -2188,7 +2278,13 @@ async function runSingleVeoAutomation(
     let downloadButtonClicked = false;
 
     while (Date.now() - pollStart < MAX_WAIT_MS) {
+      if (isVeoTaskAborted(startTime)) {
+        throw new Error("Đã hủy tiến trình render video theo yêu cầu");
+      }
       await new Promise(r => setTimeout(r, 5000));
+      if (isVeoTaskAborted(startTime)) {
+        throw new Error("Đã hủy tiến trình render video theo yêu cầu");
+      }
       const elapsed = Math.round((Date.now() - pollStart) / 1000);
 
       // Periodic screenshots for debugging (every 60s)
@@ -2200,8 +2296,55 @@ async function runSingleVeoAutomation(
         console.log(`📸 [VeoAuto-Tab ${index + 1}] Debug screenshot: ${ssPath}`);
       }
 
+      // Early detection: If Gemini refused video generation due to policy or capability (check from 10s onwards)
+      if (elapsed >= 10 && !found) {
+        const refusalText = await page.evaluate(() => {
+          const els = Array.from(document.querySelectorAll("message-content, .model-response, model-response, .response-container"));
+          for (const el of els) {
+            if (el.closest("user-query, .user-query, rich-textarea, input-area-v2, .input-area, .file-preview")) continue;
+            const txt = (el.textContent || "").trim();
+            if (
+              txt.includes("Tôi không thể tạo video") ||
+              txt.includes("không thể tạo video") ||
+              txt.includes("I cannot generate video") ||
+              txt.includes("I can't generate video") ||
+              txt.includes("I can't make that type of video") ||
+              txt.includes("I can't make videos") ||
+              txt.includes("I cannot make videos") ||
+              txt.includes("I cannot make that type of video") ||
+              txt.includes("show minors in dangerous") ||
+              txt.includes("compromising situations") ||
+              txt.includes("Can I help you with something else?") ||
+              txt.includes("can't generate that video") ||
+              txt.includes("cannot generate that video") ||
+              txt.includes("video policy guidelines") ||
+              txt.includes("policy guidelines") ||
+              txt.includes("Try describing another idea") ||
+              txt.includes("không thể tạo nội dung") ||
+              txt.includes("against our safety guidelines") ||
+              txt.includes("vi phạm chính sách") ||
+              txt.includes("third-party content") ||
+              txt.includes("interests of third-party")
+            ) {
+              return txt.slice(0, 300);
+            }
+          }
+          return null;
+        }).catch(() => null);
+
+        if (refusalText) {
+          console.error(`❌ [VeoAuto-Tab ${index + 1}] Gemini refusal detected at ${elapsed}s: ${refusalText}`);
+          return {
+            success: false,
+            error: `Gemini từ chối tạo video: "${refusalText}"`,
+            prompt,
+            durationMs: Date.now() - startTime,
+          };
+        }
+      }
+
       // CRITICAL GATE: Veo diffusion physically takes 30-90 seconds to render a 10s video.
-      // Any detection under 20s is guaranteed to be a false positive (e.g. LLM text stream, upload thumbnail).
+      // Any video element detection under 20s is guaranteed to be a false positive (e.g. LLM text stream, upload thumbnail).
       if (elapsed < 20) {
         console.log(`⏳ [VeoAuto-Tab ${index + 1}] Rendering in progress (${elapsed}s elapsed)...`);
         continue;
@@ -2274,12 +2417,15 @@ async function runSingleVeoAutomation(
         const bodyText = document.body?.innerText || "";
         const videos = Array.from(document.querySelectorAll("video")) as HTMLVideoElement[];
         const hasNewVideo = videos.length > 0;
-        const videoReady = hasNewVideo ||
-                           bodyText.includes("Your video is ready") || bodyText.includes("video is ready") ||
+        const isGeneratingMsg = bodyText.includes("when your video is ready") ||
+                                bodyText.includes("I'm generating your video") ||
+                                bodyText.includes("Đang tạo video");
+        const videoReady = hasNewVideo || (!isGeneratingMsg && (
+                           bodyText.includes("Your video is ready") ||
                            bodyText.includes("Video của bạn đã sẵn sàng") ||
                            bodyText.includes("video đã sẵn sàng") ||
                            bodyText.includes("video đã được tạo") ||
-                           bodyText.includes("video đã xong");
+                           bodyText.includes("video đã xong")));
 
         const allButtons = Array.from(document.querySelectorAll('button, a, [data-mat-icon-name="download"]'));
         const downloadBtns = allButtons.filter(el => {
@@ -2535,114 +2681,198 @@ export async function generateSingleVeoSegment(
   productSlug: string = "scene",
   customOutputDir?: string,
   sceneImagePath?: string,
-  dialogue?: string
+  dialogue?: string,
+  referenceImages?: string[],
+  options?: {
+    includePrevFrame?: boolean | string;
+    refImagesMode?: string;
+    prevFrameParts?: number[];
+    visualStyle?: string;
+  }
 ): Promise<VeoResult> {
   const startTime = Date.now();
   let browser: any = null;
   let ownsBrowser = false;
-  let localImagePath: string | string[] | null = null;
-  let downloadedTempImage: string | null = null;
 
   const outputDir = customOutputDir || DOWNLOADS_DIR;
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true });
   }
 
-  // 1. Resolve image to upload: check if previous video segment exists to chain ending frame
-  // IMPORTANT: Luôn lấy file Part trước MỚI NHẤT (theo mtime) để tránh dùng frame cũ từ lần render trước
-  let prevEndFrame: string | null = null;
-  if (sceneIndex > 0) {
+  const rawPrevOpt = options?.includePrevFrame;
+  const includePrev = rawPrevOpt !== false && rawPrevOpt !== 'no' && rawPrevOpt !== 'false';
+  const refMode = options?.refImagesMode || 'all';
+
+  // Helper to extract end frame from a specific 1-based Part video in outputDir
+  const resolveEndFrameFromPartVideo = async (targetPartNum: number): Promise<string | null> => {
     try {
       const files = fs.readdirSync(outputDir);
-      const prevVideos = files
-        .filter(f => f.endsWith(".mp4") && f.includes(`_part${sceneIndex}_`) && !f.includes("_merged") && !f.includes("_voiced") && !f.includes("_longtieng"))
-        .map(f => ({ name: f, mtime: fs.statSync(path.join(outputDir, f)).mtimeMs }))
-        .sort((a, b) => b.mtime - a.mtime); // Mới nhất lên đầu
-      const prevVideo = prevVideos.length > 0 ? prevVideos[0].name : null;
-      if (prevVideo) {
-        const prevVideoPath = path.join(outputDir, prevVideo);
-        console.log(`🔗 [VeoAuto-Single] Chaining Part ${sceneIndex + 1} ← sử dụng Part ${sceneIndex} video MỚI NHẤT: ${prevVideo}`);
-        const kfs = await extractThreeKeyframes(prevVideoPath, outputDir);
+      let activePartFilename: string | null = null;
+      const activeVersionsFile = path.join(outputDir, "active_versions.json");
+      if (fs.existsSync(activeVersionsFile)) {
+        try {
+          const actMap = JSON.parse(fs.readFileSync(activeVersionsFile, "utf-8"));
+          if (actMap[`part${targetPartNum}`]) {
+            activePartFilename = actMap[`part${targetPartNum}`];
+          }
+        } catch {}
+      }
+
+      let chosenVideo: string | null = null;
+      if (activePartFilename && fs.existsSync(path.join(outputDir, activePartFilename))) {
+        chosenVideo = activePartFilename;
+      } else {
+        const matchingVideos = files
+          .filter(
+            (f) =>
+              f.endsWith(".mp4") &&
+              f.includes(`_part${targetPartNum}_`) &&
+              !f.includes("_merged") &&
+              !f.includes("_voiced") &&
+              !f.includes("_longtieng")
+          )
+          .map((f) => ({ name: f, mtime: fs.statSync(path.join(outputDir, f)).mtimeMs }))
+          .sort((a, b) => b.mtime - a.mtime);
+        if (matchingVideos.length > 0) chosenVideo = matchingVideos[0].name;
+      }
+
+      if (chosenVideo) {
+        const videoFullPath = path.join(outputDir, chosenVideo);
+        console.log(`🔗 [VeoAuto-Single] Trích xuất hình từ Video Part ${targetPartNum}: ${chosenVideo}`);
+        const kfs = await extractThreeKeyframes(videoFullPath, outputDir);
         if (kfs.length > 0) {
-          prevEndFrame = kfs[kfs.length - 1];
-          console.log(`🔗 [VeoAuto-Single] Chaining Part ${sceneIndex + 1} with Part ${sceneIndex} video end-frame for seamless continuity`);
+          return kfs[kfs.length - 1];
         }
       }
     } catch {}
-  }
+    return null;
+  };
 
-  // Always pair ending frame with scene image so Veo gets both continuity + correct content
-  if (prevEndFrame) {
-    const directScenePng = path.join(outputDir, "scenes", `scene_${sceneIndex + 1}.png`);
-    const directSceneJpg = path.join(outputDir, "scenes", `scene_${sceneIndex + 1}.jpg`);
-    if (sceneImagePath && fs.existsSync(sceneImagePath)) {
-      localImagePath = [prevEndFrame, sceneImagePath];
-      console.log(`📸 [VeoAuto-Single] Uploading: prev end-frame + specified scene keyframe for Part ${sceneIndex + 1}`);
-    } else if (fs.existsSync(directScenePng)) {
-      localImagePath = [prevEndFrame, directScenePng];
-      console.log(`📸 [VeoAuto-Single] Uploading: prev end-frame + scene_${sceneIndex + 1}.png for Part ${sceneIndex + 1}`);
-    } else if (fs.existsSync(directSceneJpg)) {
-      localImagePath = [prevEndFrame, directSceneJpg];
-      console.log(`📸 [VeoAuto-Single] Uploading: prev end-frame + scene_${sceneIndex + 1}.jpg for Part ${sceneIndex + 1}`);
-    } else {
-      localImagePath = prevEndFrame;
-      console.log(`⚠️ [VeoAuto-Single] Only uploading prev end-frame (no scene image found for Part ${sceneIndex + 1})`);
-    }
-  } else {
+  // 1. Resolve scene image of the current step (nếu không phải mode 'none')
+  let currentSceneImage: string | null = null;
+  if (refMode !== 'none') {
     const directScenePng = path.join(outputDir, "scenes", `scene_${sceneIndex + 1}.png`);
     const directSceneJpg = path.join(outputDir, "scenes", `scene_${sceneIndex + 1}.jpg`);
 
     if (sceneImagePath && fs.existsSync(sceneImagePath)) {
-      localImagePath = sceneImagePath;
-      console.log(`📸 [VeoAuto-Single] Using specified scene keyframe: ${path.basename(sceneImagePath)}`);
+      currentSceneImage = path.resolve(sceneImagePath);
+      console.log(`📸 [VeoAuto-Single] Using specified scene keyframe for Part ${sceneIndex + 1}: ${path.basename(sceneImagePath)}`);
     } else if (fs.existsSync(directScenePng)) {
-      localImagePath = directScenePng;
+      currentSceneImage = directScenePng;
       console.log(`📸 [VeoAuto-Single] Using local Part ${sceneIndex + 1} scene image: ${path.basename(directScenePng)}`);
     } else if (fs.existsSync(directSceneJpg)) {
-      localImagePath = directSceneJpg;
+      currentSceneImage = directSceneJpg;
       console.log(`📸 [VeoAuto-Single] Using local Part ${sceneIndex + 1} scene image: ${path.basename(directSceneJpg)}`);
-    } else if (imageUrl) {
-      let localFound = false;
-      if (imageUrl.startsWith("/downloads/")) {
-        const cleanRel = imageUrl.split("?")[0].replace("/downloads/", "");
-        const fullLocal = path.resolve(DOWNLOADS_DIR, cleanRel);
-        if (fs.existsSync(fullLocal)) {
-          localImagePath = fullLocal;
-          localFound = true;
-          console.log(`📸 [VeoAuto-Single] Using local file for Part ${sceneIndex + 1}: ${path.basename(fullLocal)}`);
+    }
+  }
+
+  // 2. Resolve frame(s) from previous video step(s)
+  const prevVideoFrames: string[] = [];
+  if (includePrev) {
+    const targetPartsToExtract: number[] = [];
+    if (Array.isArray(options?.prevFrameParts) && options.prevFrameParts.length > 0) {
+      for (const p of options.prevFrameParts) {
+        if (Number.isFinite(p) && p >= 1 && !targetPartsToExtract.includes(p)) {
+          targetPartsToExtract.push(p);
         }
       }
+    } else if (typeof rawPrevOpt === "string" && rawPrevOpt.startsWith("part_")) {
+      const pNum = parseInt(rawPrevOpt.replace("part_", ""), 10);
+      if (Number.isFinite(pNum) && pNum >= 1) targetPartsToExtract.push(pNum);
+    } else if (rawPrevOpt === "all_prev") {
+      for (let p = 1; p <= sceneIndex; p++) {
+        targetPartsToExtract.push(p);
+      }
+    } else if (sceneIndex > 0) {
+      targetPartsToExtract.push(sceneIndex);
+    }
 
-      if (!localFound) {
-        try {
-          console.log(`📥 [VeoAuto-Single] Downloading image for Part ${sceneIndex + 1}...`);
-          let fetchUrl = imageUrl;
-          if (imageUrl.includes(".amazonaws.com/")) {
-            const parts = imageUrl.split(".amazonaws.com/");
-            if (parts.length > 1) {
-              const key = parts[1];
-              const port = process.env.PORT || "3400";
-              fetchUrl = `http://127.0.0.1:${port}/api/products/image-proxy?key=${encodeURIComponent(key)}`;
-            }
-          } else if (imageUrl.startsWith("/")) {
-            const port = process.env.PORT || "3400";
-            fetchUrl = `http://127.0.0.1:${port}${imageUrl}`;
-          }
+    for (const pNum of targetPartsToExtract) {
+      const framePath = await resolveEndFrameFromPartVideo(pNum);
+      if (framePath && fs.existsSync(framePath) && !prevVideoFrames.includes(framePath)) {
+        prevVideoFrames.push(framePath);
+      }
+    }
+  }
 
-          const response = await axios.get(fetchUrl, { responseType: "arraybuffer", timeout: 15000 });
-          const contentType = String(response.headers["content-type"] ?? "image/jpeg");
-          const ext = contentType.split("/")[1] || "jpg";
-          const tempFilename = `scene_${sceneIndex + 1}_reference.${ext}`;
-          downloadedTempImage = path.join(DOWNLOADS_DIR, tempFilename);
-          fs.writeFileSync(downloadedTempImage, response.data);
-          localImagePath = downloadedTempImage;
-          console.log(`✅ [VeoAuto-Single] Downloaded image: ${downloadedTempImage}`);
-        } catch (err: any) {
-          console.warn(`⚠️  [VeoAuto-Single] Failed to download image: ${err.message}`);
+  // 3. Resolve reference images theo refMode
+  const rawRefSources: string[] = [];
+  const extraLocalRefFrames: string[] = [];
+  if (refMode === 'all') {
+    if (Array.isArray(referenceImages)) rawRefSources.push(...referenceImages);
+    if (imageUrl && !rawRefSources.includes(imageUrl)) rawRefSources.push(imageUrl);
+  } else if (refMode === 'current_only' && !currentSceneImage) {
+    if (Array.isArray(referenceImages) && referenceImages.length > 0) rawRefSources.push(referenceImages[0]);
+    else if (imageUrl) rawRefSources.push(imageUrl);
+  } else if (refMode === 'prev_videos') {
+    for (let p = 1; p <= Math.max(1, sceneIndex); p++) {
+      const fPath = await resolveEndFrameFromPartVideo(p);
+      if (fPath && fs.existsSync(fPath) && !extraLocalRefFrames.includes(fPath)) {
+        extraLocalRefFrames.push(fPath);
+      }
+    }
+  } else if (typeof refMode === 'string' && refMode.startsWith('prev_video_')) {
+    const pNum = parseInt(refMode.replace('prev_video_', ''), 10);
+    if (Number.isFinite(pNum) && pNum >= 1) {
+      const fPath = await resolveEndFrameFromPartVideo(pNum);
+      if (fPath && fs.existsSync(fPath) && !extraLocalRefFrames.includes(fPath)) {
+        extraLocalRefFrames.push(fPath);
+      }
+    }
+  } else if (refMode === 'prev_scenes') {
+    for (let p = 1; p <= Math.max(1, sceneIndex); p++) {
+      const sPng = path.join(outputDir, "scenes", `scene_${p}.png`);
+      const sJpg = path.join(outputDir, "scenes", `scene_${p}.jpg`);
+      if (fs.existsSync(sPng)) extraLocalRefFrames.push(sPng);
+      else if (fs.existsSync(sJpg)) extraLocalRefFrames.push(sJpg);
+    }
+  }
+
+  const { localImagePaths: downloadedRefImages, tempFilesToClean } = await resolveAndDownloadImages(
+    rawRefSources,
+    outputDir,
+    `ref_part${sceneIndex + 1}`
+  );
+
+  // 4. Kết hợp upload chuẩn:
+  //    - Ảnh #1: Frame 9:16 cuối của Part trước (khóa tỷ lệ 9:16 full-screen không viền + đồng nhất mặt/trang phục)
+  //    - Ảnh #2: Bảng Storyboard 2x3 6 nhịp thời gian của Part hiện tại (scene_X.png) để Veo diễn đúng từng nhịp & đạo cụ từ đầu đến cuối cảnh!
+  const pathsToUpload: string[] = [];
+  let hasSceneKeyframe = false;
+  let hasPrevVideoFrame = false;
+
+  for (const pf of prevVideoFrames) {
+    if (pf && fs.existsSync(pf) && !pathsToUpload.includes(pf)) {
+      pathsToUpload.push(pf);
+      hasPrevVideoFrame = true;
+      console.log(`🔗 [VeoAuto-Single] Part ${sceneIndex + 1}: Ảnh #${pathsToUpload.length} (Frame 9:16 nối nhân vật từ video trước) = ${path.basename(pf)}.`);
+    }
+  }
+
+  if (refMode !== 'none' && currentSceneImage && fs.existsSync(currentSceneImage) && !pathsToUpload.includes(currentSceneImage)) {
+    pathsToUpload.push(currentSceneImage);
+    hasSceneKeyframe = true;
+    console.log(`📸 [VeoAuto-Single] Part ${sceneIndex + 1}: Ảnh #${pathsToUpload.length} (Storyboard 2x3 6 nhịp thời gian) = ${path.basename(currentSceneImage)}.`);
+  }
+
+  if (refMode !== 'none') {
+    for (const extraFrame of extraLocalRefFrames) {
+      if (extraFrame && fs.existsSync(extraFrame) && !pathsToUpload.includes(extraFrame)) {
+        pathsToUpload.push(extraFrame);
+        console.log(`🎬 [VeoAuto-Single] Part ${sceneIndex + 1}: Kèm hình tham chiếu từ phân cảnh trước (${path.basename(extraFrame)}).`);
+      }
+    }
+    if (!currentSceneImage) {
+      for (const refImg of downloadedRefImages) {
+        if (refImg && fs.existsSync(refImg) && !pathsToUpload.includes(refImg)) {
+          pathsToUpload.push(refImg);
         }
       }
     }
   }
+
+  console.log(`📸 [VeoAuto-Single] Part ${sceneIndex + 1} [PrevFrame: ${String(rawPrevOpt ?? includePrev)}, RefMode: ${refMode}] UPLOAD TỔNG CỘNG ${pathsToUpload.length} TẤM: [${pathsToUpload.map(p => path.basename(p)).join(", ")}]`);
+  const uploadFilePath = pathsToUpload.length === 0 ? null : (pathsToUpload.length === 1 ? pathsToUpload[0] : pathsToUpload);
 
   try {
     let puppeteer: any;
@@ -2692,16 +2922,26 @@ export async function generateSingleVeoSegment(
       ownsBrowser = true;
     }
 
-    const finalPrompt = buildVeoScenePrompt(prompt, dialogue, sceneIndex);
+    const finalPrompt = buildVeoScenePrompt(
+      prompt,
+      dialogue,
+      sceneIndex,
+      options?.visualStyle || "real",
+      { hasSceneKeyframe, hasPrevVideoFrame, totalUploaded: pathsToUpload.length }
+    );
     console.log(`🎬 [VeoAuto-Single] Running Veo generation for Part ${sceneIndex + 1}... ${dialogue ? `(Thoại: "${dialogue.slice(0, 50)}...")` : "(Không thoại)"}`);
     const result = await runSingleVeoAutomation(
       browser,
       finalPrompt,
-      localImagePath,
+      uploadFilePath,
       sceneIndex,
       productSlug,
       outputDir
     );
+
+    if (!result.success) {
+      console.error(`⛔ [VeoAuto-Single] Part ${sceneIndex + 1} gặp lỗi (${result.error}). Dừng ngay không tự upload/render lại lần 2.`);
+    }
 
     return result;
   } catch (err: any) {
@@ -2713,8 +2953,10 @@ export async function generateSingleVeoSegment(
       durationMs: Date.now() - startTime,
     };
   } finally {
-    if (downloadedTempImage && fs.existsSync(downloadedTempImage)) {
-      try { fs.unlinkSync(downloadedTempImage); } catch {}
+    for (const tempPath of tempFilesToClean) {
+      if (fs.existsSync(tempPath)) {
+        try { fs.unlinkSync(tempPath); } catch {}
+      }
     }
     if (ownsBrowser && browser) {
       await browser.close();

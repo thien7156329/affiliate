@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import './styles/theme.css';
 import { ToastProvider, useToast } from './context/ToastContext';
+import { ConfirmDialogProvider, useConfirm } from './context/ConfirmDialogContext';
 import { Navbar } from './components/layout/Navbar';
 import { Sidebar } from './components/layout/Sidebar';
 import { StatsGrid } from './components/layout/StatsGrid';
@@ -13,10 +14,12 @@ import { ConcatModal } from './components/concat/ConcatModal';
 import { VideoPlayerModal } from './components/video/VideoPlayerModal';
 import { GenerateVideoModal } from './components/modals/GenerateVideoModal';
 import { Lightbox } from './components/common/Lightbox';
+import { ShortsStudioSection } from './components/shorts/ShortsStudioSection';
 import { Product, VideoItem } from './types';
 
 export const AppContent: React.FC = () => {
   const { showToast } = useToast();
+  const { confirmDialog } = useConfirm();
   const [activeSection, setActiveSection] = useState('dashboard');
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -33,6 +36,7 @@ export const AppContent: React.FC = () => {
   const [videoTotalPages, setVideoTotalPages] = useState(1);
   const [isVideoLoading, setIsVideoLoading] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState<VideoItem | null>(null);
+  const [videoFormatTab, setVideoFormatTab] = useState<'short' | 'long'>('short');
 
   // Products
   const [products, setProducts] = useState<Product[]>([]);
@@ -63,10 +67,10 @@ export const AppContent: React.FC = () => {
   };
 
   // Fetch videos
-  const loadVideos = async (page = videoPage) => {
+  const loadVideos = async (page = videoPage, fmt = videoFormatTab) => {
     setIsVideoLoading(true);
     try {
-      const res = await fetch(`/api/videos?page=${page}&limit=20`);
+      const res = await fetch(`/api/videos?page=${page}&limit=20&format=${encodeURIComponent(fmt)}`);
       const resData = await res.json();
       const videoList = resData.data || resData.videos || [];
       if (Array.isArray(videoList)) {
@@ -128,7 +132,14 @@ export const AppContent: React.FC = () => {
   }, []);
 
   const handleDeleteVideo = async (id: string) => {
-    if (!confirm('Bạn có chắc chắn muốn xóa video này?')) return;
+    const ok = await confirmDialog({
+      title: 'Xóa Video',
+      message: 'Bạn có chắc chắn muốn xóa video này? Toàn bộ file video và dữ liệu phân cảnh sẽ bị xóa vĩnh viễn.',
+      confirmText: 'Xóa Video',
+      cancelText: 'Giữ lại',
+      type: 'danger',
+    });
+    if (!ok) return;
     try {
       const res = await fetch(`/api/videos/${id}`, { method: 'DELETE' });
       const data = await res.json();
@@ -156,7 +167,14 @@ export const AppContent: React.FC = () => {
   };
 
   const handleDeleteProduct = async (id: string) => {
-    if (!confirm('Bạn có chắc chắn muốn xóa sản phẩm này?')) return;
+    const ok = await confirmDialog({
+      title: 'Xóa Sản Phẩm',
+      message: 'Bạn có chắc chắn muốn xóa sản phẩm này khỏi danh sách quản lý?',
+      confirmText: 'Xóa Sản Phẩm',
+      cancelText: 'Hủy bỏ',
+      type: 'danger',
+    });
+    if (!ok) return;
     try {
       const res = await fetch(`/api/products/${id}`, { method: 'DELETE' });
       const data = await res.json();
@@ -209,83 +227,94 @@ export const AppContent: React.FC = () => {
         />
 
         <main>
-          <div className="page-header">
-            <h1>Dashboard</h1>
-            <p>Manage your AI-generated affiliate marketing videos</p>
-          </div>
-
-          <StatsGrid
-            totalVideos={totalVideos}
-            pipelineRunning={pipelineRunning}
-            pipelineLastRun={pipelineLastRun}
-            totalProducts={totalProducts}
-            totalTiktok={totalTiktok}
-          />
-
-          {/* Section: Dashboard / Videos */}
-          {(activeSection === 'dashboard' || activeSection === 'videos') && (
-            <VideoGallery
-              videos={videos}
-              products={products}
-              currentPage={videoPage}
-              totalPages={videoTotalPages}
-              isLoading={isVideoLoading}
-              onPageChange={(page) => loadVideos(page)}
-              onRefresh={() => loadVideos(videoPage)}
-              onOpenConcatModal={() => setIsConcatModalOpen(true)}
-              onPlayVideo={(v) => setSelectedVideo(v)}
-              onPublishVideo={handlePublishVideo}
-            />
-          )}
-
-          {/* Section: Products (visible when Products tab selected) */}
-          {activeSection === 'products' && (
-            <ProductsTable
-              products={products}
-              currentPage={productPage}
-              totalPages={productTotalPages}
-              isLoading={isProductLoading}
-              onPageChange={(page) => loadProducts(page)}
-              onAddProduct={() => {
-                setProductToEdit(null);
-                setIsProductModalOpen(true);
-              }}
-              onOpenCrawlModal={() => setIsCrawlModalOpen(true)}
-              onEditProduct={(p) => {
-                setProductToEdit(p);
-                setIsProductModalOpen(true);
-              }}
-              onDeleteProduct={handleDeleteProduct}
-              onGenerateForProduct={(p) => {
-                setGenerateProduct(p);
-                setIsGenerateModalOpen(true);
-              }}
-            />
-          )}
-
-          {/* Section: Activity Logs (always present on dashboard like original UI) */}
-          {(activeSection === 'dashboard' || activeSection === 'logs') && (
-            <div>
-              <div className="section-header" style={{ marginTop: '8px' }}>
-                <h2>📋 Activity Log</h2>
-                <button type="button" className="btn-sm" onClick={() => setLogs([])}>
-                  Clear
-                </button>
+          {activeSection === 'shorts-studio' ? (
+            <>
+              <div className="page-header">
+                <h1>🎬 Shorts Studio (AI · 9:16)</h1>
+                <p>Sáng tác kịch bản, đọc giọng AI & render video ngắn dọc 9:16 người que — tự động đẩy S3 & DB</p>
               </div>
-              <div className="log-wrap">
-                <div className="log-body">
-                  {logs.map((log) => (
-                    <div key={log.id} className="log-item">
-                      <div className={`log-dot ${log.type}`} />
-                      <div>
-                        <div>{log.message}</div>
-                        <div className="log-time">{log.time}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+              <ShortsStudioSection
+                key="shorts-studio-9-16"
+                studioFormat="short"
+                onVideoSynced={() => loadVideos(1)}
+                onOpenPublishModal={(v) => setSelectedVideo(v)}
+              />
+            </>
+          ) : activeSection === 'long-studio' ? (
+            <>
+              <div className="page-header">
+                <h1>🖥️ Video Dài 16:9 Studio (AI · Màn Ngang Full HD)</h1>
+                <p>Sáng tác nội dung chuyên sâu, đọc giọng AI & render video Người Que màn ngang 1920×1080 chuẩn YouTube / Facebook / TikTok Long</p>
               </div>
-            </div>
+              <ShortsStudioSection
+                key="long-studio-16-9"
+                studioFormat="long"
+                onVideoSynced={() => loadVideos(1)}
+                onOpenPublishModal={(v) => setSelectedVideo(v)}
+              />
+            </>
+          ) : (
+            <>
+              <div className="page-header">
+                <h1>{activeSection === 'products' ? 'Products' : activeSection === 'videos' ? 'Videos' : 'Dashboard'}</h1>
+                <p>Manage your AI-generated affiliate marketing videos</p>
+              </div>
+
+              <StatsGrid
+                totalVideos={totalVideos}
+                pipelineRunning={pipelineRunning}
+                pipelineLastRun={pipelineLastRun}
+                totalProducts={totalProducts}
+                totalTiktok={totalTiktok}
+              />
+
+              {/* Section: Dashboard / Videos */}
+              {(activeSection === 'dashboard' || activeSection === 'videos') && (
+                <VideoGallery
+                  videos={videos}
+                  products={products}
+                  currentPage={videoPage}
+                  totalPages={videoTotalPages}
+                  isLoading={isVideoLoading}
+                  videoFormatTab={videoFormatTab}
+                  onChangeVideoFormatTab={(tab) => {
+                    setVideoFormatTab(tab);
+                    loadVideos(1, tab);
+                  }}
+                  onPageChange={(page) => loadVideos(page, videoFormatTab)}
+                  onRefresh={() => loadVideos(videoPage, videoFormatTab)}
+                  onOpenConcatModal={() => setIsConcatModalOpen(true)}
+                  onPlayVideo={(v) => setSelectedVideo(v)}
+                  onPublishVideo={handlePublishVideo}
+                />
+              )}
+
+              {/* Section: Products (visible when Products tab selected) */}
+              {activeSection === 'products' && (
+                <ProductsTable
+                  products={products}
+                  currentPage={productPage}
+                  totalPages={productTotalPages}
+                  isLoading={isProductLoading}
+                  onPageChange={(page) => loadProducts(page)}
+                  onAddProduct={() => {
+                    setProductToEdit(null);
+                    setIsProductModalOpen(true);
+                  }}
+                  onOpenCrawlModal={() => setIsCrawlModalOpen(true)}
+                  onEditProduct={(p) => {
+                    setProductToEdit(p);
+                    setIsProductModalOpen(true);
+                  }}
+                  onDeleteProduct={handleDeleteProduct}
+                  onGenerateForProduct={(p) => {
+                    setGenerateProduct(p);
+                    setIsGenerateModalOpen(true);
+                  }}
+                  onZoomImage={(url) => setLightboxImage(url)}
+                />
+              )}
+            </>
           )}
         </main>
       </div>
@@ -293,7 +322,10 @@ export const AppContent: React.FC = () => {
       {/* Modals */}
       <GenerateVideoModal
         isOpen={isGenerateModalOpen}
-        onClose={() => setIsGenerateModalOpen(false)}
+        onClose={() => {
+          setIsGenerateModalOpen(false);
+          loadProducts(productPage);
+        }}
         initialProduct={generateProduct}
         onSuccess={() => {
           loadVideos(1);
@@ -307,6 +339,7 @@ export const AppContent: React.FC = () => {
         onClose={() => setIsProductModalOpen(false)}
         productToEdit={productToEdit}
         onSaveSuccess={() => loadProducts(productPage)}
+        onZoomImage={(url) => setLightboxImage(url)}
       />
 
       <CrawlModal
@@ -345,7 +378,9 @@ export const AppContent: React.FC = () => {
 export default function App() {
   return (
     <ToastProvider>
-      <AppContent />
+      <ConfirmDialogProvider>
+        <AppContent />
+      </ConfirmDialogProvider>
     </ToastProvider>
   );
 }

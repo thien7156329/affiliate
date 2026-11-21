@@ -21,7 +21,18 @@ import express from "express";
 import cors from "cors";
 import axios from "axios";
 import fs from "fs/promises";
-import { existsSync, createWriteStream, mkdirSync, readdirSync, rmSync, unlinkSync, readFileSync, writeFileSync, statSync, renameSync } from "fs";
+import {
+  existsSync,
+  createWriteStream,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  unlinkSync,
+  readFileSync,
+  writeFileSync,
+  statSync,
+  renameSync,
+} from "fs";
 import { execSync } from "child_process";
 import { createRequire } from "module";
 import path from "path";
@@ -32,17 +43,36 @@ const require = createRequire(import.meta.url);
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
-import { S3Client, PutObjectCommand, HeadBucketCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import {
+  S3Client,
+  PutObjectCommand,
+  HeadBucketCommand,
+  GetObjectCommand,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { Upload } from "@aws-sdk/lib-storage";
 import { Readable } from "stream";
 import { z } from "zod";
-import { generateVideoPrompt, generateVideoDescriptionVi, callBedrock, generatePromptsWithAiConsensus, sendSessionFeedback } from "./promptGenerator.js";
-import { generateVeoVideo, ensureChromeRunning, toHostPath } from "./veoAutomation.js";
+import {
+  generateVideoPrompt,
+  generateVideoDescriptionVi,
+  callBedrock,
+  generatePromptsWithAiConsensus,
+  sendSessionFeedback,
+} from "./promptGenerator.js";
+import {
+  generateVeoVideo,
+  ensureChromeRunning,
+  toHostPath,
+} from "./veoAutomation.js";
 import puppeteer from "puppeteer";
 import http2 from "http2";
 import { concatenateVideos } from "./subtitleGenerator.js";
-import { loadCharacters, upsertCharacter, deleteCharacter } from "./characterRegistry.js";
+import {
+  loadCharacters,
+  upsertCharacter,
+  deleteCharacter,
+} from "./characterRegistry.js";
 import { analyzeVideoDialogueTimestamps } from "./videoAnalyzer.js";
 import { generateMultiVoiceDialogueAudio } from "./multiVoiceSynthesizer.js";
 import { muxTimestampedAudioSegments } from "./audioVideoMuxer.js";
@@ -77,11 +107,18 @@ import {
   uploadVideoToFacebook,
   getFacebookConfig,
 } from "./facebookService.js";
+import { registerShortsStudioRoutes, isStudioVideo } from "./shortsStudioRoutes.js";
 
 // ─── Process Error Handlers (Prevents nodemon crashes on network ECONNRESET) ──
 process.on("uncaughtException", (err: any) => {
-  if (err?.code === "ECONNRESET" || err?.message?.includes("aborted") || err?.message?.includes("socket")) {
-    console.warn(`⚠️ [Server] Handled socket/network ECONNRESET error (preventing crash): ${err.message}`);
+  if (
+    err?.code === "ECONNRESET" ||
+    err?.message?.includes("aborted") ||
+    err?.message?.includes("socket")
+  ) {
+    console.warn(
+      `⚠️ [Server] Handled socket/network ECONNRESET error (preventing crash): ${err.message}`,
+    );
   } else {
     console.error("⚠️ [Server] Uncaught Exception:", err);
   }
@@ -99,7 +136,8 @@ const METADATA_FILE = path.join(DATA_DIR, "metadata.json");
 const PORT = parseInt(process.env.PORT || "3400");
 const S3_BUCKET = process.env.S3_BUCKET_NAME || "";
 const S3_PREFIX = process.env.S3_KEY_PREFIX || "videos/";
-const IS_MOCK_TIKTOK = !process.env.TIKTOK_API_KEY || process.env.TIKTOK_API_KEY === "mock";
+const IS_MOCK_TIKTOK =
+  !process.env.TIKTOK_API_KEY || process.env.TIKTOK_API_KEY === "mock";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface VideoMetadata {
@@ -146,13 +184,20 @@ function getFfmpegCmd(): string {
   return "ffmpeg";
 }
 
-function extractVideoThumbnailSync(videoPath: string, outputPath: string): boolean {
+function extractVideoThumbnailSync(
+  videoPath: string,
+  outputPath: string,
+): boolean {
   try {
     const ffmpeg = getFfmpegCmd();
-    execSync(`"${ffmpeg}" -y -ss 00:00:01 -i "${videoPath}" -vframes 1 -q:v 2 "${outputPath}" 2>/dev/null`);
+    execSync(
+      `"${ffmpeg}" -y -ss 00:00:01 -i "${videoPath}" -vframes 1 -q:v 2 "${outputPath}" 2>/dev/null`,
+    );
     return existsSync(outputPath);
   } catch (err: any) {
-    console.warn(`⚠️ [Thumbnail] Extraction failed for ${videoPath}: ${err.message}`);
+    console.warn(
+      `⚠️ [Thumbnail] Extraction failed for ${videoPath}: ${err.message}`,
+    );
     return false;
   }
 }
@@ -181,11 +226,17 @@ function markVideoPathDeleted(p: string): void {
   try {
     const set = loadDeletedVideoPaths();
     set.add(p);
-    writeFileSync(DELETED_VIDEOS_FILE, JSON.stringify(Array.from(set), null, 2), "utf-8");
+    writeFileSync(
+      DELETED_VIDEOS_FILE,
+      JSON.stringify(Array.from(set), null, 2),
+      "utf-8",
+    );
   } catch {}
 }
 
-async function syncLocalDownloadsToMetadata(existingList: VideoMetadata[]): Promise<VideoMetadata[]> {
+async function syncLocalDownloadsToMetadata(
+  existingList: VideoMetadata[],
+): Promise<VideoMetadata[]> {
   const downloadsDir = path.resolve(__dirname, "../data/downloads");
   if (!existsSync(downloadsDir)) return existingList;
 
@@ -196,24 +247,39 @@ async function syncLocalDownloadsToMetadata(existingList: VideoMetadata[]): Prom
   // 1. DEDUPLICATION STEP:
   // If an official pipeline entry (id not starting with vid_sync_) exists for a video,
   // purge any duplicate vid_sync_ entry that was prematurely registered while the pipeline was uploading/processing.
-  const officialEntries = list.filter(item => !item.id.startsWith("vid_sync_"));
+  const officialEntries = list.filter(
+    (item) => !item.id.startsWith("vid_sync_"),
+  );
   const deduplicatedList: VideoMetadata[] = [];
 
   for (const item of list) {
     if (item.id.startsWith("vid_sync_")) {
-      const itemBase = item.local_path 
-        ? path.basename(item.local_path) 
-        : (item.s3_url ? path.basename(item.s3_url) : "");
-      
-      const matchingOfficial = officialEntries.find(off => {
-        const offBase = off.local_path 
-          ? path.basename(off.local_path) 
-          : (off.s3_url ? path.basename(off.s3_url) : (off.s3_key ? path.basename(off.s3_key) : ""));
-        
+      const itemBase = item.local_path
+        ? path.basename(item.local_path)
+        : item.s3_url
+          ? path.basename(item.s3_url)
+          : "";
+
+      const matchingOfficial = officialEntries.find((off) => {
+        const offBase = off.local_path
+          ? path.basename(off.local_path)
+          : off.s3_url
+            ? path.basename(off.s3_url)
+            : off.s3_key
+              ? path.basename(off.s3_key)
+              : "";
+
         if (itemBase && offBase && itemBase === offBase) return true;
-        if (itemBase && off.s3_url && off.s3_url.includes(itemBase)) return true;
-        if (itemBase && off.s3_key && off.s3_key.includes(itemBase)) return true;
-        if (item.local_path && off.local_path && path.resolve(item.local_path) === path.resolve(off.local_path)) return true;
+        if (itemBase && off.s3_url && off.s3_url.includes(itemBase))
+          return true;
+        if (itemBase && off.s3_key && off.s3_key.includes(itemBase))
+          return true;
+        if (
+          item.local_path &&
+          off.local_path &&
+          path.resolve(item.local_path) === path.resolve(off.local_path)
+        )
+          return true;
         return false;
       });
 
@@ -222,7 +288,9 @@ async function syncLocalDownloadsToMetadata(existingList: VideoMetadata[]): Prom
         if (!matchingOfficial.local_path && item.local_path) {
           matchingOfficial.local_path = item.local_path;
         }
-        console.log(`🧹 [SyncMetadata] Purged duplicate vid_sync entry "${item.title}" (${item.id}) - official entry is "${matchingOfficial.title}" (${matchingOfficial.id})`);
+        console.log(
+          `🧹 [SyncMetadata] Purged duplicate vid_sync entry "${item.title}" (${item.id}) - official entry is "${matchingOfficial.title}" (${matchingOfficial.id})`,
+        );
         modified = true;
         continue; // Drop the duplicate vid_sync entry
       }
@@ -240,7 +308,10 @@ async function syncLocalDownloadsToMetadata(existingList: VideoMetadata[]): Prom
         const fullPath = path.join(dir, entry.name);
         if (entry.isDirectory()) {
           results = results.concat(helperScanDir(fullPath));
-        } else if (entry.isFile() && (entry.name.endsWith(".mp4") || entry.name.endsWith(".webm"))) {
+        } else if (
+          entry.isFile() &&
+          (entry.name.endsWith(".mp4") || entry.name.endsWith(".webm"))
+        ) {
           results.push(fullPath);
         }
       }
@@ -258,44 +329,56 @@ async function syncLocalDownloadsToMetadata(existingList: VideoMetadata[]): Prom
   }
 
   for (const [dir, files] of dirMap.entries()) {
-    const mainVideo = files.find(f => 
-      !f.includes("_voiced") && 
-      !f.includes("_part") && 
-      (
-        f.endsWith("_raw_original.mp4") || 
-        f.endsWith("_merged.mp4") ||
-        path.basename(f).startsWith("stitched_") ||
-        path.basename(f).startsWith("uploaded_")
-      )
-    ) || (dir === downloadsDir ? files.find(f => !f.includes("_voiced") && !f.includes("_part")) : null);
+    const mainVideo =
+      files.find(
+        (f) =>
+          !f.includes("_voiced") &&
+          !f.includes("_part") &&
+          (f.endsWith("_raw_original.mp4") ||
+            f.endsWith("_merged.mp4") ||
+            path.basename(f).startsWith("stitched_") ||
+            path.basename(f).startsWith("uploaded_")),
+      ) ||
+      (dir === downloadsDir
+        ? files.find((f) => !f.includes("_voiced") && !f.includes("_part"))
+        : null);
 
     if (!mainVideo) continue;
 
     const relativePath = "/downloads/" + path.relative(downloadsDir, mainVideo);
-    
+
     // Check if explicitly deleted by user
     if (
-      deletedPaths.has(relativePath) || 
-      (mainVideo && deletedPaths.has(mainVideo)) || 
-      deletedPaths.has(dir) || 
+      deletedPaths.has(relativePath) ||
+      (mainVideo && deletedPaths.has(mainVideo)) ||
+      deletedPaths.has(dir) ||
       deletedPaths.has(path.basename(dir))
     ) {
       continue;
     }
-    
+
     const baseMain = path.basename(mainVideo);
     let matchedItem: VideoMetadata | undefined = undefined;
 
-    const isAlreadyPresent = list.some(item => {
-      if (item.local_path && path.resolve(item.local_path) === path.resolve(mainVideo)) {
+    const isAlreadyPresent = list.some((item) => {
+      if (
+        item.local_path &&
+        path.resolve(item.local_path) === path.resolve(mainVideo)
+      ) {
         matchedItem = item;
         return true;
       }
-      if (item.s3_url && (item.s3_url.includes(baseMain) || item.s3_url === relativePath)) {
+      if (
+        item.s3_url &&
+        (item.s3_url.includes(baseMain) || item.s3_url === relativePath)
+      ) {
         matchedItem = item;
         return true;
       }
-      if (item.stream_url && (item.stream_url.includes(baseMain) || item.stream_url === relativePath)) {
+      if (
+        item.stream_url &&
+        (item.stream_url.includes(baseMain) || item.stream_url === relativePath)
+      ) {
         matchedItem = item;
         return true;
       }
@@ -307,7 +390,11 @@ async function syncLocalDownloadsToMetadata(existingList: VideoMetadata[]): Prom
     });
 
     // If already present but lacks local_path, attach it now
-    if (isAlreadyPresent && matchedItem && !(matchedItem as VideoMetadata).local_path) {
+    if (
+      isAlreadyPresent &&
+      matchedItem &&
+      !(matchedItem as VideoMetadata).local_path
+    ) {
       (matchedItem as VideoMetadata).local_path = mainVideo;
       modified = true;
     }
@@ -327,7 +414,7 @@ async function syncLocalDownloadsToMetadata(existingList: VideoMetadata[]): Prom
       } catch {}
 
       const fileNameStr = path.basename(mainVideo, path.extname(mainVideo));
-      
+
       let cleanTitle = folderName.split("_")[0].replace(/-/g, " ");
       cleanTitle = cleanTitle.charAt(0).toUpperCase() + cleanTitle.slice(1);
 
@@ -356,12 +443,14 @@ async function syncLocalDownloadsToMetadata(existingList: VideoMetadata[]): Prom
         images: thumbUrl ? [thumbUrl] : [],
         size_bytes: stat.size,
         created_at: stat.mtime.toISOString(),
-        updated_at: stat.mtime.toISOString()
+        updated_at: stat.mtime.toISOString(),
       };
 
       list.unshift(newEntry);
       modified = true;
-      console.log(`✨ [SyncMetadata] Auto-registered local video in Kho Video: ${cleanTitle} (${relativePath}) [Thumb: ${thumbUrl || "none"}]`);
+      console.log(
+        `✨ [SyncMetadata] Auto-registered local video in Kho Video: ${cleanTitle} (${relativePath}) [Thumb: ${thumbUrl || "none"}]`,
+      );
     }
   }
 
@@ -371,22 +460,32 @@ async function syncLocalDownloadsToMetadata(existingList: VideoMetadata[]): Prom
       let candidateVideo = item.local_path;
       if (!candidateVideo || !existsSync(candidateVideo)) {
         if (item.s3_url && item.s3_url.startsWith("/downloads/")) {
-          candidateVideo = path.join(downloadsDir, item.s3_url.replace(/^\/downloads\//, ""));
+          candidateVideo = path.join(
+            downloadsDir,
+            item.s3_url.replace(/^\/downloads\//, ""),
+          );
         }
       }
       if (candidateVideo && existsSync(candidateVideo)) {
         const itemDir = path.dirname(candidateVideo);
-        const itemFileBase = path.basename(candidateVideo, path.extname(candidateVideo));
+        const itemFileBase = path.basename(
+          candidateVideo,
+          path.extname(candidateVideo),
+        );
         const itemThumbPath = path.join(itemDir, `${itemFileBase}_thumb.jpg`);
         if (!existsSync(itemThumbPath)) {
           extractVideoThumbnailSync(candidateVideo, itemThumbPath);
         }
         if (existsSync(itemThumbPath)) {
-          const relativeThumb = "/downloads/" + path.relative(downloadsDir, itemThumbPath);
+          const relativeThumb =
+            "/downloads/" + path.relative(downloadsDir, itemThumbPath);
           item.thumbnail_url = relativeThumb;
-          if (!item.images || item.images.length === 0) item.images = [relativeThumb];
+          if (!item.images || item.images.length === 0)
+            item.images = [relativeThumb];
           modified = true;
-          console.log(`🖼️ [SyncMetadata] Auto-extracted thumbnail for: ${item.title} -> ${relativeThumb}`);
+          console.log(
+            `🖼️ [SyncMetadata] Auto-extracted thumbnail for: ${item.title} -> ${relativeThumb}`,
+          );
         }
       }
     }
@@ -427,7 +526,7 @@ async function appendMetadata(entry: VideoMetadata): Promise<void> {
 // ─── S3 Upload Helper ─────────────────────────────────────────────────────────
 async function uploadUrlToS3(
   videoUrl: string,
-  s3Key: string
+  s3Key: string,
 ): Promise<{ s3Url: string; sizeBytes: number }> {
   console.log(`⬇️  Downloading video from: ${videoUrl}`);
 
@@ -437,14 +536,19 @@ async function uploadUrlToS3(
     headers: { "User-Agent": "affiliate-mcp-server/1.0" },
   });
 
-  const contentLength = parseInt(String(response.headers["content-length"] ?? "0"), 10);
+  const contentLength = parseInt(
+    String(response.headers["content-length"] ?? "0"),
+    10,
+  );
   const contentType = String(response.headers["content-type"] ?? "video/mp4");
   const stream = response.data as Readable;
   stream.on("error", (err) => {
     console.warn(`⚠️ [uploadUrlToS3] Stream error: ${err.message}`);
   });
 
-  console.log(`☁️  Uploading to S3: s3://${S3_BUCKET}/${s3Key} (content-type: ${contentType})`);
+  console.log(
+    `☁️  Uploading to S3: s3://${S3_BUCKET}/${s3Key} (content-type: ${contentType})`,
+  );
 
   const upload = new Upload({
     client: s3Client,
@@ -475,21 +579,33 @@ async function uploadUrlToS3(
   return { s3Url, sizeBytes: contentLength };
 }
 
-async function uploadImageToS3(imageUrl: string, prefix: string = "images"): Promise<string> {
-  if (!imageUrl || !imageUrl.startsWith("http") || imageUrl.includes(".amazonaws.com/")) return imageUrl;
+async function uploadImageToS3(
+  imageUrl: string,
+  prefix: string = "images",
+): Promise<string> {
+  if (
+    !imageUrl ||
+    !imageUrl.startsWith("http") ||
+    imageUrl.includes(".amazonaws.com/")
+  )
+    return imageUrl;
   if (!S3_BUCKET) return imageUrl;
-  
+
   try {
     const response = await axios.get(imageUrl, {
       responseType: "stream",
       timeout: 5000,
       headers: {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
-      }
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept:
+          "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+      },
     });
 
-    const contentType = String(response.headers["content-type"] ?? "image/jpeg");
+    const contentType = String(
+      response.headers["content-type"] ?? "image/jpeg",
+    );
     const stream = response.data as Readable;
 
     const ext = contentType.split("/")[1] || "jpg";
@@ -511,7 +627,9 @@ async function uploadImageToS3(imageUrl: string, prefix: string = "images"): Pro
     console.log(`✅ Image uploaded to S3: ${s3Url}`);
     return s3Url;
   } catch (err: any) {
-    console.warn(`⚠️ S3 image upload skipped/failed: ${err.message}. Using original URL.`);
+    console.warn(
+      `⚠️ S3 image upload skipped/failed: ${err.message}. Using original URL.`,
+    );
     return imageUrl;
   }
 }
@@ -519,7 +637,10 @@ async function uploadImageToS3(imageUrl: string, prefix: string = "images"): Pro
 // ─── Pre-signed URL Generator ─────────────────────────────────────────────────
 // Dùng khi bucket PRIVATE (Block Public Access = ON)
 // TikTok hoặc bất kỳ ai cần pull video → dùng URL này (có hạn 1 giờ)
-async function generatePresignedUrl(s3Key: string, expiresInSeconds = 3600): Promise<string> {
+async function generatePresignedUrl(
+  s3Key: string,
+  expiresInSeconds = 3600,
+): Promise<string> {
   const command = new GetObjectCommand({ Bucket: S3_BUCKET, Key: s3Key });
   return getSignedUrl(s3Client, command, { expiresIn: expiresInSeconds });
 }
@@ -527,16 +648,22 @@ async function generatePresignedUrl(s3Key: string, expiresInSeconds = 3600): Pro
 // ─── TikTok Publish Helper (Mock) ─────────────────────────────────────────────
 async function publishToTikTok(params: {
   s3Url: string;
-  s3Key?: string;      // Truyền vào để generate pre-signed URL (bucket private)
+  s3Key?: string; // Truyền vào để generate pre-signed URL (bucket private)
   title: string;
   tags: string[];
-}): Promise<{ tiktokVideoId: string; status: "published" | "mock"; videoUrl: string }> {
+}): Promise<{
+  tiktokVideoId: string;
+  status: "published" | "mock";
+  videoUrl: string;
+}> {
   // Nếu có s3Key → generate pre-signed URL (bucket private, bảo mật hơn)
   // Nếu không → dùng trực tiếp s3Url (bucket public)
   let videoUrl = params.s3Url;
   if (params.s3Key && S3_BUCKET) {
     videoUrl = await generatePresignedUrl(params.s3Key);
-    console.log(`🔐 Generated pre-signed URL (expires 1h): ${videoUrl.split("?")[0]}?...`);
+    console.log(
+      `🔐 Generated pre-signed URL (expires 1h): ${videoUrl.split("?")[0]}?...`,
+    );
   }
 
   if (IS_MOCK_TIKTOK) {
@@ -559,7 +686,9 @@ async function publishToTikTok(params: {
   //   { headers: { Authorization: `Bearer ${process.env.TIKTOK_API_KEY}` } }
   // );
   // return { tiktokVideoId: tiktokResp.data.data.publish_id, status: "published", videoUrl };
-  throw new Error("Real TikTok API not implemented yet. Set TIKTOK_API_KEY=mock to use mock mode.");
+  throw new Error(
+    "Real TikTok API not implemented yet. Set TIKTOK_API_KEY=mock to use mock mode.",
+  );
 }
 
 // ─── MCP Server Setup ─────────────────────────────────────────────────────────
@@ -576,209 +705,274 @@ function createMcpServer() {
       description:
         "Download a video from a URL (e.g., from Veo or any public URL) and upload it to AWS S3. Returns the S3 URL and file details.",
       inputSchema: {
-        video_url: z.string().url().describe("Public URL of the video to download and upload"),
-        title: z.string().min(1).describe("Title of the video (used for S3 key naming)"),
-        tags: z.array(z.string()).default([]).describe("Tags or hashtags for the video"),
+        video_url: z
+          .string()
+          .url()
+          .describe("Public URL of the video to download and upload"),
+        title: z
+          .string()
+          .min(1)
+          .describe("Title of the video (used for S3 key naming)"),
+        tags: z
+          .array(z.string())
+          .default([])
+          .describe("Tags or hashtags for the video"),
       },
     },
     async ({ video_url, title, tags }) => {
-    try {
-      if (!S3_BUCKET) {
+      try {
+        if (!S3_BUCKET) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "❌ S3_BUCKET_NAME is not configured in .env",
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        // Tạo S3 key từ title + timestamp
+        const safeTitle = title
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .slice(0, 60);
+        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const s3Key = `${S3_PREFIX}${timestamp}_${safeTitle}.mp4`;
+
+        const { s3Url, sizeBytes } = await uploadUrlToS3(video_url, s3Key);
+
+        const result = {
+          success: true,
+          s3_url: s3Url,
+          bucket: S3_BUCKET,
+          key: s3Key,
+          size_bytes: sizeBytes,
+          title,
+          tags,
+          uploaded_at: new Date().toISOString(),
+        };
+
+        console.log("✅ [upload_video] Done:", result);
+
         return {
-          content: [{ type: "text", text: "❌ S3_BUCKET_NAME is not configured in .env" }],
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        const msg = `❌ upload_video failed: ${err.message}`;
+        console.error(msg, err);
+        return {
+          content: [{ type: "text", text: msg }],
           isError: true,
         };
       }
-
-      // Tạo S3 key từ title + timestamp
-      const safeTitle = title
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .slice(0, 60);
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const s3Key = `${S3_PREFIX}${timestamp}_${safeTitle}.mp4`;
-
-      const { s3Url, sizeBytes } = await uploadUrlToS3(video_url, s3Key);
-
-      const result = {
-        success: true,
-        s3_url: s3Url,
-        bucket: S3_BUCKET,
-        key: s3Key,
-        size_bytes: sizeBytes,
-        title,
-        tags,
-        uploaded_at: new Date().toISOString(),
-      };
-
-      console.log("✅ [upload_video] Done:", result);
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } catch (err: any) {
-      const msg = `❌ upload_video failed: ${err.message}`;
-      console.error(msg, err);
-      return {
-        content: [{ type: "text", text: msg }],
-        isError: true,
-      };
-    }
-  }
-);
-
-// ── Tool 2: save_metadata ─────────────────────────────────────────────────────
-  server.registerTool(
-  "save_metadata",
-  {
-    description:
-      "Save video metadata (title, tags, S3 URL, source URL) to local JSON storage. Returns the unique video ID.",
-    inputSchema: {
-      s3_url: z.string().url().describe("S3 URL of the uploaded video"),
-      s3_bucket: z.string().default("").describe("S3 bucket name"),
-      s3_key: z.string().default("").describe("S3 object key"),
-      source_url: z.string().url().describe("Original source URL of the video (e.g., from Veo)"),
-      title: z.string().min(1).describe("Title of the video"),
-      description: z.string().optional().describe("Optional description of the video"),
-      tags: z.array(z.string()).default([]).describe("Tags or hashtags"),
-      size_bytes: z.number().default(0).describe("File size in bytes"),
     },
-  },
-  async ({ s3_url, s3_bucket, s3_key, source_url, title, description, tags, size_bytes }) => {
-    try {
-      const id = randomUUID();
-      const now = new Date().toISOString();
+  );
 
-      const entry: VideoMetadata = {
-        id,
-        title,
-        description,
-        tags,
-        source_url,
-        s3_url,
-        s3_bucket,
-        s3_key,
-        size_bytes,
-        created_at: now,
-        updated_at: now,
-      };
-
-      await appendMetadata(entry);
-
-      const result = { success: true, id, saved: true, created_at: now };
-      console.log("✅ [save_metadata] Saved:", id, title);
-
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-      };
-    } catch (err: any) {
-      const msg = `❌ save_metadata failed: ${err.message}`;
-      console.error(msg);
-      return {
-        content: [{ type: "text", text: msg }],
-        isError: true,
-      };
-    }
-  }
-);
-
-// ── Tool 3: publish_tiktok ────────────────────────────────────────────────────
+  // ── Tool 2: save_metadata ─────────────────────────────────────────────────────
   server.registerTool(
-  "publish_tiktok",
-  {
-    description:
-      "Publish a video to TikTok using its S3 URL. Currently in MOCK mode — set TIKTOK_API_KEY in .env to switch to real API. Also updates the metadata record with TikTok video ID.",
-    inputSchema: {
-      s3_url: z.string().url().describe("S3 URL of the video to publish"),
-      title: z.string().min(1).describe("TikTok post title/caption"),
-      tags: z.array(z.string()).default([]).describe("Hashtags for the TikTok post"),
-      metadata_id: z
-        .string()
-        .optional()
-        .describe("Optional: ID from save_metadata to update with TikTok info"),
+    "save_metadata",
+    {
+      description:
+        "Save video metadata (title, tags, S3 URL, source URL) to local JSON storage. Returns the unique video ID.",
+      inputSchema: {
+        s3_url: z.string().url().describe("S3 URL of the uploaded video"),
+        s3_bucket: z.string().default("").describe("S3 bucket name"),
+        s3_key: z.string().default("").describe("S3 object key"),
+        source_url: z
+          .string()
+          .url()
+          .describe("Original source URL of the video (e.g., from Veo)"),
+        title: z.string().min(1).describe("Title of the video"),
+        description: z
+          .string()
+          .optional()
+          .describe("Optional description of the video"),
+        tags: z.array(z.string()).default([]).describe("Tags or hashtags"),
+        size_bytes: z.number().default(0).describe("File size in bytes"),
+      },
     },
-  },
-  async ({ s3_url, title, tags, metadata_id }) => {
-    try {
-      const { tiktokVideoId, status } = await publishToTikTok({ s3Url: s3_url, title, tags });
+    async ({
+      s3_url,
+      s3_bucket,
+      s3_key,
+      source_url,
+      title,
+      description,
+      tags,
+      size_bytes,
+    }) => {
+      try {
+        const id = randomUUID();
+        const now = new Date().toISOString();
 
-      // Nếu có metadata_id → update record
-      if (metadata_id) {
-        const list = await loadMetadata();
-        const idx = list.findIndex((v) => v.id === metadata_id);
-        if (idx !== -1) {
-          list[idx].tiktok_video_id = tiktokVideoId;
-          list[idx].tiktok_status = status;
-          list[idx].updated_at = new Date().toISOString();
-          await saveMetadata(list);
-          console.log(`📝 Updated metadata ${metadata_id} with TikTok ID: ${tiktokVideoId}`);
+        const entry: VideoMetadata = {
+          id,
+          title,
+          description,
+          tags,
+          source_url,
+          s3_url,
+          s3_bucket,
+          s3_key,
+          size_bytes,
+          created_at: now,
+          updated_at: now,
+        };
+
+        await appendMetadata(entry);
+
+        const result = { success: true, id, saved: true, created_at: now };
+        console.log("✅ [save_metadata] Saved:", id, title);
+
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (err: any) {
+        const msg = `❌ save_metadata failed: ${err.message}`;
+        console.error(msg);
+        return {
+          content: [{ type: "text", text: msg }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // ── Tool 3: publish_tiktok ────────────────────────────────────────────────────
+  server.registerTool(
+    "publish_tiktok",
+    {
+      description:
+        "Publish a video to TikTok using its S3 URL. Currently in MOCK mode — set TIKTOK_API_KEY in .env to switch to real API. Also updates the metadata record with TikTok video ID.",
+      inputSchema: {
+        s3_url: z.string().url().describe("S3 URL of the video to publish"),
+        title: z.string().min(1).describe("TikTok post title/caption"),
+        tags: z
+          .array(z.string())
+          .default([])
+          .describe("Hashtags for the TikTok post"),
+        metadata_id: z
+          .string()
+          .optional()
+          .describe(
+            "Optional: ID from save_metadata to update with TikTok info",
+          ),
+      },
+    },
+    async ({ s3_url, title, tags, metadata_id }) => {
+      try {
+        const { tiktokVideoId, status } = await publishToTikTok({
+          s3Url: s3_url,
+          title,
+          tags,
+        });
+
+        // Nếu có metadata_id → update record
+        if (metadata_id) {
+          const list = await loadMetadata();
+          const idx = list.findIndex((v) => v.id === metadata_id);
+          if (idx !== -1) {
+            list[idx].tiktok_video_id = tiktokVideoId;
+            list[idx].tiktok_status = status;
+            list[idx].updated_at = new Date().toISOString();
+            await saveMetadata(list);
+            console.log(
+              `📝 Updated metadata ${metadata_id} with TikTok ID: ${tiktokVideoId}`,
+            );
+          }
         }
+
+        const result = {
+          success: true,
+          tiktok_video_id: tiktokVideoId,
+          status,
+          mode: IS_MOCK_TIKTOK ? "mock" : "real",
+          title,
+          tags,
+          published_at: new Date().toISOString(),
+        };
+
+        console.log(`✅ [publish_tiktok] ${status}:`, tiktokVideoId);
+
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (err: any) {
+        const msg = `❌ publish_tiktok failed: ${err.message}`;
+        console.error(msg);
+        return {
+          content: [{ type: "text", text: msg }],
+          isError: true,
+        };
       }
-
-      const result = {
-        success: true,
-        tiktok_video_id: tiktokVideoId,
-        status,
-        mode: IS_MOCK_TIKTOK ? "mock" : "real",
-        title,
-        tags,
-        published_at: new Date().toISOString(),
-      };
-
-      console.log(`✅ [publish_tiktok] ${status}:`, tiktokVideoId);
-
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-      };
-    } catch (err: any) {
-      const msg = `❌ publish_tiktok failed: ${err.message}`;
-      console.error(msg);
-      return {
-        content: [{ type: "text", text: msg }],
-        isError: true,
-      };
-      }
-    }
+    },
   );
 
   // ── Tool 4: generate_prompt ───────────────────────────────────────────────────
   server.registerTool(
     "generate_prompt",
     {
-      description: "Generate a Veo cinematic prompt using AGY Gemini 3.8 first, with model fallback. Optionally supply a product image to guide the generation style.",
+      description:
+        "Generate a Veo cinematic prompt using AGY Gemini 3.8 first, with model fallback. Optionally supply a product image to guide the generation style.",
       inputSchema: {
         product_name: z.string().min(1).describe("The affiliate product name"),
         category: z
           .enum(["tech", "beauty", "fashion", "food", "fitness"])
           .default("tech")
           .describe("The product category"),
-        product_image_url: z.string().optional().describe("Optional product image URL to guide style and color palette"),
-        product_description: z.string().optional().describe("Optional product description to guide prompt details"),
+        product_image_url: z
+          .string()
+          .optional()
+          .describe(
+            "Optional product image URL to guide style and color palette",
+          ),
+        product_description: z
+          .string()
+          .optional()
+          .describe("Optional product description to guide prompt details"),
       },
     },
-    async ({ product_name, category, product_image_url, product_description }) => {
+    async ({
+      product_name,
+      category,
+      product_image_url,
+      product_description,
+    }) => {
       try {
-        const prompt = await generateVideoPrompt(product_name, category, product_image_url, product_description);
+        const prompt = await generateVideoPrompt(
+          product_name,
+          category,
+          product_image_url,
+          product_description,
+        );
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ success: true, product_name, category, prompt }, null, 2),
+              text: JSON.stringify(
+                { success: true, product_name, category, prompt },
+                null,
+                2,
+              ),
             },
           ],
         };
       } catch (err: any) {
         return {
-          content: [{ type: "text", text: `❌ generate_prompt failed: ${err.message}` }],
+          content: [
+            { type: "text", text: `❌ generate_prompt failed: ${err.message}` },
+          ],
           isError: true,
         };
       }
-    }
+    },
   );
 
   // ── Tool 5: generate_video ────────────────────────────────────────────────────
@@ -788,8 +982,16 @@ function createMcpServer() {
       description:
         "Use Puppeteer to open Gemini Web (with an active Chrome profile logged in to Gemini Advanced) to generate a Veo video from a prompt and download the resulting MP4. Optionally attach a product image to guide the generation.",
       inputSchema: {
-        veo_prompt: z.string().min(10).describe("The English Veo cinematic prompt"),
-        product_image_url: z.string().optional().describe("Optional S3 proxy or raw product image URL to upload alongside prompt"),
+        veo_prompt: z
+          .string()
+          .min(10)
+          .describe("The English Veo cinematic prompt"),
+        product_image_url: z
+          .string()
+          .optional()
+          .describe(
+            "Optional S3 proxy or raw product image URL to upload alongside prompt",
+          ),
       },
     },
     async ({ veo_prompt, product_image_url }) => {
@@ -809,7 +1011,7 @@ function createMcpServer() {
                   error: result.error,
                 },
                 null,
-                2
+                2,
               ),
             },
           ],
@@ -817,11 +1019,13 @@ function createMcpServer() {
         };
       } catch (err: any) {
         return {
-          content: [{ type: "text", text: `❌ generate_video failed: ${err.message}` }],
+          content: [
+            { type: "text", text: `❌ generate_video failed: ${err.message}` },
+          ],
           isError: true,
         };
       }
-    }
+    },
   );
 
   // ── Tool 6: run_full_pipeline ─────────────────────────────────────────────────
@@ -831,8 +1035,16 @@ function createMcpServer() {
       description:
         "Run the complete automated affiliate pipeline for a product: Generate Prompt -> Generate Veo Video -> Upload to S3 -> Save Metadata -> Publish to TikTok.",
       inputSchema: {
-        product_id: z.string().optional().describe("Optional product ID from products.json"),
-        product_name: z.string().optional().describe("Optional product name (used if product_id is not provided)"),
+        product_id: z
+          .string()
+          .optional()
+          .describe("Optional product ID from products.json"),
+        product_name: z
+          .string()
+          .optional()
+          .describe(
+            "Optional product name (used if product_id is not provided)",
+          ),
         category: z
           .enum(["tech", "beauty", "fashion", "food", "fitness"])
           .default("tech")
@@ -840,12 +1052,27 @@ function createMcpServer() {
         dry_run: z
           .boolean()
           .default(false)
-          .describe("If true, only generates the prompt without generating the video"),
-        upload_s3: z.boolean().default(true).describe("Whether to upload the generated video to S3"),
-        publish_tiktok: z.boolean().default(true).describe("Whether to publish the video to TikTok"),
+          .describe(
+            "If true, only generates the prompt without generating the video",
+          ),
+        upload_s3: z
+          .boolean()
+          .default(true)
+          .describe("Whether to upload the generated video to S3"),
+        publish_tiktok: z
+          .boolean()
+          .default(true)
+          .describe("Whether to publish the video to TikTok"),
       },
     },
-    async ({ product_id, product_name, category, dry_run, upload_s3, publish_tiktok }) => {
+    async ({
+      product_id,
+      product_name,
+      category,
+      dry_run,
+      upload_s3,
+      publish_tiktok,
+    }) => {
       try {
         let product;
         if (product_id) {
@@ -858,7 +1085,10 @@ function createMcpServer() {
             name: product_name,
             category,
             affiliate_url: "",
-            hashtags: [`#${product_name.toLowerCase().replace(/\s+/g, "")}`, "#affiliate"],
+            hashtags: [
+              `#${product_name.toLowerCase().replace(/\s+/g, "")}`,
+              "#affiliate",
+            ],
             enabled: true,
           };
         } else {
@@ -877,11 +1107,16 @@ function createMcpServer() {
         };
       } catch (err: any) {
         return {
-          content: [{ type: "text", text: `❌ run_full_pipeline failed: ${err.message}` }],
+          content: [
+            {
+              type: "text",
+              text: `❌ run_full_pipeline failed: ${err.message}`,
+            },
+          ],
           isError: true,
         };
       }
-    }
+    },
   );
 
   return server;
@@ -892,7 +1127,9 @@ const app = express();
 
 // Request logger for debugging Gemini requests
 app.use((req, _res, next) => {
-  console.log(`🌐 [Gemini Probe] ${req.method} ${req.url} - User-Agent: ${req.headers["user-agent"]}`);
+  console.log(
+    `🌐 [Gemini Probe] ${req.method} ${req.url} - User-Agent: ${req.headers["user-agent"]}`,
+  );
   next();
 });
 
@@ -909,11 +1146,21 @@ app.use(
     origin: "*",
     methods: "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS",
     exposedHeaders: ["mcp-session-id"],
-  })
+  }),
 );
 
 app.use(express.json({ limit: "500mb" }));
 app.use(express.urlencoded({ limit: "500mb", extended: true }));
+
+// ── Shorts Studio (9:16) & Video Dài (16:9) API ──────────────────────────────
+registerShortsStudioRoutes(app, {
+  rootDir: path.resolve(__dirname, ".."),
+  loadMetadata: () => loadMetadata(),
+  saveMetadata: (list) => saveMetadata(list),
+  s3Client,
+  s3Bucket: S3_BUCKET,
+  s3Prefix: S3_PREFIX,
+});
 
 // Serve Web Dashboard: React app (client/dist) or legacy /public folder
 const CLIENT_DIST_DIR = path.resolve(__dirname, "../client/dist");
@@ -935,7 +1182,8 @@ app.use(async (req, res, next) => {
   // Only proxy to Vite when accessed via localhost — external domains (e.g. Cloudflare Tunnel)
   // must get the production build because Vite HMR WebSocket won't work through the tunnel.
   const hostHeader = req.headers.host || "";
-  const isLocalRequest = hostHeader.startsWith("localhost") || hostHeader.startsWith("127.0.0.1");
+  const isLocalRequest =
+    hostHeader.startsWith("localhost") || hostHeader.startsWith("127.0.0.1");
   if (process.env.NODE_ENV !== "production" && isLocalRequest) {
     try {
       const viteUrl = `http://127.0.0.1:5173${req.originalUrl}`;
@@ -962,17 +1210,20 @@ app.use(async (req, res, next) => {
   if (existsSync(clientDistIndex)) {
     return express.static(CLIENT_DIST_DIR, {
       setHeaders: (res, filePath) => {
-        if (filePath.endsWith(".html") || filePath.endsWith(".js") || filePath.endsWith(".css")) {
+        if (
+          filePath.endsWith(".html") ||
+          filePath.endsWith(".js") ||
+          filePath.endsWith(".css")
+        ) {
           res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
           res.setHeader("Pragma", "no-cache");
           res.setHeader("Expires", "0");
         }
-      }
+      },
     })(req, res, next);
   }
   return express.static(PUBLIC_DIR)(req, res, next);
 });
-
 
 // Serve downloaded videos directly — stream via /downloads/:file
 const DOWNLOADS_DIR_STATIC = path.resolve(__dirname, "../data/downloads");
@@ -990,7 +1241,10 @@ app.get("/api/videos/local", (_req: any, res: any) => {
         const relPath = base ? `${base}/${entry.name}` : entry.name;
         if (entry.isDirectory()) {
           results = results.concat(scanDir(fullPath, relPath));
-        } else if (entry.isFile() && (entry.name.endsWith(".mp4") || entry.name.endsWith(".webm"))) {
+        } else if (
+          entry.isFile() &&
+          (entry.name.endsWith(".mp4") || entry.name.endsWith(".webm"))
+        ) {
           const stat = statSync(fullPath);
           results.push({
             filename: entry.name,
@@ -1003,8 +1257,9 @@ app.get("/api/videos/local", (_req: any, res: any) => {
       }
       return results;
     };
-    const files = scanDir(DOWNLOADS_DIR_STATIC)
-      .sort((a, b) => b.created_at.localeCompare(a.created_at));
+    const files = scanDir(DOWNLOADS_DIR_STATIC).sort((a, b) =>
+      b.created_at.localeCompare(a.created_at),
+    );
     res.json({ success: true, count: files.length, videos: files });
   } catch (err: any) {
     res.json({ success: true, count: 0, videos: [] });
@@ -1014,7 +1269,9 @@ app.get("/api/videos/local", (_req: any, res: any) => {
 // Detailed Request logger for debugging Gemini requests
 app.use((req, _res, next) => {
   if (req.url.includes("mcp") || req.url.includes("oauth")) {
-    console.log(`📡 [GEMINI INCOMING] ${req.method} ${req.originalUrl || req.url}`);
+    console.log(
+      `📡 [GEMINI INCOMING] ${req.method} ${req.originalUrl || req.url}`,
+    );
     console.log(`   Headers:`, JSON.stringify(req.headers));
     if (req.body && Object.keys(req.body).length > 0) {
       console.log(`   Body:`, JSON.stringify(req.body));
@@ -1064,7 +1321,10 @@ app.get("/api/videos/download", async (req: any, res: any) => {
   try {
     const { url, filename, path: queryPath, id } = req.query;
     let targetFilePath: string | null = null;
-    let outFilename = (typeof filename === "string" && filename.trim()) ? filename.trim() : "video.mp4";
+    let outFilename =
+      typeof filename === "string" && filename.trim()
+        ? filename.trim()
+        : "video.mp4";
     if (!outFilename.endsWith(".mp4")) outFilename += ".mp4";
 
     const downloadsDir = path.resolve(__dirname, "../data/downloads");
@@ -1075,11 +1335,20 @@ app.get("/api/videos/download", async (req: any, res: any) => {
       if (item) {
         if (item.local_path && existsSync(item.local_path)) {
           targetFilePath = item.local_path;
-        } else if (item.source_url && item.source_url.startsWith("/downloads/")) {
-          targetFilePath = path.join(downloadsDir, item.source_url.replace(/^\/downloads\//, ""));
+        } else if (
+          item.source_url &&
+          item.source_url.startsWith("/downloads/")
+        ) {
+          targetFilePath = path.join(
+            downloadsDir,
+            item.source_url.replace(/^\/downloads\//, ""),
+          );
         }
         if (!filename && item.title) {
-          outFilename = `${item.title.trim().replace(/[^a-zA-Z0-9_\-\u00C0-\u024F\u1EA0-\u1EF9\s]/gu, "").replace(/\s+/g, "_")}.mp4`;
+          outFilename = `${item.title
+            .trim()
+            .replace(/[^a-zA-Z0-9_\-\u00C0-\u024F\u1EA0-\u1EF9\s]/gu, "")
+            .replace(/\s+/g, "_")}.mp4`;
         }
       }
     }
@@ -1101,7 +1370,10 @@ app.get("/api/videos/download", async (req: any, res: any) => {
       } else if (url.startsWith("http://") || url.startsWith("https://")) {
         const fetchRes = await fetch(url);
         if (!fetchRes.ok) throw new Error(`HTTP ${fetchRes.status}`);
-        res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(outFilename)}"`);
+        res.setHeader(
+          "Content-Disposition",
+          `attachment; filename="${encodeURIComponent(outFilename)}"`,
+        );
         res.setHeader("Content-Type", "video/mp4");
         if (fetchRes.body) {
           const { Readable } = await import("stream");
@@ -1117,7 +1389,9 @@ app.get("/api/videos/download", async (req: any, res: any) => {
       return;
     }
 
-    return res.status(404).json({ success: false, error: "File video không tồn tại để tải" });
+    return res
+      .status(404)
+      .json({ success: false, error: "File video không tồn tại để tải" });
   } catch (err: any) {
     console.error(`❌ [Download API Error]: ${err.message}`);
     res.status(500).json({ success: false, error: err.message });
@@ -1162,7 +1436,9 @@ app.get("/api/youtube/callback", async (req: any, res: any) => {
   try {
     const { code, error } = req.query;
     if (error) {
-      return res.status(400).send(`<h3>Đăng nhập YouTube bị từ chối:</h3><p>${error}</p>`);
+      return res
+        .status(400)
+        .send(`<h3>Đăng nhập YouTube bị từ chối:</h3><p>${error}</p>`);
     }
     if (!code || typeof code !== "string") {
       return res.status(400).send("<h3>Mã xác thực không hợp lệ!</h3>");
@@ -1233,8 +1509,14 @@ app.post("/api/youtube/upload", async (req: any, res: any) => {
       const found = meta.find((m: any) => m.id === video_id);
       if (found?.local_path && existsSync(found.local_path)) {
         targetFilePath = found.local_path;
-      } else if (found?.source_url && found.source_url.startsWith("/downloads/")) {
-        const p = path.join(downloadsDir, found.source_url.replace(/^\/downloads\//, ""));
+      } else if (
+        found?.source_url &&
+        found.source_url.startsWith("/downloads/")
+      ) {
+        const p = path.join(
+          downloadsDir,
+          found.source_url.replace(/^\/downloads\//, ""),
+        );
         if (existsSync(p)) targetFilePath = p;
       }
     }
@@ -1244,11 +1526,15 @@ app.post("/api/youtube/upload", async (req: any, res: any) => {
         const cleanRel = video_url.replace(/^\/downloads\//, "").split("?")[0];
         const p = path.join(downloadsDir, cleanRel);
         if (existsSync(p)) targetFilePath = p;
-      } else if (video_url.startsWith("http://") || video_url.startsWith("https://")) {
+      } else if (
+        video_url.startsWith("http://") ||
+        video_url.startsWith("https://")
+      ) {
         const tempFilename = `temp_yt_${Date.now()}.mp4`;
         const tempPath = path.join(downloadsDir, tempFilename);
         const fetchRes = await fetch(video_url);
-        if (!fetchRes.ok) throw new Error(`Không tải được video từ URL: ${fetchRes.status}`);
+        if (!fetchRes.ok)
+          throw new Error(`Không tải được video từ URL: ${fetchRes.status}`);
         const buffer = Buffer.from(await fetchRes.arrayBuffer());
         await fs.writeFile(tempPath, buffer);
         targetFilePath = tempPath;
@@ -1272,30 +1558,56 @@ app.post("/api/youtube/upload", async (req: any, res: any) => {
         try {
           const base64Data = cleanThumb.replace(/^data:image\/\w+;base64,/, "");
           const ext = cleanThumb.includes("png") ? ".png" : ".jpg";
-          const tempThumbFile = path.join(downloadsDir, `temp_thumb_${Date.now()}${ext}`);
+          const tempThumbFile = path.join(
+            downloadsDir,
+            `temp_thumb_${Date.now()}${ext}`,
+          );
           await fs.writeFile(tempThumbFile, Buffer.from(base64Data, "base64"));
           targetThumbnailPath = tempThumbFile;
         } catch (e: any) {
-          console.warn("⚠️ [YouTube] Could not save base64 thumbnail:", e.message);
+          console.warn(
+            "⚠️ [YouTube] Could not save base64 thumbnail:",
+            e.message,
+          );
         }
       } else if (cleanThumb.startsWith("/downloads/")) {
-        const p = path.join(downloadsDir, cleanThumb.replace(/^\/downloads\//, "").split("?")[0]);
+        const p = path.join(
+          downloadsDir,
+          cleanThumb.replace(/^\/downloads\//, "").split("?")[0],
+        );
         if (existsSync(p)) targetThumbnailPath = p;
       } else if (cleanThumb.startsWith("/outputs/")) {
         const outputsDir = path.resolve(__dirname, "../outputs");
-        const p = path.join(outputsDir, cleanThumb.replace(/^\/outputs\//, "").split("?")[0]);
+        const p = path.join(
+          outputsDir,
+          cleanThumb.replace(/^\/outputs\//, "").split("?")[0],
+        );
         if (existsSync(p)) targetThumbnailPath = p;
-      } else if (cleanThumb.startsWith("http://") || cleanThumb.startsWith("https://")) {
+      } else if (
+        cleanThumb.startsWith("http://") ||
+        cleanThumb.startsWith("https://")
+      ) {
         try {
           const fetchThumb = await fetch(cleanThumb);
           if (fetchThumb.ok) {
-            const ext = cleanThumb.toLowerCase().includes(".png") ? ".png" : ".jpg";
-            const tempThumbFile = path.join(downloadsDir, `temp_thumb_${Date.now()}${ext}`);
-            await fs.writeFile(tempThumbFile, Buffer.from(await fetchThumb.arrayBuffer()));
+            const ext = cleanThumb.toLowerCase().includes(".png")
+              ? ".png"
+              : ".jpg";
+            const tempThumbFile = path.join(
+              downloadsDir,
+              `temp_thumb_${Date.now()}${ext}`,
+            );
+            await fs.writeFile(
+              tempThumbFile,
+              Buffer.from(await fetchThumb.arrayBuffer()),
+            );
             targetThumbnailPath = tempThumbFile;
           }
         } catch (e: any) {
-          console.warn("⚠️ [YouTube] Could not fetch remote thumbnail:", e.message);
+          console.warn(
+            "⚠️ [YouTube] Could not fetch remote thumbnail:",
+            e.message,
+          );
         }
       } else if (existsSync(cleanThumb)) {
         targetThumbnailPath = cleanThumb;
@@ -1307,11 +1619,17 @@ app.post("/api/youtube/upload", async (req: any, res: any) => {
         const autoThumb = found?.thumbnail_url || found?.source_image_url;
         if (autoThumb) {
           if (autoThumb.startsWith("/downloads/")) {
-            const p = path.join(downloadsDir, autoThumb.replace(/^\/downloads\//, "").split("?")[0]);
+            const p = path.join(
+              downloadsDir,
+              autoThumb.replace(/^\/downloads\//, "").split("?")[0],
+            );
             if (existsSync(p)) targetThumbnailPath = p;
           } else if (autoThumb.startsWith("/outputs/")) {
             const outputsDir = path.resolve(__dirname, "../outputs");
-            const p = path.join(outputsDir, autoThumb.replace(/^\/outputs\//, "").split("?")[0]);
+            const p = path.join(
+              outputsDir,
+              autoThumb.replace(/^\/outputs\//, "").split("?")[0],
+            );
             if (existsSync(p)) targetThumbnailPath = p;
           }
         }
@@ -1323,7 +1641,10 @@ app.post("/api/youtube/upload", async (req: any, res: any) => {
     if (Array.isArray(tags)) {
       parsedTags = tags.map((t: string) => t.trim()).filter(Boolean);
     } else if (typeof tags === "string") {
-      parsedTags = tags.split(/[\s,#]+/).map((t: string) => t.trim()).filter(Boolean);
+      parsedTags = tags
+        .split(/[\s,#]+/)
+        .map((t: string) => t.trim())
+        .filter(Boolean);
     }
 
     // 4. Upload to YouTube
@@ -1343,7 +1664,11 @@ app.post("/api/youtube/upload", async (req: any, res: any) => {
       const meta = await loadMetadata();
       let updatedAny = false;
       const updatedMeta = meta.map((item: any) => {
-        if ((video_id && item.id === video_id) || (item.local_path && path.resolve(item.local_path) === path.resolve(targetFilePath!))) {
+        if (
+          (video_id && item.id === video_id) ||
+          (item.local_path &&
+            path.resolve(item.local_path) === path.resolve(targetFilePath!))
+        ) {
           updatedAny = true;
           return {
             ...item,
@@ -1359,7 +1684,10 @@ app.post("/api/youtube/upload", async (req: any, res: any) => {
         await saveMetadata(updatedMeta);
       }
     } catch (saveErr) {
-      console.warn("⚠️ [YouTube] Could not update metadata with YouTube info:", saveErr);
+      console.warn(
+        "⚠️ [YouTube] Could not update metadata with YouTube info:",
+        saveErr,
+      );
     }
 
     res.json(result);
@@ -1386,22 +1714,42 @@ app.post("/api/youtube/thumbnail", async (req, res) => {
       if (cleanThumb.startsWith("data:image/")) {
         const base64Data = cleanThumb.replace(/^data:image\/\w+;base64,/, "");
         const ext = cleanThumb.includes("png") ? ".png" : ".jpg";
-        const tempThumbFile = path.join(downloadsDir, `temp_thumb_${Date.now()}${ext}`);
+        const tempThumbFile = path.join(
+          downloadsDir,
+          `temp_thumb_${Date.now()}${ext}`,
+        );
         await fs.writeFile(tempThumbFile, Buffer.from(base64Data, "base64"));
         targetThumbnailPath = tempThumbFile;
       } else if (cleanThumb.startsWith("/downloads/")) {
-        const p = path.join(downloadsDir, cleanThumb.replace(/^\/downloads\//, "").split("?")[0]);
+        const p = path.join(
+          downloadsDir,
+          cleanThumb.replace(/^\/downloads\//, "").split("?")[0],
+        );
         if (existsSync(p)) targetThumbnailPath = p;
       } else if (cleanThumb.startsWith("/outputs/")) {
         const outputsDir = path.resolve(__dirname, "../outputs");
-        const p = path.join(outputsDir, cleanThumb.replace(/^\/outputs\//, "").split("?")[0]);
+        const p = path.join(
+          outputsDir,
+          cleanThumb.replace(/^\/outputs\//, "").split("?")[0],
+        );
         if (existsSync(p)) targetThumbnailPath = p;
-      } else if (cleanThumb.startsWith("http://") || cleanThumb.startsWith("https://")) {
+      } else if (
+        cleanThumb.startsWith("http://") ||
+        cleanThumb.startsWith("https://")
+      ) {
         const fetchThumb = await fetch(cleanThumb);
         if (fetchThumb.ok) {
-          const ext = cleanThumb.toLowerCase().includes(".png") ? ".png" : ".jpg";
-          const tempThumbFile = path.join(downloadsDir, `temp_thumb_${Date.now()}${ext}`);
-          await fs.writeFile(tempThumbFile, Buffer.from(await fetchThumb.arrayBuffer()));
+          const ext = cleanThumb.toLowerCase().includes(".png")
+            ? ".png"
+            : ".jpg";
+          const tempThumbFile = path.join(
+            downloadsDir,
+            `temp_thumb_${Date.now()}${ext}`,
+          );
+          await fs.writeFile(
+            tempThumbFile,
+            Buffer.from(await fetchThumb.arrayBuffer()),
+          );
           targetThumbnailPath = tempThumbFile;
         }
       } else if (existsSync(cleanThumb)) {
@@ -1410,11 +1758,17 @@ app.post("/api/youtube/thumbnail", async (req, res) => {
     }
 
     if (!targetThumbnailPath || !existsSync(targetThumbnailPath)) {
-      return res.status(404).json({ success: false, error: "Không tìm thấy file avatar/thumbnail để cập nhật" });
+      return res.status(404).json({
+        success: false,
+        error: "Không tìm thấy file avatar/thumbnail để cập nhật",
+      });
     }
 
     await updateVideoThumbnail(video_id, targetThumbnailPath);
-    res.json({ success: true, message: `Đã cập nhật thumbnail thành công cho video ${video_id}!` });
+    res.json({
+      success: true,
+      message: `Đã cập nhật thumbnail thành công cho video ${video_id}!`,
+    });
   } catch (err: any) {
     console.error(`❌ [YouTube Set Thumbnail Error]: ${err.message}`);
     res.status(500).json({ success: false, error: err.message });
@@ -1470,8 +1824,14 @@ app.post("/api/facebook/upload", async (req: any, res: any) => {
       const found = meta.find((m: any) => m.id === video_id);
       if (found?.local_path && existsSync(found.local_path)) {
         targetFilePath = found.local_path;
-      } else if (found?.source_url && found.source_url.startsWith("/downloads/")) {
-        const p = path.join(downloadsDir, found.source_url.replace(/^\/downloads\//, ""));
+      } else if (
+        found?.source_url &&
+        found.source_url.startsWith("/downloads/")
+      ) {
+        const p = path.join(
+          downloadsDir,
+          found.source_url.replace(/^\/downloads\//, ""),
+        );
         if (existsSync(p)) targetFilePath = p;
       }
     }
@@ -1486,11 +1846,15 @@ app.post("/api/facebook/upload", async (req: any, res: any) => {
         const cleanRel = video_url.replace(/^\/outputs\//, "").split("?")[0];
         const p = path.join(outputsDir, cleanRel);
         if (existsSync(p)) targetFilePath = p;
-      } else if (video_url.startsWith("http://") || video_url.startsWith("https://")) {
+      } else if (
+        video_url.startsWith("http://") ||
+        video_url.startsWith("https://")
+      ) {
         const tempFilename = `temp_fb_${Date.now()}.mp4`;
         const tempPath = path.join(downloadsDir, tempFilename);
         const fetchRes = await fetch(video_url);
-        if (!fetchRes.ok) throw new Error(`Không tải được video từ URL: ${fetchRes.status}`);
+        if (!fetchRes.ok)
+          throw new Error(`Không tải được video từ URL: ${fetchRes.status}`);
         const buffer = Buffer.from(await fetchRes.arrayBuffer());
         await fs.writeFile(tempPath, buffer);
         targetFilePath = tempPath;
@@ -1524,7 +1888,8 @@ app.post("/api/facebook/upload", async (req: any, res: any) => {
       const updatedMeta = meta.map((item: any) => {
         if (
           (video_id && item.id === video_id) ||
-          (item.local_path && path.resolve(item.local_path) === path.resolve(targetFilePath!))
+          (item.local_path &&
+            path.resolve(item.local_path) === path.resolve(targetFilePath!))
         ) {
           updatedAny = true;
           return {
@@ -1542,7 +1907,10 @@ app.post("/api/facebook/upload", async (req: any, res: any) => {
         await saveMetadata(updatedMeta);
       }
     } catch (saveErr) {
-      console.warn("⚠️ [Facebook] Could not update metadata with Facebook info:", saveErr);
+      console.warn(
+        "⚠️ [Facebook] Could not update metadata with Facebook info:",
+        saveErr,
+      );
     }
 
     res.json(result);
@@ -1553,7 +1921,6 @@ app.post("/api/facebook/upload", async (req: any, res: any) => {
 });
 
 function getCleanStorySummary(v: any): string {
-
   const rawDesc = v.description;
   if (rawDesc && typeof rawDesc === "string") {
     const trimmed = rawDesc.trim();
@@ -1601,7 +1968,9 @@ function getCleanStorySummary(v: any): string {
     }
 
     if (highlights.length > 0) {
-      summary += `\n\n💬 Điểm nhấn câu chuyện:\n` + highlights.map((l) => `• ${l}`).join("\n");
+      summary +=
+        `\n\n💬 Điểm nhấn câu chuyện:\n` +
+        highlights.map((l) => `• ${l}`).join("\n");
     }
 
     summary += `\n\nĐừng quên nhấn Like & Đăng ký kênh để đón xem những tập mới nhất nhé!\n#hoathinh #chibi #shorts`;
@@ -1614,7 +1983,14 @@ function getCleanStorySummary(v: any): string {
 // ── REST: List all videos ─────────────────────────────────────────────────────
 app.get("/api/videos", async (req: any, res: any) => {
   try {
-    const list = await loadMetadata();
+    // Video của Shorts Studio / Video Dài được quản lý riêng ở 2 mục đó → ẩn khỏi Dashboard
+    const fmt = String(req.query.format || "");
+    const list = (await loadMetadata()).filter((v: any) => {
+      if (isStudioVideo(v)) return false;
+      if (fmt === "long") return v.video_format === "long" || v.aspect_ratio === "16:9";
+      if (fmt === "short") return !(v.video_format === "long" || v.aspect_ratio === "16:9");
+      return true;
+    });
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
     const start = (page - 1) * limit;
@@ -1628,19 +2004,22 @@ app.get("/api/videos", async (req: any, res: any) => {
           try {
             streamUrl = await generatePresignedUrl(v.s3_key, 7200); // 2 hours
           } catch (e: any) {
-            console.warn(`⚠️ [S3] Failed to generate presigned URL for ${v.s3_key}:`, e.message);
+            console.warn(
+              `⚠️ [S3] Failed to generate presigned URL for ${v.s3_key}:`,
+              e.message,
+            );
           }
         }
-        
+
         // Normalize old database format compatibility
         return {
           ...v,
           title: v.title || v.product_name || "Untitled",
           description: getCleanStorySummary(v),
           tags: v.tags || (v.category ? [`#${v.category}`] : []),
-          stream_url: streamUrl
+          stream_url: streamUrl,
         };
-      })
+      }),
     );
 
     res.json({
@@ -1671,26 +2050,27 @@ app.get("/api/videos/:id", async (req: any, res: any) => {
       try {
         streamUrl = await generatePresignedUrl(video.s3_key, 7200);
       } catch (e: any) {
-        console.warn(`⚠️ [S3] Failed to generate presigned URL for ${video.s3_key}:`, e.message);
+        console.warn(
+          `⚠️ [S3] Failed to generate presigned URL for ${video.s3_key}:`,
+          e.message,
+        );
       }
     }
-    
+
     // Normalize old format compatibility
     const normalized = {
       ...video,
       title: video.title || video.product_name || "Untitled",
       description: getCleanStorySummary(video),
       tags: video.tags || (video.category ? [`#${video.category}`] : []),
-      stream_url: streamUrl
+      stream_url: streamUrl,
     };
-    
+
     res.json({ success: true, data: normalized });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-
-
 
 // ── REST: Delete video by ID ──────────────────────────────────────────────────
 app.delete("/api/videos/:id", async (req: any, res: any) => {
@@ -1712,7 +2092,9 @@ app.delete("/api/videos/:id", async (req: any, res: any) => {
     try {
       if (removed.local_path && existsSync(removed.local_path)) {
         unlinkSync(removed.local_path);
-        console.log(`🗑️ [DeleteVideo] Removed local file: ${removed.local_path}`);
+        console.log(
+          `🗑️ [DeleteVideo] Removed local file: ${removed.local_path}`,
+        );
         const thumbPath = removed.local_path.replace(/\.mp4$/i, "_thumb.jpg");
         if (existsSync(thumbPath)) {
           unlinkSync(thumbPath);
@@ -1721,7 +2103,10 @@ app.delete("/api/videos/:id", async (req: any, res: any) => {
       }
       if (removed.s3_url && removed.s3_url.startsWith("/downloads/")) {
         const downloadsDir = path.resolve(__dirname, "../data/downloads");
-        const fullLocalPath = path.join(downloadsDir, removed.s3_url.replace(/^\/downloads\//, ""));
+        const fullLocalPath = path.join(
+          downloadsDir,
+          removed.s3_url.replace(/^\/downloads\//, ""),
+        );
         if (existsSync(fullLocalPath)) {
           unlinkSync(fullLocalPath);
           console.log(`🗑️ [DeleteVideo] Removed local file: ${fullLocalPath}`);
@@ -1730,7 +2115,9 @@ app.delete("/api/videos/:id", async (req: any, res: any) => {
         }
       }
     } catch (cleanErr: any) {
-      console.warn(`⚠️ [DeleteVideo] Error removing physical files: ${cleanErr.message}`);
+      console.warn(
+        `⚠️ [DeleteVideo] Error removing physical files: ${cleanErr.message}`,
+      );
     }
 
     res.json({ success: true, deleted: removed.id, title: removed.title });
@@ -1741,7 +2128,6 @@ app.delete("/api/videos/:id", async (req: any, res: any) => {
 
 // ── REST: Update video details by ID ──────────────────────────────────────────
 app.put("/api/videos/:id", async (req: any, res: any) => {
-
   try {
     const { title, description, tags, images, thumbnail_url } = req.body;
     const list = await loadMetadata();
@@ -1749,17 +2135,18 @@ app.put("/api/videos/:id", async (req: any, res: any) => {
     if (idx === -1) {
       return res.status(404).json({ success: false, error: "Video not found" });
     }
-    
+
     if (title !== undefined) list[idx].title = title;
     if (description !== undefined) list[idx].description = description;
     if (req.body.caption !== undefined) list[idx].caption = req.body.caption;
-    if (req.body.description_vi !== undefined) list[idx].description_vi = req.body.description_vi;
+    if (req.body.description_vi !== undefined)
+      list[idx].description_vi = req.body.description_vi;
     if (tags !== undefined) list[idx].tags = tags;
     if (images !== undefined) list[idx].images = images;
     if (thumbnail_url !== undefined) list[idx].thumbnail_url = thumbnail_url;
-    
+
     list[idx].updated_at = new Date().toISOString();
-    
+
     await saveMetadata(list);
     res.json({ success: true, data: list[idx] });
   } catch (err: any) {
@@ -1772,10 +2159,18 @@ app.post("/api/pipeline/generate-caption", async (req: any, res: any) => {
   try {
     const { productName, category, imageUrl } = req.body;
     if (!productName) {
-      return res.status(400).json({ success: false, error: "Missing productName" });
+      return res
+        .status(400)
+        .json({ success: false, error: "Missing productName" });
     }
-    console.log(`🤖 [CaptionGen] Regenerating caption for: "${productName}" (${category || "tech"})`);
-    const caption = await generateVideoDescriptionVi(productName, category || "tech", imageUrl);
+    console.log(
+      `🤖 [CaptionGen] Regenerating caption for: "${productName}" (${category || "tech"})`,
+    );
+    const caption = await generateVideoDescriptionVi(
+      productName,
+      category || "tech",
+      imageUrl,
+    );
     res.json({ success: true, caption });
   } catch (err: any) {
     console.error(`❌ [CaptionGen] Error: ${err.message}`);
@@ -1817,12 +2212,12 @@ app.post("/api/upload/video", async (req: any, res: any) => {
     const localUrl = `/downloads/${uniqueFilename}`;
 
     console.log(`✅ [UploadVideo] Saved video locally: ${localUrl}`);
-    return res.json({ 
-      success: true, 
-      url: localUrl, 
-      local_path: localPath, 
+    return res.json({
+      success: true,
+      url: localUrl,
+      local_path: localPath,
       filename: uniqueFilename,
-      title: filename ? filename.replace(/\.[^/.]+$/, "") : "Uploaded Video"
+      title: filename ? filename.replace(/\.[^/.]+$/, "") : "Uploaded Video",
     });
   } catch (err: any) {
     console.error(`❌ [UploadVideo] Error: ${err.message}`);
@@ -1834,11 +2229,12 @@ app.post("/api/upload/video", async (req: any, res: any) => {
 app.post("/api/videos/concat", async (req: any, res: any) => {
   try {
     const { video_ids, video_paths, video_urls, title } = req.body;
-    const pathsInput = (Array.isArray(video_paths) && video_paths.length >= 2)
-      ? video_paths
-      : (Array.isArray(video_urls) && video_urls.length >= 2)
-      ? video_urls
-      : null;
+    const pathsInput =
+      Array.isArray(video_paths) && video_paths.length >= 2
+        ? video_paths
+        : Array.isArray(video_urls) && video_urls.length >= 2
+          ? video_urls
+          : null;
     const videoPaths: string[] = [];
     const list = await loadMetadata();
     const downloadsDir = path.resolve(__dirname, "../data/downloads");
@@ -1851,24 +2247,42 @@ app.post("/api/videos/concat", async (req: any, res: any) => {
         if (p.startsWith("http://") || p.startsWith("https://")) {
           // Download remote/s3 video to local temp file
           try {
-            const tempFile = path.join(downloadsDir, `temp_concat_${Date.now()}_${randomUUID().slice(0, 6)}.mp4`);
-            const response = await axios.get(p, { responseType: "arraybuffer", timeout: 60000 });
+            const tempFile = path.join(
+              downloadsDir,
+              `temp_concat_${Date.now()}_${randomUUID().slice(0, 6)}.mp4`,
+            );
+            const response = await axios.get(p, {
+              responseType: "arraybuffer",
+              timeout: 60000,
+            });
             await fs.writeFile(tempFile, Buffer.from(response.data));
             resolvedPath = tempFile;
           } catch (dlErr: any) {
-            console.error(`[Concat] Failed to download URL ${p}:`, dlErr.message);
-            return res.status(400).json({ success: false, error: `Failed to download video: ${dlErr.message}` });
+            console.error(
+              `[Concat] Failed to download URL ${p}:`,
+              dlErr.message,
+            );
+            return res.status(400).json({
+              success: false,
+              error: `Failed to download video: ${dlErr.message}`,
+            });
           }
         } else if (p.startsWith("/downloads/")) {
           resolvedPath = path.resolve(__dirname, "..", p.replace(/^\//, ""));
         }
-        
+
         // Fallback check if path has double extension or missing extension or relative filename
         if (!existsSync(resolvedPath)) {
           const basename = path.basename(p);
           const candidate1 = path.join(downloadsDir, basename);
-          const candidate2 = path.join(downloadsDir, basename.replace(/\.mp4\.mp4$/, ".mp4"));
-          const candidate3 = path.join(downloadsDir, basename.replace(/_mp4\.mp4$/, ".mp4"));
+          const candidate2 = path.join(
+            downloadsDir,
+            basename.replace(/\.mp4\.mp4$/, ".mp4"),
+          );
+          const candidate3 = path.join(
+            downloadsDir,
+            basename.replace(/_mp4\.mp4$/, ".mp4"),
+          );
 
           if (existsSync(candidate1)) resolvedPath = candidate1;
           else if (existsSync(candidate2)) resolvedPath = candidate2;
@@ -1876,11 +2290,15 @@ app.post("/api/videos/concat", async (req: any, res: any) => {
           else {
             // Search directory for matching file prefix
             const allFiles = readdirSync(downloadsDir);
-            const matched = allFiles.find(f => f.includes(basename.slice(0, 20)));
+            const matched = allFiles.find((f) =>
+              f.includes(basename.slice(0, 20)),
+            );
             if (matched) {
               resolvedPath = path.join(downloadsDir, matched);
             } else {
-              return res.status(404).json({ success: false, error: `File not found: ${p}` });
+              return res
+                .status(404)
+                .json({ success: false, error: `File not found: ${p}` });
             }
           }
         }
@@ -1890,41 +2308,63 @@ app.post("/api/videos/concat", async (req: any, res: any) => {
       for (const id of video_ids) {
         const v = list.find((item: any) => item.id === id);
         if (!v) {
-          return res.status(404).json({ success: false, error: `Video with ID ${id} not found` });
+          return res
+            .status(404)
+            .json({ success: false, error: `Video with ID ${id} not found` });
         }
 
         let resolvedPath = v.local_path;
         if (!resolvedPath || !existsSync(resolvedPath)) {
           if (v.stream_url && v.stream_url.startsWith("/downloads/")) {
-            resolvedPath = path.resolve(__dirname, "..", v.stream_url.replace(/^\//, ""));
+            resolvedPath = path.resolve(
+              __dirname,
+              "..",
+              v.stream_url.replace(/^\//, ""),
+            );
           } else if (v.s3_key) {
             const downloadsDir = path.resolve(__dirname, "../data/downloads");
             mkdirSync(downloadsDir, { recursive: true });
-            const tempFile = path.join(downloadsDir, `temp_concat_${Date.now()}_${randomUUID().slice(0, 6)}.mp4`);
+            const tempFile = path.join(
+              downloadsDir,
+              `temp_concat_${Date.now()}_${randomUUID().slice(0, 6)}.mp4`,
+            );
             const streamUrl = await generatePresignedUrl(v.s3_key, 3600);
-            const response = await axios.get(streamUrl, { responseType: "arraybuffer" });
+            const response = await axios.get(streamUrl, {
+              responseType: "arraybuffer",
+            });
             await fs.writeFile(tempFile, Buffer.from(response.data));
             resolvedPath = tempFile;
           }
         }
 
         if (!resolvedPath || !existsSync(resolvedPath)) {
-          return res.status(404).json({ success: false, error: `Local file for video "${v.title || id}" not found` });
+          return res.status(404).json({
+            success: false,
+            error: `Local file for video "${v.title || id}" not found`,
+          });
         }
 
         videoPaths.push(resolvedPath);
       }
     } else {
-      return res.status(400).json({ success: false, error: "Must provide at least 2 videos to concatenate" });
+      return res.status(400).json({
+        success: false,
+        error: "Must provide at least 2 videos to concatenate",
+      });
     }
 
     const finalTitle = title || `Stitched Story (${videoPaths.length} videos)`;
-    const safeTitle = finalTitle.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 30);
+    const safeTitle = finalTitle
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .slice(0, 30);
     mkdirSync(downloadsDir, { recursive: true });
     const outputFilename = `stitched_${Date.now()}_${safeTitle}.mp4`;
     const outputPath = path.join(downloadsDir, outputFilename);
 
-    console.log(`🎬 [Concat] Merging ${videoPaths.length} videos into ${outputPath}...`);
+    console.log(
+      `🎬 [Concat] Merging ${videoPaths.length} videos into ${outputPath}...`,
+    );
     await concatenateVideos(videoPaths, outputPath);
 
     // Upload to S3 if bucket is configured
@@ -1947,11 +2387,15 @@ app.post("/api/videos/concat", async (req: any, res: any) => {
         s3Url = `https://${S3_BUCKET}.s3.${process.env.AWS_REGION || "ap-southeast-1"}.amazonaws.com/${s3Key}`;
         console.log(`✅ [Concat] Uploaded concatenated video to S3: ${s3Url}`);
       } catch (s3Err: any) {
-        console.warn(`⚠️ [Concat] S3 upload failed, using local stream URL: ${s3Err.message}`);
+        console.warn(
+          `⚠️ [Concat] S3 upload failed, using local stream URL: ${s3Err.message}`,
+        );
       }
     }
 
-    const firstVideo = list.find((v: any) => video_ids && v.id === video_ids[0]);
+    const firstVideo = list.find(
+      (v: any) => video_ids && v.id === video_ids[0],
+    );
 
     const newVideo: VideoMetadata = {
       id: `vid_concat_${randomUUID().split("-")[0]}`,
@@ -1993,7 +2437,9 @@ app.post("/api/characters", async (req: any, res: any) => {
   try {
     const character = req.body;
     if (!character.id || !character.name) {
-      return res.status(400).json({ success: false, error: "Character id and name are required" });
+      return res
+        .status(400)
+        .json({ success: false, error: "Character id and name are required" });
     }
     const updated = await upsertCharacter(character);
     res.json({ success: true, character: updated });
@@ -2025,30 +2471,50 @@ app.post("/api/pipeline/analyze-voice-sync", async (req: any, res: any) => {
         resolvedPath = v.local_path;
         if (!resolvedPath || !existsSync(resolvedPath)) {
           if (v.stream_url && v.stream_url.startsWith("/downloads/")) {
-            resolvedPath = path.resolve(__dirname, "..", v.stream_url.replace(/^\//, ""));
+            resolvedPath = path.resolve(
+              __dirname,
+              "..",
+              v.stream_url.replace(/^\//, ""),
+            );
           }
         }
       }
     }
 
     if (resolvedPath && resolvedPath.startsWith("/downloads/")) {
-      resolvedPath = path.resolve(__dirname, "..", resolvedPath.replace(/^\//, ""));
+      resolvedPath = path.resolve(
+        __dirname,
+        "..",
+        resolvedPath.replace(/^\//, ""),
+      );
     }
 
     if (!resolvedPath || !existsSync(resolvedPath)) {
-      return res.status(404).json({ success: false, error: "Target video file not found on disk" });
+      return res
+        .status(404)
+        .json({ success: false, error: "Target video file not found on disk" });
     }
 
     const charactersObj = await loadCharacters();
     const knownCharIds = Object.keys(charactersObj);
 
     // 1. Analyze timestamps using Gemini 2.5
-    console.log(`🤖 [VoiceSync] Step 1: Analyzing dialogue timestamps for ${path.basename(resolvedPath)}...`);
-    const analysis = await analyzeVideoDialogueTimestamps(resolvedPath, script, knownCharIds);
+    console.log(
+      `🤖 [VoiceSync] Step 1: Analyzing dialogue timestamps for ${path.basename(resolvedPath)}...`,
+    );
+    const analysis = await analyzeVideoDialogueTimestamps(
+      resolvedPath,
+      script,
+      knownCharIds,
+    );
 
     // 2. Synthesize audio per segment with character voice consistency
-    console.log(`🎙️ [VoiceSync] Step 2: Synthesizing ${analysis.segments.length} character audio clips...`);
-    const audioSegments = await generateMultiVoiceDialogueAudio(analysis.segments);
+    console.log(
+      `🎙️ [VoiceSync] Step 2: Synthesizing ${analysis.segments.length} character audio clips...`,
+    );
+    const audioSegments = await generateMultiVoiceDialogueAudio(
+      analysis.segments,
+    );
 
     // 3. Mux timestamped audio onto video
     const outputFilename = `voiced_sync_${Date.now()}_${path.basename(resolvedPath)}`;
@@ -2061,7 +2527,9 @@ app.post("/api/pipeline/analyze-voice-sync", async (req: any, res: any) => {
 
     // 4. Clean intermediate audio files
     for (const seg of audioSegments) {
-      try { await fs.unlink(seg.audio_path); } catch {}
+      try {
+        await fs.unlink(seg.audio_path);
+      } catch {}
     }
 
     // 5. Upload to S3 if configured
@@ -2117,7 +2585,7 @@ app.post("/api/pipeline/analyze-voice-sync", async (req: any, res: any) => {
     res.json({
       success: true,
       analysis,
-      video: newVideo
+      video: newVideo,
     });
   } catch (err: any) {
     console.error(`❌ [VoiceSync] Error: ${err.message}`);
@@ -2129,8 +2597,14 @@ app.post("/api/pipeline/analyze-voice-sync", async (req: any, res: any) => {
 app.post("/api/videos/trim-start", async (req: any, res: any) => {
   try {
     const { video_id, video_url, local_path } = req.body;
-    const trimSeconds = Math.max(0.1, Math.min(30, parseFloat(req.body.trim_seconds) || 0.6));
-    console.log(`✂️  [TrimStart] Requested trim of ${trimSeconds}s for video:`, { video_id, video_url, local_path });
+    const trimSeconds = Math.max(
+      0.1,
+      Math.min(30, parseFloat(req.body.trim_seconds) || 0.6),
+    );
+    console.log(
+      `✂️  [TrimStart] Requested trim of ${trimSeconds}s for video:`,
+      { video_id, video_url, local_path },
+    );
 
     const list = await loadMetadata();
     let targetVideo: VideoMetadata | undefined = undefined;
@@ -2147,12 +2621,20 @@ app.post("/api/videos/trim-start", async (req: any, res: any) => {
     }
 
     // 2. Try targetVideo.local_path
-    if (!resolvedPath && targetVideo?.local_path && existsSync(targetVideo.local_path)) {
+    if (
+      !resolvedPath &&
+      targetVideo?.local_path &&
+      existsSync(targetVideo.local_path)
+    ) {
       resolvedPath = targetVideo.local_path;
     }
 
     // 3. Try to locate by filename in downloadsDir (including subdirectories)
-    const candidateUrls = [video_url, targetVideo?.s3_url, targetVideo?.stream_url].filter(Boolean) as string[];
+    const candidateUrls = [
+      video_url,
+      targetVideo?.s3_url,
+      targetVideo?.stream_url,
+    ].filter(Boolean) as string[];
     if (!resolvedPath && candidateUrls.length > 0) {
       for (const rawUrl of candidateUrls) {
         let cleanUrl = rawUrl.split("?")[0];
@@ -2190,12 +2672,21 @@ app.post("/api/videos/trim-start", async (req: any, res: any) => {
 
     // 4. If still not found locally but we have a remote URL, download it temporarily
     if (!resolvedPath && candidateUrls.length > 0) {
-      const fetchUrl = candidateUrls.find((u) => u.startsWith("http://") || u.startsWith("https://"));
+      const fetchUrl = candidateUrls.find(
+        (u) => u.startsWith("http://") || u.startsWith("https://"),
+      );
       if (fetchUrl) {
-        console.log(`📥 [TrimStart] Downloading video from ${fetchUrl} for trimming...`);
-        const base = path.basename(fetchUrl.split("?")[0]) || `downloaded_trim_${Date.now()}.mp4`;
+        console.log(
+          `📥 [TrimStart] Downloading video from ${fetchUrl} for trimming...`,
+        );
+        const base =
+          path.basename(fetchUrl.split("?")[0]) ||
+          `downloaded_trim_${Date.now()}.mp4`;
         const tempLocal = path.join(downloadsDir, base);
-        const resp = await axios.get(fetchUrl, { responseType: "arraybuffer", timeout: 30000 });
+        const resp = await axios.get(fetchUrl, {
+          responseType: "arraybuffer",
+          timeout: 30000,
+        });
         writeFileSync(tempLocal, Buffer.from(resp.data));
         if (existsSync(tempLocal)) {
           resolvedPath = tempLocal;
@@ -2206,27 +2697,36 @@ app.post("/api/videos/trim-start", async (req: any, res: any) => {
     if (!resolvedPath || !existsSync(resolvedPath)) {
       return res.status(404).json({
         success: false,
-        error: "Không tìm thấy file video trên hệ thống để thực hiện cắt."
+        error: "Không tìm thấy file video trên hệ thống để thực hiện cắt.",
       });
     }
 
-    console.log(`✂️  [TrimStart] Executing FFmpeg trim on: ${resolvedPath} (cutting first ${trimSeconds}s)...`);
+    console.log(
+      `✂️  [TrimStart] Executing FFmpeg trim on: ${resolvedPath} (cutting first ${trimSeconds}s)...`,
+    );
     const ffmpeg = getFfmpegCmd();
-    const tempTrimmed = resolvedPath.replace(/\.mp4$/, `_trimtemp_${Date.now()}.mp4`);
+    const tempTrimmed = resolvedPath.replace(
+      /\.mp4$/,
+      `_trimtemp_${Date.now()}.mp4`,
+    );
 
     // Execute FFmpeg trim
     execSync(
       `"${ffmpeg}" -y -ss ${trimSeconds} -i "${resolvedPath}" -c:v libx264 -pix_fmt yuv420p -c:a aac -movflags +faststart "${tempTrimmed}"`,
-      { stdio: "ignore" }
+      { stdio: "ignore" },
     );
 
     if (!existsSync(tempTrimmed) || statSync(tempTrimmed).size < 1000) {
-      throw new Error("FFmpeg trim failed: output file is invalid or too small");
+      throw new Error(
+        "FFmpeg trim failed: output file is invalid or too small",
+      );
     }
 
     // Replace original file with trimmed version
     renameSync(tempTrimmed, resolvedPath);
-    console.log(`✅ [TrimStart] Replaced original video with trimmed file: ${resolvedPath}`);
+    console.log(
+      `✅ [TrimStart] Replaced original video with trimmed file: ${resolvedPath}`,
+    );
 
     // Update thumbnail frame
     const thumbFilename = `${path.basename(resolvedPath, ".mp4")}_thumb.jpg`;
@@ -2237,7 +2737,9 @@ app.post("/api/videos/trim-start", async (req: any, res: any) => {
     }
 
     // Re-upload to S3 if configured
-    let s3Url = targetVideo?.s3_url || `/downloads/${path.relative(downloadsDir, resolvedPath)}`;
+    let s3Url =
+      targetVideo?.s3_url ||
+      `/downloads/${path.relative(downloadsDir, resolvedPath)}`;
     let s3Key = targetVideo?.s3_key || "";
     if (S3_BUCKET) {
       try {
@@ -2318,8 +2820,8 @@ app.post("/api/videos/trim-start", async (req: any, res: any) => {
         stream_url: streamUrl,
         s3_url: s3Url,
         thumbnail_url: newThumbUrl,
-        size_bytes: newStat.size
-      }
+        size_bytes: newStat.size,
+      },
     });
   } catch (err: any) {
     console.error(`❌ [TrimStart] Error: ${err.message}`);
@@ -2340,7 +2842,7 @@ app.get("/api/products", async (req: any, res: any) => {
       page,
       limit,
       totalPages: result.totalPages,
-      has_more: result.has_more
+      has_more: result.has_more,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -2349,8 +2851,19 @@ app.get("/api/products", async (req: any, res: any) => {
 
 app.post("/api/products", async (req: any, res: any) => {
   try {
-    const { name, category = "tech", affiliate_url = "", hashtags = [], image_url = "", description = "", images = [] } = req.body;
-    if (!name) return res.status(400).json({ success: false, error: "name is required" });
+    const {
+      name,
+      category = "tech",
+      affiliate_url = "",
+      hashtags = [],
+      image_url = "",
+      description = "",
+      images = [],
+    } = req.body;
+    if (!name)
+      return res
+        .status(400)
+        .json({ success: false, error: "name is required" });
 
     // Upload main thumbnail image to S3 (non-blocking fallback)
     let finalImageUrl = image_url;
@@ -2362,7 +2875,9 @@ app.post("/api/products", async (req: any, res: any) => {
     let finalImagesList: string[] = [];
     if (Array.isArray(images) && images.length > 0) {
       finalImagesList = await Promise.all(
-        images.map((img: string) => (img ? uploadImageToS3(img).catch(() => img) : Promise.resolve("")))
+        images.map((img: string) =>
+          img ? uploadImageToS3(img).catch(() => img) : Promise.resolve(""),
+        ),
       ).then((res) => res.filter(Boolean));
     }
 
@@ -2374,7 +2889,12 @@ app.post("/api/products", async (req: any, res: any) => {
       affiliate_url,
       hashtags,
       image_url: finalImageUrl,
-      images: finalImagesList.length > 0 ? finalImagesList : (finalImageUrl ? [finalImageUrl] : []),
+      images:
+        finalImagesList.length > 0
+          ? finalImagesList
+          : finalImageUrl
+            ? [finalImageUrl]
+            : [],
       description,
       enabled: true,
       created_at: req.body.created_at || nowIso,
@@ -2396,14 +2916,27 @@ app.post("/api/products", async (req: any, res: any) => {
 app.put("/api/products/:id", async (req: any, res: any) => {
   try {
     const {
-      name, category, affiliate_url, hashtags, enabled, image_url, description,
-      images, promptsObj, scene_images, scene_urls, consensus_feedback,
-      debate_messages, part_feedback
+      name,
+      category,
+      affiliate_url,
+      hashtags,
+      enabled,
+      image_url,
+      description,
+      images,
+      promptsObj,
+      scene_images,
+      scene_urls,
+      consensus_feedback,
+      debate_messages,
+      part_feedback,
     } = req.body;
 
     const existing = dbFindProduct(req.params.id);
     if (!existing) {
-      return res.status(404).json({ success: false, error: "Product not found" });
+      return res
+        .status(404)
+        .json({ success: false, error: "Product not found" });
     }
 
     // Handle S3 image uploads before updating
@@ -2417,8 +2950,10 @@ app.put("/api/products/:id", async (req: any, res: any) => {
     if (promptsObj !== undefined) updates.promptsObj = promptsObj;
     if (scene_images !== undefined) updates.scene_images = scene_images;
     if (scene_urls !== undefined) updates.scene_urls = scene_urls;
-    if (consensus_feedback !== undefined) updates.consensus_feedback = consensus_feedback;
-    if (debate_messages !== undefined) updates.debate_messages = debate_messages;
+    if (consensus_feedback !== undefined)
+      updates.consensus_feedback = consensus_feedback;
+    if (debate_messages !== undefined)
+      updates.debate_messages = debate_messages;
     if (part_feedback !== undefined) updates.part_feedback = part_feedback;
 
     if (image_url !== undefined) {
@@ -2452,7 +2987,9 @@ app.delete("/api/products/:id", async (req: any, res: any) => {
   try {
     const deleted = dbDeleteProduct(req.params.id);
     if (!deleted) {
-      return res.status(404).json({ success: false, error: "Product not found" });
+      return res
+        .status(404)
+        .json({ success: false, error: "Product not found" });
     }
     res.json({ success: true, message: "Product deleted successfully" });
   } catch (err: any) {
@@ -2505,7 +3042,9 @@ app.post("/api/upload/image", async (req: any, res: any) => {
         console.log(`✅ [UploadImage] Uploaded to S3: ${s3Url}`);
         return res.json({ success: true, url: s3Url });
       } catch (s3Err: any) {
-        console.warn(`⚠️ [UploadImage] S3 upload failed (${s3Err.message}), falling back to local storage.`);
+        console.warn(
+          `⚠️ [UploadImage] S3 upload failed (${s3Err.message}), falling back to local storage.`,
+        );
       }
     }
 
@@ -2521,7 +3060,6 @@ app.post("/api/upload/image", async (req: any, res: any) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-
 
 function extractShopeeIds(url: string) {
   let match = url.match(/[iI]\.(\d+)\.(\d+)/);
@@ -2550,7 +3088,11 @@ function extractProductNameFromUrl(urlStr: string): string {
     const parts = pathname.split("/").filter(Boolean);
     if (parts.length > 0) {
       const last = parts[parts.length - 1];
-      const clean = last.split(".")[0].replace(/-i\.\d+\.\d+/, "").replace(/-/g, " ").trim();
+      const clean = last
+        .split(".")[0]
+        .replace(/-i\.\d+\.\d+/, "")
+        .replace(/-/g, " ")
+        .trim();
       if (clean.length > 3) return clean;
     }
   } catch {}
@@ -2566,11 +3108,12 @@ function nativeHttp2Get(apiUrlStr: string, cookieStr: string): Promise<string> {
       const req = client.request({
         ":path": parsed.pathname + parsed.search,
         ":method": "GET",
-        "cookie": cookieStr,
-        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-        "accept": "application/json",
-        "referer": "https://shopee.vn/",
-        "x-requested-with": "XMLHttpRequest"
+        cookie: cookieStr,
+        "user-agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        accept: "application/json",
+        referer: "https://shopee.vn/",
+        "x-requested-with": "XMLHttpRequest",
       });
 
       let data = "";
@@ -2617,12 +3160,14 @@ app.post("/api/crawl/product", async (req: any, res: any) => {
   let tempProfileDir: string | null = null;
   try {
     console.log(`🕷️  Universal crawl: ${url}`);
-    
+
     // Auto-launch ChromeAuto with remote debugging if not already running (exactly like veoAutomation does!)
     try {
       await ensureChromeRunning();
     } catch (chromeErr: any) {
-      console.warn(`⚠️ [Crawl] Failed to ensure Chrome running: ${chromeErr.message}`);
+      console.warn(
+        `⚠️ [Crawl] Failed to ensure Chrome running: ${chromeErr.message}`,
+      );
     }
 
     let raw: any = null;
@@ -2635,8 +3180,10 @@ app.post("/api/crawl/product", async (req: any, res: any) => {
       const debugUrl = `http://127.0.0.1:${debugPort}/json/version`;
       const checkRes = await fetch(debugUrl).catch(() => null);
       if (checkRes && checkRes.ok) {
-        console.log(`🔗 [Crawl] Grabbing active cookies from Chrome port ${debugPort}...`);
-        
+        console.log(
+          `🔗 [Crawl] Grabbing active cookies from Chrome port ${debugPort}...`,
+        );
+
         // Wrap everything in a 4-second timeout to prevent server hang
         await Promise.race([
           (async () => {
@@ -2659,26 +3206,39 @@ app.post("/api/crawl/product", async (req: any, res: any) => {
                   secure: c.secure,
                   sameSite: c.sameSite as any,
                 }));
-              console.log(`✅ [Crawl] Grabbed ${grabbedCookies.length} Shopee cookies successfully!`);
+              console.log(
+                `✅ [Crawl] Grabbed ${grabbedCookies.length} Shopee cookies successfully!`,
+              );
             } finally {
               await page.close().catch(() => {});
               await tempBrowser.disconnect().catch(() => {});
             }
           })(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout grabbing cookies")), 4000))
+          new Promise((_, reject) =>
+            setTimeout(
+              () => reject(new Error("Timeout grabbing cookies")),
+              4000,
+            ),
+          ),
         ]);
       }
     } catch (cookieErr: any) {
-      console.warn(`⚠️ [Crawl] Failed to grab active cookies: ${cookieErr.message}`);
+      console.warn(
+        `⚠️ [Crawl] Failed to grab active cookies: ${cookieErr.message}`,
+      );
     }
 
     // Strategy 0: Direct Native HTTP/2 API fetch (using grabbed active session cookies!)
     if (shopeeIds) {
       const { shopId, itemId } = shopeeIds;
       const apiUrl = `https://shopee.vn/api/v4/item/get?itemid=${itemId}&shopid=${shopId}`;
-      console.log(`📡 [Crawl] Attempting direct Native HTTP/2 API fetch with active cookies: ${apiUrl}`);
-      
-      const cookieHeader = grabbedCookies.map(c => `${c.name}=${c.value}`).join("; ");
+      console.log(
+        `📡 [Crawl] Attempting direct Native HTTP/2 API fetch with active cookies: ${apiUrl}`,
+      );
+
+      const cookieHeader = grabbedCookies
+        .map((c) => `${c.name}=${c.value}`)
+        .join("; ");
       if (cookieHeader) {
         try {
           const rawJson = await nativeHttp2Get(apiUrl, cookieHeader);
@@ -2686,48 +3246,77 @@ app.post("/api/crawl/product", async (req: any, res: any) => {
           if (apiRes && apiRes.data && apiRes.data.name) {
             const item = apiRes.data;
             const priceMin = item.price_min || item.price || 0;
-            const displayPrice = priceMin > 0 ? (priceMin / 100000).toLocaleString("vi-VN") + " ₫" : "";
+            const displayPrice =
+              priceMin > 0
+                ? (priceMin / 100000).toLocaleString("vi-VN") + " ₫"
+                : "";
             raw = {
               name: item.name,
               price: displayPrice,
-              rating: item.item_rating?.rating_star ? item.item_rating.rating_star.toFixed(1) : "",
-              ratingCount: item.item_rating?.rating_count ? item.item_rating.rating_count.reduce((a: number, b: number) => a + b, 0).toString() : "",
+              rating: item.item_rating?.rating_star
+                ? item.item_rating.rating_star.toFixed(1)
+                : "",
+              ratingCount: item.item_rating?.rating_count
+                ? item.item_rating.rating_count
+                    .reduce((a: number, b: number) => a + b, 0)
+                    .toString()
+                : "",
               description: item.description || "",
-              images: (item.images || []).map((img: string) => `https://down-vn.img.susercontent.com/file/${img}`),
-              breadcrumb: item.categories?.map((c: any) => c.display_name).join(" > ") || "",
+              images: (item.images || []).map(
+                (img: string) =>
+                  `https://down-vn.img.susercontent.com/file/${img}`,
+              ),
+              breadcrumb:
+                item.categories?.map((c: any) => c.display_name).join(" > ") ||
+                "",
               url: url,
-              jsonldFound: true
+              jsonldFound: true,
             };
-            console.log(`✅ [Crawl] Direct HTTP/2 API fetch SUCCEEDED! Title: "${raw.name}"`);
+            console.log(
+              `✅ [Crawl] Direct HTTP/2 API fetch SUCCEEDED! Title: "${raw.name}"`,
+            );
           } else {
-            console.warn(`⚠️ [Crawl] Direct HTTP/2 API returned error status: ${apiRes.error || rawJson.slice(0, 200)}`);
+            console.warn(
+              `⚠️ [Crawl] Direct HTTP/2 API returned error status: ${apiRes.error || rawJson.slice(0, 200)}`,
+            );
           }
         } catch (apiErr: any) {
-          console.warn(`⚠️ [Crawl] Direct HTTP/2 API fetch failed: ${apiErr.message}`);
+          console.warn(
+            `⚠️ [Crawl] Direct HTTP/2 API fetch failed: ${apiErr.message}`,
+          );
         }
       } else {
-        console.log(`⚠️ [Crawl] No active cookies available for direct HTTP/2 API fetch.`);
+        console.log(
+          `⚠️ [Crawl] No active cookies available for direct HTTP/2 API fetch.`,
+        );
       }
     }
 
     if (!raw) {
       console.log("🔄 [Crawl] Falling back to background Puppeteer scraper...");
       const DATA_DIR = path.resolve(__dirname, "../data");
-      tempProfileDir = path.resolve(DATA_DIR, `crawler_profile_temp_${Date.now()}`);
-      
+      tempProfileDir = path.resolve(
+        DATA_DIR,
+        `crawler_profile_temp_${Date.now()}`,
+      );
+
       const debugPort = process.env.CHROME_DEBUG_PORT || "9222";
       const debugUrl = `http://127.0.0.1:${debugPort}/json/version`;
       const checkRes = await fetch(debugUrl).catch(() => null);
 
       if (checkRes && checkRes.ok) {
-        console.log(`🔗 [Crawl] Connecting to existing Chrome on port ${debugPort}...`);
+        console.log(
+          `🔗 [Crawl] Connecting to existing Chrome on port ${debugPort}...`,
+        );
         browser = await puppeteer.connect({
           browserURL: `http://127.0.0.1:${debugPort}`,
           defaultViewport: null,
         });
         connected = true;
       } else {
-        console.log("🔄 [Crawl] Existing Chrome not running. Launching new background Chrome...");
+        console.log(
+          "🔄 [Crawl] Existing Chrome not running. Launching new background Chrome...",
+        );
         browser = await puppeteer.launch({
           headless: true, // Run headless so it is completely invisible!
           args: [
@@ -2759,12 +3348,15 @@ app.post("/api/crawl/product", async (req: any, res: any) => {
       const userAgents = [
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
       ];
-      await page.setUserAgent(userAgents[Math.floor(Math.random() * userAgents.length)]);
+      await page.setUserAgent(
+        userAgents[Math.floor(Math.random() * userAgents.length)],
+      );
       await page.setExtraHTTPHeaders({
         "accept-language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "sec-fetch-dest": "document",
         "sec-fetch-mode": "navigate",
         "sec-fetch-site": "none",
@@ -2791,44 +3383,75 @@ app.post("/api/crawl/product", async (req: any, res: any) => {
       if (activeShopeeIds) {
         const { shopId, itemId } = activeShopeeIds;
         try {
-          console.log(`📡 [Crawl] Attempting browser-context API fetch on shopee.vn (shopId: ${shopId}, itemId: ${itemId})...`);
-          const apiResult = await page.evaluate(async (sId: any, iId: any) => {
-            try {
-              const res = await fetch(`/api/v4/item/get?itemid=${iId}&shopid=${sId}`);
-              if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
-              const json = await res.json();
-              return { success: true, data: json.data };
-            } catch (err: any) {
-              return { success: false, error: err.message };
-            }
-          }, shopId, itemId);
+          console.log(
+            `📡 [Crawl] Attempting browser-context API fetch on shopee.vn (shopId: ${shopId}, itemId: ${itemId})...`,
+          );
+          const apiResult = await page.evaluate(
+            async (sId: any, iId: any) => {
+              try {
+                const res = await fetch(
+                  `/api/v4/item/get?itemid=${iId}&shopid=${sId}`,
+                );
+                if (!res.ok)
+                  return { success: false, error: `HTTP ${res.status}` };
+                const json = await res.json();
+                return { success: true, data: json.data };
+              } catch (err: any) {
+                return { success: false, error: err.message };
+              }
+            },
+            shopId,
+            itemId,
+          );
 
           if (apiResult.success && apiResult.data && apiResult.data.name) {
             const item = apiResult.data;
             const priceMin = item.price_min || item.price || 0;
-            const displayPrice = priceMin > 0 ? (priceMin / 100000).toLocaleString("vi-VN") + " ₫" : "";
+            const displayPrice =
+              priceMin > 0
+                ? (priceMin / 100000).toLocaleString("vi-VN") + " ₫"
+                : "";
             raw = {
               name: item.name,
               price: displayPrice,
-              rating: item.item_rating?.rating_star ? item.item_rating.rating_star.toFixed(1) : "",
-              ratingCount: item.item_rating?.rating_count ? item.item_rating.rating_count.reduce((a: number, b: number) => a + b, 0).toString() : "",
+              rating: item.item_rating?.rating_star
+                ? item.item_rating.rating_star.toFixed(1)
+                : "",
+              ratingCount: item.item_rating?.rating_count
+                ? item.item_rating.rating_count
+                    .reduce((a: number, b: number) => a + b, 0)
+                    .toString()
+                : "",
               description: item.description || "",
-              images: (item.images || []).map((img: string) => `https://down-vn.img.susercontent.com/file/${img}`),
-              breadcrumb: item.categories?.map((c: any) => c.display_name).join(" > ") || "",
+              images: (item.images || []).map(
+                (img: string) =>
+                  `https://down-vn.img.susercontent.com/file/${img}`,
+              ),
+              breadcrumb:
+                item.categories?.map((c: any) => c.display_name).join(" > ") ||
+                "",
               url: url,
-              jsonldFound: true
+              jsonldFound: true,
             };
-            console.log(`✅ [Crawl] Browser-context Shopee API fetch SUCCEEDED! Title: "${raw.name}", images: ${raw.images.length}`);
+            console.log(
+              `✅ [Crawl] Browser-context Shopee API fetch SUCCEEDED! Title: "${raw.name}", images: ${raw.images.length}`,
+            );
           } else {
-            console.warn(`⚠️ [Crawl] Browser-context API fetch returned error: ${apiResult.error}`);
+            console.warn(
+              `⚠️ [Crawl] Browser-context API fetch returned error: ${apiResult.error}`,
+            );
           }
         } catch (apiErr: any) {
-          console.warn(`⚠️ [Crawl] Browser-context API fetch failed: ${apiErr.message}`);
+          console.warn(
+            `⚠️ [Crawl] Browser-context API fetch failed: ${apiErr.message}`,
+          );
         }
       }
 
       if (!raw) {
-        console.log("🔄 [Crawl] API fetch failed, falling back to standard DOM scraping...");
+        console.log(
+          "🔄 [Crawl] API fetch failed, falling back to standard DOM scraping...",
+        );
         // Wait 4s for React to hydrate
         await new Promise((r) => setTimeout(r, 4000));
 
@@ -2850,8 +3473,8 @@ app.post("/api/crawl/product", async (req: any, res: any) => {
         const pageTitle = await page.title();
         console.log(`📄 Page: "${pageTitle}" | host: ${new URL(url).hostname}`);
 
-    // ── Universal 4-layer extraction (as string to avoid esbuild __name) ─────
-    raw = await page.evaluate(`(function() {
+        // ── Universal 4-layer extraction (as string to avoid esbuild __name) ─────
+        raw = await page.evaluate(`(function() {
 
       // ═══ LAYER 0: Window global state (Shopee/Lazada/TikTok embed full data here) ═══
       var windowData = {};
@@ -3170,42 +3793,53 @@ app.post("/api/crawl/product", async (req: any, res: any) => {
       };
     })()`);
 
-      // Debug: save page content & screenshot to help inspect why selectors or state might be missing
-      try {
-        const DATA_DIR = path.resolve(__dirname, "../data");
-        const htmlContent = await page.content();
-        await fs.writeFile(path.join(DATA_DIR, "crawled_page.html"), htmlContent, "utf-8");
-        await page.screenshot({ path: path.join(DATA_DIR, "crawled_screenshot.png") });
-        console.log(`📸 Debug files saved: /data/crawled_page.html & /data/crawled_screenshot.png`);
-      } catch (debugErr: any) {
-        console.warn("⚠️ Failed to save debug files:", debugErr.message);
-      }
-    }
-
-    if (browser) {
-      if (connected) {
-        if (page) await page.close().catch(() => {});
-        browser.disconnect();
-      } else {
-        await browser.close().catch(() => {});
-        // Clean up temp profile dir to avoid disk pollution
+        // Debug: save page content & screenshot to help inspect why selectors or state might be missing
         try {
-          if (tempProfileDir && existsSync(tempProfileDir)) {
-            rmSync(tempProfileDir, { recursive: true, force: true });
-          }
-        } catch {}
+          const DATA_DIR = path.resolve(__dirname, "../data");
+          const htmlContent = await page.content();
+          await fs.writeFile(
+            path.join(DATA_DIR, "crawled_page.html"),
+            htmlContent,
+            "utf-8",
+          );
+          await page.screenshot({
+            path: path.join(DATA_DIR, "crawled_screenshot.png"),
+          });
+          console.log(
+            `📸 Debug files saved: /data/crawled_page.html & /data/crawled_screenshot.png`,
+          );
+        } catch (debugErr: any) {
+          console.warn("⚠️ Failed to save debug files:", debugErr.message);
+        }
       }
-      browser = null;
-    }
+
+      if (browser) {
+        if (connected) {
+          if (page) await page.close().catch(() => {});
+          browser.disconnect();
+        } else {
+          await browser.close().catch(() => {});
+          // Clean up temp profile dir to avoid disk pollution
+          try {
+            if (tempProfileDir && existsSync(tempProfileDir)) {
+              rmSync(tempProfileDir, { recursive: true, force: true });
+            }
+          } catch {}
+        }
+        browser = null;
+      }
     } // Closes outer if (!raw) block
 
-    if (raw && (
-      raw.name.includes("Shopee Việt Nam") || 
-      raw.name.includes("Shopee Vietnam") || 
-      raw.name.includes("Login Required") ||
-      raw.name === "Shopee"
-    )) {
-      console.warn(`⚠️  [Crawl] Scraped title "${raw.name}" indicates a blocked state. Forcing fallback.`);
+    if (
+      raw &&
+      (raw.name.includes("Shopee Việt Nam") ||
+        raw.name.includes("Shopee Vietnam") ||
+        raw.name.includes("Login Required") ||
+        raw.name === "Shopee")
+    ) {
+      console.warn(
+        `⚠️  [Crawl] Scraped title "${raw.name}" indicates a blocked state. Forcing fallback.`,
+      );
       raw = null;
     }
 
@@ -3221,9 +3855,11 @@ app.post("/api/crawl/product", async (req: any, res: any) => {
           images: [],
           breadcrumb: "",
           url: url,
-          jsonldFound: false
+          jsonldFound: false,
         };
-        console.log(`⚠️  [Crawl] Crawling blocked. Using URL slug fallback name: "${fallbackName}"`);
+        console.log(
+          `⚠️  [Crawl] Crawling blocked. Using URL slug fallback name: "${fallbackName}"`,
+        );
       } else {
         raw = {
           name: "Sản phẩm Shopee",
@@ -3234,40 +3870,64 @@ app.post("/api/crawl/product", async (req: any, res: any) => {
           images: [],
           breadcrumb: "",
           url: url,
-          jsonldFound: false
+          jsonldFound: false,
         };
-        console.log(`⚠️  [Crawl] Crawling blocked and no name slug in URL. Using generic name.`);
+        console.log(
+          `⚠️  [Crawl] Crawling blocked and no name slug in URL. Using generic name.`,
+        );
       }
     }
 
     const hostname = new URL(url).hostname.replace("www.", "");
-    console.log(`✅ [${hostname}] name="${raw.name}" price="${raw.price}" imgs=${raw.images?.length} jsonld=${raw.jsonldFound}`);
+    console.log(
+      `✅ [${hostname}] name="${raw.name}" price="${raw.price}" imgs=${raw.images?.length} jsonld=${raw.jsonldFound}`,
+    );
 
     // ── Auto-detect category ─────────────────────────────────────────────────
     const detectCategory = (text: string): string => {
       const t = text.toLowerCase();
-      
+
       // 1. Tech
-      if (/điện thoại|laptop|máy tính|keyboard|bàn phím|chuột máy tính|headphone|tai nghe|cáp sạc|dây cáp|củ sạc|dock sạc|sạc dự phòng|\btech\b|gaming|iphone|samsung|camera|đồng hồ thông minh/i.test(t)) {
+      if (
+        /điện thoại|laptop|máy tính|keyboard|bàn phím|chuột máy tính|headphone|tai nghe|cáp sạc|dây cáp|củ sạc|dock sạc|sạc dự phòng|\btech\b|gaming|iphone|samsung|camera|đồng hồ thông minh/i.test(
+          t,
+        )
+      ) {
         return "tech";
       }
       // 2. Beauty
-      if (/kem dưỡng|dưỡng da|mỹ phẩm|son môi|serum|toner|skincare|nước hoa|chăm sóc da|chăm sóc răng|chăm sóc cơ thể|tắm|gội|kem đánh răng|beauty|collagen|mặt nạ/i.test(t)) {
+      if (
+        /kem dưỡng|dưỡng da|mỹ phẩm|son môi|serum|toner|skincare|nước hoa|chăm sóc da|chăm sóc răng|chăm sóc cơ thể|tắm|gội|kem đánh răng|beauty|collagen|mặt nạ/i.test(
+          t,
+        )
+      ) {
         return "beauty";
       }
       // 3. Fashion
-      if (/áo|quần|váy|giày|túi xách|ví da|thời trang|fashion|phụ kiện thời trang|dép|sandal|sneaker/i.test(t)) {
+      if (
+        /áo|quần|váy|giày|túi xách|ví da|thời trang|fashion|phụ kiện thời trang|dép|sandal|sneaker/i.test(
+          t,
+        )
+      ) {
         return "fashion";
       }
       // 4. Food
-      if (/thực phẩm|bánh kẹo|snack|cafe|cà phê|trà sữa|đồ uống|gạo|mì gói|nước ngọt|ăn vặt|kẹo|milo|cacao|socola|chocolate|hạt|sữa|bánh/i.test(t)) {
+      if (
+        /thực phẩm|bánh kẹo|snack|cafe|cà phê|trà sữa|đồ uống|gạo|mì gói|nước ngọt|ăn vặt|kẹo|milo|cacao|socola|chocolate|hạt|sữa|bánh/i.test(
+          t,
+        )
+      ) {
         return "food";
       }
       // 5. Fitness
-      if (/phòng gym|thể thao|fitness|sport|yoga|chạy bộ|xe đạp thể thao|dụng cụ tập/i.test(t)) {
+      if (
+        /phòng gym|thể thao|fitness|sport|yoga|chạy bộ|xe đạp thể thao|dụng cụ tập/i.test(
+          t,
+        )
+      ) {
         return "fitness";
       }
-      
+
       return "tech"; // default fallback
     };
 
@@ -3277,7 +3937,8 @@ app.post("/api/crawl/product", async (req: any, res: any) => {
     // ── Gemini AI rewrite (Structured JSON Mode to extract caption + dynamic hashtags) ──
     let aiDescription = "";
     let hashtags: string[] = [];
-    const GEMINI_API_KEY = process.env.AWS_BEARER_TOKEN_BEDROCK || process.env.GEMINI_API_KEY || "";
+    const GEMINI_API_KEY =
+      process.env.AWS_BEARER_TOKEN_BEDROCK || process.env.GEMINI_API_KEY || "";
 
     if (GEMINI_API_KEY && raw.name) {
       try {
@@ -3321,31 +3982,49 @@ ${raw.description.slice(0, 2500)}
 
 Write a comprehensive Vietnamese affiliate caption and generate dynamic hashtags:`;
 
-        const resText = await callBedrock(systemPrompt, userMsg, undefined, true);
+        const resText = await callBedrock(
+          systemPrompt,
+          userMsg,
+          undefined,
+          true,
+        );
         let text = resText.trim();
         // Strip potential markdown backticks just in case
         if (text.startsWith("```")) {
-          text = text.replace(/^```json\s*/i, "").replace(/```$/, "").trim();
+          text = text
+            .replace(/^```json\s*/i, "")
+            .replace(/```$/, "")
+            .trim();
         }
 
         try {
           const parsed = JSON.parse(text);
           aiDescription = parsed.caption || "";
           if (Array.isArray(parsed.hashtags)) {
-            hashtags = parsed.hashtags.map((h: string) => {
-              let clean = h.trim().toLowerCase();
-              // Strip special characters, keeping only alphanumeric and standard accented Vietnamese characters
-              clean = clean.replace(/[^a-z0-9àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/gi, "");
-              // Exclude pure numbers or weights like 100g, 50ml
-              const isSpam = /^\d+$/g.test(clean) || /^\d+(g|ml|kg|cm|mm|oz|pcs|v)$/i.test(clean);
-              if (clean && !isSpam) {
-                return "#" + clean;
-              }
-              return "";
-            }).filter(Boolean);
+            hashtags = parsed.hashtags
+              .map((h: string) => {
+                let clean = h.trim().toLowerCase();
+                // Strip special characters, keeping only alphanumeric and standard accented Vietnamese characters
+                clean = clean.replace(
+                  /[^a-z0-9àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/gi,
+                  "",
+                );
+                // Exclude pure numbers or weights like 100g, 50ml
+                const isSpam =
+                  /^\d+$/g.test(clean) ||
+                  /^\d+(g|ml|kg|cm|mm|oz|pcs|v)$/i.test(clean);
+                if (clean && !isSpam) {
+                  return "#" + clean;
+                }
+                return "";
+              })
+              .filter(Boolean);
           }
         } catch (jsonErr) {
-          console.warn("⚠️ Failed to parse structured JSON from Bedrock, fallback to text:", text);
+          console.warn(
+            "⚠️ Failed to parse structured JSON from Bedrock, fallback to text:",
+            text,
+          );
           aiDescription = text;
         }
       } catch (e: any) {
@@ -3360,34 +4039,61 @@ Write a comprehensive Vietnamese affiliate caption and generate dynamic hashtags
 
       // 1. Extract words from product name (removing accents for standard lowercase tags)
       const removeAccents = (str: string): string => {
-        return str.normalize("NFD")
-                  .replace(/[\u0300-\u036f]/g, "")
-                  .replace(/đ/g, "d")
-                  .replace(/Đ/g, "D");
+        return str
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/đ/g, "d")
+          .replace(/Đ/g, "D");
       };
 
-      const words = nameLower.split(/[\s,\-\|_\/\+]+/).map((w: string) => w.trim()).filter(Boolean);
-      const stopWords = new Set(["cho", "cua", "voi", "nhu", "va", "nhung", "chinh", "hang", "tot", "nhat", "sieu", "hot", "gia", "re", "mua", "ban", "new", "pro", "max", "full", "size"]);
+      const words = nameLower
+        .split(/[\s,\-\|_\/\+]+/)
+        .map((w: string) => w.trim())
+        .filter(Boolean);
+      const stopWords = new Set([
+        "cho",
+        "cua",
+        "voi",
+        "nhu",
+        "va",
+        "nhung",
+        "chinh",
+        "hang",
+        "tot",
+        "nhat",
+        "sieu",
+        "hot",
+        "gia",
+        "re",
+        "mua",
+        "ban",
+        "new",
+        "pro",
+        "max",
+        "full",
+        "size",
+      ]);
 
       words.forEach((w: string) => {
-        const clean = removeAccents(w).replace(/[^a-z0-9]/g, '');
-        const isSpam = /^\d+$/g.test(clean) || /^\d+(g|ml|kg|cm|mm|oz|pcs|v)$/i.test(clean);
+        const clean = removeAccents(w).replace(/[^a-z0-9]/g, "");
+        const isSpam =
+          /^\d+$/g.test(clean) || /^\d+(g|ml|kg|cm|mm|oz|pcs|v)$/i.test(clean);
         if (clean.length >= 3 && !stopWords.has(clean) && !isSpam) {
           tagsSet.add("#" + clean);
         }
       });
-      
+
       const specificTags = Array.from(tagsSet).slice(0, 5);
-      
+
       // 2. Category fallback tags
       const fallbackMap: Record<string, string[]> = {
-        tech:    ["#tech", "#congnghe", "#thietbicongnghe", "#phukientech"],
-        beauty:  ["#beauty", "#skincare", "#lamdep", "#chamsocda", "#mypham"],
+        tech: ["#tech", "#congnghe", "#thietbicongnghe", "#phukientech"],
+        beauty: ["#beauty", "#skincare", "#lamdep", "#chamsocda", "#mypham"],
         fashion: ["#fashion", "#thoitrang", "#ootd", "#style", "#outfit"],
-        food:    ["#food", "#amthuc", "#anngon", "#anvat"],
+        food: ["#food", "#amthuc", "#anngon", "#anvat"],
         fitness: ["#fitness", "#thethao", "#gym", "#suckhoe"],
       };
-      
+
       const catTags = fallbackMap[category] || fallbackMap.tech;
       hashtags = [...new Set([...specificTags, ...catTags])].slice(0, 8);
     }
@@ -3395,17 +4101,17 @@ Write a comprehensive Vietnamese affiliate caption and generate dynamic hashtags
     res.json({
       success: true,
       data: {
-        name:           raw.name,
-        price:          raw.price,
-        rating:         raw.rating,
-        ratingCount:    raw.ratingCount,
+        name: raw.name,
+        price: raw.price,
+        rating: raw.rating,
+        ratingCount: raw.ratingCount,
         category,
-        images:         raw.images,
+        images: raw.images,
         rawDescription: raw.description.slice(0, 2000),
         aiDescription,
         hashtags,
-        sourceUrl:      url,
-        platform:       hostname,
+        sourceUrl: url,
+        platform: hostname,
       },
     });
   } catch (err: any) {
@@ -3424,18 +4130,24 @@ Write a comprehensive Vietnamese affiliate caption and generate dynamic hashtags
   }
 });
 
-
 // ── REST: Regenerate crawl description and hashtags using Gemini AI ─────────
 app.post("/api/crawl/regenerate-description", async (req: any, res: any) => {
   try {
-    const { name, rawDescription, price, rating, ratingCount, platform } = req.body;
+    const { name, rawDescription, price, rating, ratingCount, platform } =
+      req.body;
     if (!name) {
-      return res.status(400).json({ success: false, error: "Missing product name" });
+      return res
+        .status(400)
+        .json({ success: false, error: "Missing product name" });
     }
 
-    const GEMINI_API_KEY = process.env.AWS_BEARER_TOKEN_BEDROCK || process.env.GEMINI_API_KEY || "";
+    const GEMINI_API_KEY =
+      process.env.AWS_BEARER_TOKEN_BEDROCK || process.env.GEMINI_API_KEY || "";
     if (!GEMINI_API_KEY) {
-      return res.status(500).json({ success: false, error: "GEMINI_API_KEY/AWS_BEARER_TOKEN_BEDROCK not configured" });
+      return res.status(500).json({
+        success: false,
+        error: "GEMINI_API_KEY/AWS_BEARER_TOKEN_BEDROCK not configured",
+      });
     }
 
     console.log(`🤖 [CrawlRegen] Regenerating AI description for: "${name}"`);
@@ -3482,7 +4194,10 @@ Write a comprehensive Vietnamese affiliate caption and generate dynamic hashtags
     const resText = await callBedrock(systemPrompt, userMsg, undefined, true);
     let text = resText.trim();
     if (text.startsWith("```")) {
-      text = text.replace(/^```json\s*/i, "").replace(/```$/, "").trim();
+      text = text
+        .replace(/^```json\s*/i, "")
+        .replace(/```$/, "")
+        .trim();
     }
 
     let aiDescription = "";
@@ -3491,15 +4206,22 @@ Write a comprehensive Vietnamese affiliate caption and generate dynamic hashtags
       const parsed = JSON.parse(text);
       aiDescription = parsed.caption || "";
       if (Array.isArray(parsed.hashtags)) {
-        hashtags = parsed.hashtags.map((h: string) => {
-          let clean = h.trim().toLowerCase();
-          clean = clean.replace(/[^a-z0-9àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/gi, "");
-          const isSpam = /^\d+$/g.test(clean) || /^\d+(g|ml|kg|cm|mm|oz|pcs|v)$/i.test(clean);
-          if (clean && !isSpam) {
-            return "#" + clean;
-          }
-          return "";
-        }).filter(Boolean);
+        hashtags = parsed.hashtags
+          .map((h: string) => {
+            let clean = h.trim().toLowerCase();
+            clean = clean.replace(
+              /[^a-z0-9àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/gi,
+              "",
+            );
+            const isSpam =
+              /^\d+$/g.test(clean) ||
+              /^\d+(g|ml|kg|cm|mm|oz|pcs|v)$/i.test(clean);
+            if (clean && !isSpam) {
+              return "#" + clean;
+            }
+            return "";
+          })
+          .filter(Boolean);
       }
     } catch (jsonErr) {
       aiDescription = text;
@@ -3512,26 +4234,31 @@ Write a comprehensive Vietnamese affiliate caption and generate dynamic hashtags
   }
 });
 
-
 // ── REST: Upload image to S3 (accepts base64 dataUrl via JSON) ───────────────
 app.post("/api/upload/image", async (req: any, res: any) => {
   try {
     const { dataUrl, filename = "image.jpg" } = req.body;
     if (!dataUrl || !dataUrl.startsWith("data:")) {
-      return res.status(400).json({ success: false, error: "Missing or invalid dataUrl" });
+      return res
+        .status(400)
+        .json({ success: false, error: "Missing or invalid dataUrl" });
     }
 
     // Parse data URL: data:<mime>;base64,<data>
     const matches = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
     if (!matches) {
-      return res.status(400).json({ success: false, error: "Invalid dataUrl format" });
+      return res
+        .status(400)
+        .json({ success: false, error: "Invalid dataUrl format" });
     }
     const mimeType = matches[1];
     const base64Data = matches[2];
     const buffer = Buffer.from(base64Data, "base64");
 
     if (buffer.byteLength > 10 * 1024 * 1024) {
-      return res.status(400).json({ success: false, error: "Image too large (max 10MB)" });
+      return res
+        .status(400)
+        .json({ success: false, error: "Image too large (max 10MB)" });
     }
 
     const ext = filename.split(".").pop()?.toLowerCase() || "jpg";
@@ -3558,13 +4285,14 @@ app.post("/api/upload/image", async (req: any, res: any) => {
   }
 });
 
-
 // ── REST: Secure S3 Image Proxy (for private bucket images display) ──────────
 app.get("/api/products/image-proxy", async (req: any, res: any) => {
   try {
     const key = req.query.key;
     if (!key || typeof key !== "string") {
-      return res.status(400).json({ success: false, error: "Missing image key" });
+      return res
+        .status(400)
+        .json({ success: false, error: "Missing image key" });
     }
 
     const command = new GetObjectCommand({
@@ -3574,7 +4302,9 @@ app.get("/api/products/image-proxy", async (req: any, res: any) => {
 
     const data = await s3Client.send(command);
     if (!data.Body) {
-      return res.status(404).json({ success: false, error: "Image body empty" });
+      return res
+        .status(404)
+        .json({ success: false, error: "Image body empty" });
     }
 
     // Set Content-Type from S3 or fallback to image/jpeg
@@ -3590,21 +4320,22 @@ app.get("/api/products/image-proxy", async (req: any, res: any) => {
   }
 });
 
-
 // ── REST: Kích hoạt pipeline cho 1 sản phẩm ──────────────────────────────────
 // ── REST: Batch pipeline — run multiple products sequentially ─────────────────
 const batchStatus: Record<string, any> = {};
 
 app.post("/api/pipeline/batch", async (req: any, res: any) => {
   const {
-    products,           // Array of { product_name, category }
+    products, // Array of { product_name, category }
     dry_run = false,
     upload_s3 = false,
     publish_tiktok = false,
   } = req.body;
 
   if (!Array.isArray(products) || products.length === 0) {
-    return res.status(400).json({ error: "products must be a non-empty array" });
+    return res
+      .status(400)
+      .json({ error: "products must be a non-empty array" });
   }
 
   const batchId = randomUUID().slice(0, 8);
@@ -3619,34 +4350,63 @@ app.post("/api/pipeline/batch", async (req: any, res: any) => {
   };
 
   // Respond immediately with batch_id
-  res.json({ success: true, batch_id: batchId, total: products.length, message: `Batch started — ${products.length} products queued sequentially` });
+  res.json({
+    success: true,
+    batch_id: batchId,
+    total: products.length,
+    message: `Batch started — ${products.length} products queued sequentially`,
+  });
 
   // Process sequentially in background
   (async () => {
     for (const item of products) {
       const { product_name, category = "tech" } = item;
-      console.log(`\n🔄 [Batch ${batchId}] Processing: "${product_name}" (${batchStatus[batchId].completed + 1}/${products.length})`);
+      console.log(
+        `\n🔄 [Batch ${batchId}] Processing: "${product_name}" (${batchStatus[batchId].completed + 1}/${products.length})`,
+      );
       try {
         const result = await runPipelineForProduct(
-          { id: `adhoc_${Date.now()}`, name: product_name, category, affiliate_url: "", hashtags: [], enabled: true },
-          { dryRun: dry_run, uploadToS3: upload_s3, publishTikTok: publish_tiktok }
+          {
+            id: `adhoc_${Date.now()}`,
+            name: product_name,
+            category,
+            affiliate_url: "",
+            hashtags: [],
+            enabled: true,
+          },
+          {
+            dryRun: dry_run,
+            uploadToS3: upload_s3,
+            publishTikTok: publish_tiktok,
+          },
         );
         batchStatus[batchId].results.push(result);
         batchStatus[batchId].completed++;
         console.log(`✅ [Batch ${batchId}] Done: "${product_name}"`);
       } catch (err: any) {
-        batchStatus[batchId].results.push({ product_name, success: false, error: err.message });
+        batchStatus[batchId].results.push({
+          product_name,
+          success: false,
+          error: err.message,
+        });
         batchStatus[batchId].failed++;
-        console.error(`❌ [Batch ${batchId}] Failed: "${product_name}" — ${err.message}`);
+        console.error(
+          `❌ [Batch ${batchId}] Failed: "${product_name}" — ${err.message}`,
+        );
       }
       // Small pause between items to avoid rate limiting
-      if (batchStatus[batchId].completed + batchStatus[batchId].failed < products.length) {
-        await new Promise(r => setTimeout(r, 3000));
+      if (
+        batchStatus[batchId].completed + batchStatus[batchId].failed <
+        products.length
+      ) {
+        await new Promise((r) => setTimeout(r, 3000));
       }
     }
     batchStatus[batchId].running = false;
     batchStatus[batchId].finished_at = new Date().toISOString();
-    console.log(`\n🏁 [Batch ${batchId}] Finished! ${batchStatus[batchId].completed}/${products.length} succeeded`);
+    console.log(
+      `\n🏁 [Batch ${batchId}] Finished! ${batchStatus[batchId].completed}/${products.length} succeeded`,
+    );
   })();
 });
 
@@ -3661,13 +4421,21 @@ app.post("/api/prompts/feedback", (req: any, res: any) => {
   try {
     const { session_id, feedback } = req.body || {};
     if (!session_id || !feedback || !String(feedback).trim()) {
-      return res.status(400).json({ success: false, error: "session_id và nội dung góp ý (feedback) là bắt buộc" });
+      return res.status(400).json({
+        success: false,
+        error: "session_id và nội dung góp ý (feedback) là bắt buộc",
+      });
     }
     const ok = sendSessionFeedback(String(session_id), String(feedback));
     if (!ok) {
-      return res.status(404).json({ success: false, error: "Phiên tranh biện không hoạt động hoặc đã kết thúc" });
+      return res.status(404).json({
+        success: false,
+        error: "Phiên tranh biện không hoạt động hoặc đã kết thúc",
+      });
     }
-    console.log(`📢 [API /prompts/feedback] Received human director feedback for session ${session_id}: "${feedback}"`);
+    console.log(
+      `📢 [API /prompts/feedback] Received human director feedback for session ${session_id}: "${feedback}"`,
+    );
     res.json({ success: true, message: "Đã gửi góp ý đến 2 AI thành công!" });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -3677,14 +4445,25 @@ app.post("/api/prompts/feedback", (req: any, res: any) => {
 // ── REST: Suggest Optimal Scene Count Based on Story Description ───────────
 app.post("/api/prompts/suggest-scenes", async (req: any, res: any) => {
   try {
-    const { description = "", product_name = "", use_ai = false } = req.body || {};
+    const {
+      description = "",
+      product_name = "",
+      use_ai = false,
+    } = req.body || {};
     if (!description || !String(description).trim()) {
-      return res.status(400).json({ success: false, error: "Nội dung cốt truyện (description) không được để trống" });
+      return res.status(400).json({
+        success: false,
+        error: "Nội dung cốt truyện (description) không được để trống",
+      });
     }
-    const { suggestScenesWithAi, analyzeStorySceneCountHeuristic } = await import("./sceneAnalyzer.js");
+    const { suggestScenesWithAi, analyzeStorySceneCountHeuristic } =
+      await import("./sceneAnalyzer.js");
     let result;
     if (use_ai) {
-      result = await suggestScenesWithAi(String(description), String(product_name));
+      result = await suggestScenesWithAi(
+        String(description),
+        String(product_name),
+      );
     } else {
       result = analyzeStorySceneCountHeuristic(String(description));
     }
@@ -3711,7 +4490,10 @@ app.post("/api/prompts/revise-scene", async (req: any, res: any) => {
     } = req.body || {};
 
     if (!feedback || !String(feedback).trim()) {
-      return res.status(400).json({ success: false, error: "Nội dung yêu cầu chỉnh sửa (feedback) là bắt buộc" });
+      return res.status(400).json({
+        success: false,
+        error: "Nội dung yêu cầu chỉnh sửa (feedback) là bắt buộc",
+      });
     }
 
     const { reviseScenePrompts } = await import("./promptGenerator.js");
@@ -3722,7 +4504,7 @@ app.post("/api/prompts/revise-scene", async (req: any, res: any) => {
       scene_indices,
       feedback,
       image_url,
-      feedback_image_url
+      feedback_image_url,
     );
 
     res.json({
@@ -3779,7 +4561,10 @@ app.post("/api/prompts/revise-scene-stream", async (req: any, res: any) => {
     } = req.body || {};
 
     if (!feedback || !String(feedback).trim()) {
-      sendEvent({ type: "error", error: "Nội dung yêu cầu chỉnh sửa (feedback) là bắt buộc" });
+      sendEvent({
+        type: "error",
+        error: "Nội dung yêu cầu chỉnh sửa (feedback) là bắt buộc",
+      });
       clearInterval(keepAliveInterval);
       return res.end();
     }
@@ -3795,12 +4580,14 @@ app.post("/api/prompts/revise-scene-stream", async (req: any, res: any) => {
       feedback_image_url,
       (evt) => {
         sendEvent(evt);
-      }
+      },
     );
 
     sendEvent({ type: "complete", stage: "done", result });
   } catch (err: any) {
-    console.error(`❌ [API /prompts/revise-scene-stream] Error: ${err.message}`);
+    console.error(
+      `❌ [API /prompts/revise-scene-stream] Error: ${err.message}`,
+    );
     sendEvent({ type: "error", error: err.message });
   } finally {
     clearInterval(keepAliveInterval);
@@ -3820,12 +4607,24 @@ app.post("/api/prompts/consensus", async (req: any, res: any) => {
     res.socket?.setTimeout(0);
   } catch {}
   try {
-    const { product_name, category = "tech", product_image_url, product_description, scene_count = 8, user_feedback } = req.body;
+    const {
+      product_name,
+      category = "tech",
+      product_image_url,
+      product_description,
+      scene_count = 8,
+      user_feedback,
+    } = req.body;
     if (!product_name) {
-      return res.status(400).json({ success: false, error: "product_name is required" });
+      return res
+        .status(400)
+        .json({ success: false, error: "product_name is required" });
     }
     const parsedCount = parseInt(scene_count, 10);
-    const count = Number.isInteger(parsedCount) && parsedCount >= 1 && parsedCount <= 25 ? parsedCount : 8;
+    const count =
+      Number.isInteger(parsedCount) && parsedCount >= 1 && parsedCount <= 25
+        ? parsedCount
+        : 8;
     const result = await generatePromptsWithAiConsensus(
       product_name,
       category,
@@ -3834,7 +4633,7 @@ app.post("/api/prompts/consensus", async (req: any, res: any) => {
       count,
       30,
       undefined,
-      user_feedback
+      user_feedback,
     );
     res.json(result);
   } catch (err: any) {
@@ -3882,7 +4681,7 @@ app.post("/api/prompts/consensus-stream", async (req: any, res: any) => {
       user_feedback,
       session_id,
       previous_proposal,
-      start_round = 1
+      start_round = 1,
     } = req.body;
 
     if (!product_name) {
@@ -3898,19 +4697,28 @@ app.post("/api/prompts/consensus-stream", async (req: any, res: any) => {
     if (!finalDescription) {
       try {
         const products = await loadProducts();
-        const matched = products.find((p: any) =>
-          (p.id && (p.id === req.body.product_id || p.id === product_name)) ||
-          (p.name && (p.name === product_name || p.name.trim().toLowerCase() === product_name.trim().toLowerCase()))
+        const matched = products.find(
+          (p: any) =>
+            (p.id && (p.id === req.body.product_id || p.id === product_name)) ||
+            (p.name &&
+              (p.name === product_name ||
+                p.name.trim().toLowerCase() ===
+                  product_name.trim().toLowerCase())),
         );
         if (matched?.description) {
           finalDescription = matched.description;
-          console.log(`📖 [API /prompts/consensus-stream] Loaded story description from product "${matched.name}" (${finalDescription.length} chars)`);
+          console.log(
+            `📖 [API /prompts/consensus-stream] Loaded story description from product "${matched.name}" (${finalDescription.length} chars)`,
+          );
         }
       } catch {}
     }
 
     const parsedCount = parseInt(scene_count, 10);
-    const count = Number.isInteger(parsedCount) && parsedCount >= 1 && parsedCount <= 25 ? parsedCount : 8;
+    const count =
+      Number.isInteger(parsedCount) && parsedCount >= 1 && parsedCount <= 25
+        ? parsedCount
+        : 8;
     const result = await generatePromptsWithAiConsensus(
       product_name,
       category,
@@ -3924,7 +4732,7 @@ app.post("/api/prompts/consensus-stream", async (req: any, res: any) => {
       user_feedback,
       actualSessionId,
       previous_proposal,
-      Number(start_round) || 1
+      Number(start_round) || 1,
     );
 
     sendEvent({ type: "complete", result });
@@ -3965,14 +4773,32 @@ app.post("/api/pipeline/generate-scene-images", async (req: any, res: any) => {
       const product = products.find((p: any) => p.id === product_id);
       if (product) {
         targetProductName = product.name || targetProductName;
-        targetImageUrl = targetImageUrl || product.image_url || (product.images && product.images[0]);
+        targetImageUrl =
+          targetImageUrl ||
+          product.image_url ||
+          (product.images && product.images[0]);
         if (!prompts && product.promptsObj) {
           const parsed = parseTextPromptToObj(product.promptsObj);
           if (parsed && typeof parsed === "object") {
-            const indices = Object.keys(parsed).map(k => k.match(/^prompt(\d+)$/i)).filter(Boolean).map(m => parseInt(m![1], 10));
-            const maxScene = indices.length > 0 ? Math.max(...indices) : (parsed.prompt ? 1 : 10);
-            promptList = Array.from({ length: maxScene }, (_, idx) => parsed[`prompt${idx + 1}`] || (idx === 0 ? parsed.prompt : "")).filter(Boolean);
-            dialogueList = Array.from({ length: promptList.length }, (_, idx) => parsed[`dialogue${idx + 1}`] || "");
+            const indices = Object.keys(parsed)
+              .map((k) => k.match(/^prompt(\d+)$/i))
+              .filter(Boolean)
+              .map((m) => parseInt(m![1], 10));
+            const maxScene =
+              indices.length > 0
+                ? Math.max(...indices)
+                : parsed.prompt
+                  ? 1
+                  : 10;
+            promptList = Array.from(
+              { length: maxScene },
+              (_, idx) =>
+                parsed[`prompt${idx + 1}`] || (idx === 0 ? parsed.prompt : ""),
+            ).filter(Boolean);
+            dialogueList = Array.from(
+              { length: promptList.length },
+              (_, idx) => parsed[`dialogue${idx + 1}`] || "",
+            );
           }
         }
       }
@@ -3981,10 +4807,21 @@ app.post("/api/pipeline/generate-scene-images", async (req: any, res: any) => {
     if (prompts_obj) {
       const parsed = parseTextPromptToObj(prompts_obj);
       if (parsed && typeof parsed === "object") {
-        const indices = Object.keys(parsed).map(k => k.match(/^prompt(\d+)$/i)).filter(Boolean).map(m => parseInt(m![1], 10));
-        const maxScene = indices.length > 0 ? Math.max(...indices) : (parsed.prompt ? 1 : 10);
-        promptList = Array.from({ length: maxScene }, (_, idx) => parsed[`prompt${idx + 1}`] || (idx === 0 ? parsed.prompt : "")).filter(Boolean);
-        dialogueList = Array.from({ length: promptList.length }, (_, idx) => parsed[`dialogue${idx + 1}`] || "");
+        const indices = Object.keys(parsed)
+          .map((k) => k.match(/^prompt(\d+)$/i))
+          .filter(Boolean)
+          .map((m) => parseInt(m![1], 10));
+        const maxScene =
+          indices.length > 0 ? Math.max(...indices) : parsed.prompt ? 1 : 10;
+        promptList = Array.from(
+          { length: maxScene },
+          (_, idx) =>
+            parsed[`prompt${idx + 1}`] || (idx === 0 ? parsed.prompt : ""),
+        ).filter(Boolean);
+        dialogueList = Array.from(
+          { length: promptList.length },
+          (_, idx) => parsed[`dialogue${idx + 1}`] || "",
+        );
       }
     } else if (Array.isArray(prompts) && prompts.length > 0) {
       promptList = prompts;
@@ -3995,41 +4832,78 @@ app.post("/api/pipeline/generate-scene-images", async (req: any, res: any) => {
     }
 
     if (!targetImageUrl) {
-      return res.status(400).json({ success: false, error: "image_url là bắt buộc để Gemini phân tích và tạo ảnh phân cảnh" });
+      return res.status(400).json({
+        success: false,
+        error: "image_url là bắt buộc để Gemini phân tích và tạo ảnh phân cảnh",
+      });
     }
 
     let generatedPromptsObj: any = null;
     if (promptList.length === 0) {
-      console.log(`🤖 [API /generate-scene-images] Chưa có prompt phân cảnh, tự động sinh prompts bằng AI cho "${targetProductName}"...`);
+      console.log(
+        `🤖 [API /generate-scene-images] Chưa có prompt phân cảnh, tự động sinh prompts bằng AI cho "${targetProductName}"...`,
+      );
       try {
-        const { generatePromptsWithAiConsensus } = await import("./promptGenerator.js");
-        const autoGen = await generatePromptsWithAiConsensus(targetProductName, "pets", targetImageUrl, undefined, 8);
+        const { generatePromptsWithAiConsensus } =
+          await import("./promptGenerator.js");
+        const autoGen = await generatePromptsWithAiConsensus(
+          targetProductName,
+          "pets",
+          targetImageUrl,
+          undefined,
+          8,
+        );
         if (autoGen && autoGen.promptsObj) {
           generatedPromptsObj = autoGen.promptsObj;
-          const indices = Object.keys(autoGen.promptsObj).map(k => k.match(/^prompt(\d+)$/i)).filter(Boolean).map(m => parseInt(m![1], 10));
-          const maxScene = indices.length > 0 ? Math.max(...indices) : (autoGen.promptsObj.prompt ? 1 : 8);
-          promptList = Array.from({ length: maxScene }, (_, idx) => autoGen.promptsObj[`prompt${idx + 1}`] || (idx === 0 ? autoGen.promptsObj.prompt : "")).filter(Boolean);
-          dialogueList = Array.from({ length: promptList.length }, (_, idx) => autoGen.promptsObj[`dialogue${idx + 1}`] || "");
+          const indices = Object.keys(autoGen.promptsObj)
+            .map((k) => k.match(/^prompt(\d+)$/i))
+            .filter(Boolean)
+            .map((m) => parseInt(m![1], 10));
+          const maxScene =
+            indices.length > 0
+              ? Math.max(...indices)
+              : autoGen.promptsObj.prompt
+                ? 1
+                : 8;
+          promptList = Array.from(
+            { length: maxScene },
+            (_, idx) =>
+              autoGen.promptsObj[`prompt${idx + 1}`] ||
+              (idx === 0 ? autoGen.promptsObj.prompt : ""),
+          ).filter(Boolean);
+          dialogueList = Array.from(
+            { length: promptList.length },
+            (_, idx) => autoGen.promptsObj[`dialogue${idx + 1}`] || "",
+          );
         }
       } catch (promptGenErr: any) {
-        console.warn(`⚠️ [API /generate-scene-images] Tự động sinh prompt thất bại: ${promptGenErr.message}`);
+        console.warn(
+          `⚠️ [API /generate-scene-images] Tự động sinh prompt thất bại: ${promptGenErr.message}`,
+        );
       }
     }
 
     if (promptList.length === 0) {
-      return res.status(400).json({ success: false, error: "Cần ít nhất 1 prompt phân cảnh để tạo ảnh. Vui lòng tạo prompt trước!" });
+      return res.status(400).json({
+        success: false,
+        error:
+          "Cần ít nhất 1 prompt phân cảnh để tạo ảnh. Vui lòng tạo prompt trước!",
+      });
     }
 
-    console.log(`\n🎨 [API /generate-scene-images] Bắt đầu tạo ${promptList.length} ảnh phân cảnh cho "${targetProductName}"...`);
+    console.log(
+      `\n🎨 [API /generate-scene-images] Bắt đầu tạo ${promptList.length} ảnh phân cảnh cho "${targetProductName}"...`,
+    );
     const { generateAllSceneImages } = await import("./sceneImageGenerator.js");
-    const productSlug = targetProductName
-      .toString()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9\s-_]/g, "")
-      .replace(/[\s_]+/g, "-") || "scene";
+    const productSlug =
+      targetProductName
+        .toString()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9\s-_]/g, "")
+        .replace(/[\s_]+/g, "-") || "scene";
 
     // 1 Parent Folder for the product: data/downloads/${productSlug}/
     // All scene images and videos live together inside this single parent folder
@@ -4038,11 +4912,19 @@ app.post("/api/pipeline/generate-scene-images", async (req: any, res: any) => {
     const scenesDir = path.join(mainDir, "scenes");
     if (!existsSync(scenesDir)) await fs.mkdir(scenesDir, { recursive: true });
 
-    console.log(`📁 [API /generate-scene-images] Lưu ảnh vào thư mục phân cảnh: ${scenesDir}`);
-    const genRes = await generateAllSceneImages(promptList, targetImageUrl, productSlug, scenesDir, dialogueList);
+    console.log(
+      `📁 [API /generate-scene-images] Lưu ảnh vào thư mục phân cảnh: ${scenesDir}`,
+    );
+    const genRes = await generateAllSceneImages(
+      promptList,
+      targetImageUrl,
+      productSlug,
+      scenesDir,
+      dialogueList,
+    );
 
     // Build accessible relative URLs for browser preview
-    const webUrls = genRes.sceneImagePaths.map(p => {
+    const webUrls = genRes.sceneImagePaths.map((p) => {
       const filename = path.basename(p);
       return `/downloads/${jobFolder}/scenes/${filename}`;
     });
@@ -4066,191 +4948,244 @@ app.post("/api/pipeline/generate-scene-images", async (req: any, res: any) => {
 });
 
 // ── REST: Tạo 1 ảnh phân cảnh đơn lẻ (Progressive Realtime Scene Generation) ─────────
-app.post("/api/pipeline/generate-single-scene-image", async (req: any, res: any) => {
-  if (req.setTimeout) req.setTimeout(180000);
-  if (res.setTimeout) res.setTimeout(180000);
-  try {
-    const {
-      product_name = "scene",
-      image_url,
-      scene_index = 0,
-      prompt,
-      dialogue,
-      job_folder,
-      scene_1_path,
-      reference_part_index,
-      custom_reference_image_path,
-      reference_label,
-      redraw_instructions,
-      render_mode = "browser",
-    } = req.body;
+app.post(
+  "/api/pipeline/generate-single-scene-image",
+  async (req: any, res: any) => {
+    if (req.setTimeout) req.setTimeout(180000);
+    if (res.setTimeout) res.setTimeout(180000);
+    try {
+      const {
+        product_name = "scene",
+        image_url,
+        scene_index = 0,
+        prompt,
+        dialogue,
+        job_folder,
+        scene_1_path,
+        reference_part_index,
+        custom_reference_image_path,
+        reference_label,
+        redraw_instructions,
+        render_mode = "browser",
+      } = req.body;
 
-    if (!prompt) {
-      return res.status(400).json({ success: false, error: "prompt phân cảnh là bắt buộc" });
-    }
-
-    const productSlug = product_name
-      .toString()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9\s-_]/g, "")
-      .replace(/[\s_]+/g, "-") || "scene";
-
-    // 1 Parent Folder for the product: data/downloads/${productSlug}/
-    const activeJobFolder = job_folder || productSlug;
-    const mainDir = path.resolve(__dirname, `../data/downloads/${activeJobFolder}`);
-    const scenesDir = path.join(mainDir, "scenes");
-    if (!existsSync(scenesDir)) await fs.mkdir(scenesDir, { recursive: true });
-
-    // Resolve custom reference image if specified
-    let targetRefPath: string | undefined = undefined;
-    let targetRefLabel: string = reference_label || "";
-
-    if (custom_reference_image_path && typeof custom_reference_image_path === "string") {
-      let resolved = custom_reference_image_path;
-      if (resolved.startsWith("/downloads/")) {
-        resolved = path.resolve(__dirname, `../data${resolved}`);
+      if (!prompt) {
+        return res
+          .status(400)
+          .json({ success: false, error: "prompt phân cảnh là bắt buộc" });
       }
-      if (existsSync(resolved)) {
-        targetRefPath = resolved;
-      }
-    }
 
-    if (!targetRefPath && reference_part_index !== undefined && reference_part_index !== null) {
-      const refIdx = parseInt(reference_part_index, 10);
-      if (!isNaN(refIdx) && refIdx >= 0) {
-        const candidatePng = path.join(scenesDir, `scene_${refIdx + 1}.png`);
-        const candidateJpg = path.join(scenesDir, `scene_${refIdx + 1}.jpg`);
-        if (existsSync(candidatePng)) {
-          targetRefPath = candidatePng;
-          if (!targetRefLabel) targetRefLabel = `Part ${refIdx + 1}`;
-        } else if (existsSync(candidateJpg)) {
-          targetRefPath = candidateJpg;
-          if (!targetRefLabel) targetRefLabel = `Part ${refIdx + 1}`;
+      const productSlug =
+        product_name
+          .toString()
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .toLowerCase()
+          .trim()
+          .replace(/[^a-z0-9\s-_]/g, "")
+          .replace(/[\s_]+/g, "-") || "scene";
+
+      // 1 Parent Folder for the product: data/downloads/${productSlug}/
+      const activeJobFolder = job_folder || productSlug;
+      const mainDir = path.resolve(
+        __dirname,
+        `../data/downloads/${activeJobFolder}`,
+      );
+      const scenesDir = path.join(mainDir, "scenes");
+      if (!existsSync(scenesDir))
+        await fs.mkdir(scenesDir, { recursive: true });
+
+      // Resolve custom reference image if specified
+      let targetRefPath: string | undefined = undefined;
+      let targetRefLabel: string = reference_label || "";
+
+      if (
+        custom_reference_image_path &&
+        typeof custom_reference_image_path === "string"
+      ) {
+        let resolved = custom_reference_image_path;
+        if (resolved.startsWith("/downloads/")) {
+          resolved = path.resolve(__dirname, `../data${resolved}`);
+        }
+        if (existsSync(resolved)) {
+          targetRefPath = resolved;
         }
       }
-    }
 
-    console.log(`\n🎨 [API /generate-single-scene-image] Bắt đầu tạo Cảnh ${scene_index + 1} cho "${product_name}"... (Mode: ${render_mode}, Ref: ${targetRefLabel || (scene_index === 0 ? "Ảnh Gốc" : "Part 1")}, Ghi chú: ${redraw_instructions ? `"${redraw_instructions}"` : "None"})`);
-    const { generateSingleSceneImageStandalone } = await import("./sceneImageGenerator.js");
+      if (
+        !targetRefPath &&
+        reference_part_index !== undefined &&
+        reference_part_index !== null
+      ) {
+        const refIdx = parseInt(reference_part_index, 10);
+        if (!isNaN(refIdx) && refIdx >= 0) {
+          const candidatePng = path.join(scenesDir, `scene_${refIdx + 1}.png`);
+          const candidateJpg = path.join(scenesDir, `scene_${refIdx + 1}.jpg`);
+          if (existsSync(candidatePng)) {
+            targetRefPath = candidatePng;
+            if (!targetRefLabel) targetRefLabel = `Part ${refIdx + 1}`;
+          } else if (existsSync(candidateJpg)) {
+            targetRefPath = candidateJpg;
+            if (!targetRefLabel) targetRefLabel = `Part ${refIdx + 1}`;
+          }
+        }
+      }
 
-    const result = await generateSingleSceneImageStandalone(
-      prompt,
-      image_url,
-      scene_index,
-      productSlug,
-      scenesDir,
-      dialogue,
-      scene_1_path,
-      targetRefPath,
-      targetRefLabel,
-      redraw_instructions
-    );
+      console.log(
+        `\n🎨 [API /generate-single-scene-image] Bắt đầu tạo Cảnh ${scene_index + 1} cho "${product_name}"... (Mode: ${render_mode}, Ref: ${targetRefLabel || (scene_index === 0 ? "Ảnh Gốc" : "Part 1")}, Ghi chú: ${redraw_instructions ? `"${redraw_instructions}"` : "None"})`,
+      );
+      const { generateSingleSceneImageStandalone } =
+        await import("./sceneImageGenerator.js");
 
-    const filename = result.imagePath ? path.basename(result.imagePath) : `scene_${scene_index + 1}.png`;
-    const webUrl = `/downloads/${activeJobFolder}/scenes/${filename}`;
-
-    res.json({
-      success: result.success,
-      scene_index,
-      job_folder: activeJobFolder,
-      scene_image_path: result.imagePath,
-      scene_image_url: webUrl,
-      error: result.error,
-      duration_ms: result.durationMs,
-    });
-  } catch (err: any) {
-    console.error(`❌ [API /generate-single-scene-image] Error: ${err.message}`);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ── REST: Tạo 1 video phân cảnh đơn lẻ qua Veo (Single Scene Veo Generation) ─
-app.post("/api/pipeline/generate-single-scene-video", async (req: any, res: any) => {
-  if (req.setTimeout) req.setTimeout(600000); // 10 minutes timeout for Veo video gen
-  if (res.setTimeout) res.setTimeout(600000);
-  try {
-    const {
-      product_name = "scene",
-      scene_index = 0,
-      prompt,
-      dialogue,
-      image_url,
-      scene_image_path,
-      job_folder,
-      render_mode = "browser",
-      aspect_ratio = "9:16",
-      duration_seconds = 10,
-    } = req.body || {};
-
-    if (!prompt) {
-      return res.status(400).json({ success: false, error: "prompt phân cảnh là bắt buộc" });
-    }
-
-    const productSlug = product_name
-      .toString()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9\s-_]/g, "")
-      .replace(/[\s_]+/g, "-") || "scene";
-
-    const activeJobFolder = job_folder || productSlug;
-    const outputDir = path.resolve(__dirname, `../data/downloads/${activeJobFolder}`);
-    if (!existsSync(outputDir)) await fs.mkdir(outputDir, { recursive: true });
-
-    console.log(`\n🌐 [API /generate-single-scene-video] Render Video Part ${scene_index + 1} bằng Trình duyệt Chrome...`);
-    const { generateSingleVeoSegment } = await import("./veoAutomation.js");
-    const result = await generateSingleVeoSegment(
-      prompt,
-      scene_index,
-      image_url,
-      productSlug,
-      outputDir,
-      scene_image_path,
-      dialogue
-    );
-
-    if (!result.success || !result.localPath) {
-      return res.status(500).json({
-        success: false,
-        error: result.error || `Tạo video phân cảnh ${scene_index + 1} thất bại`,
+      const result = await generateSingleSceneImageStandalone(
+        prompt,
+        image_url,
         scene_index,
+        productSlug,
+        scenesDir,
+        dialogue,
+        scene_1_path,
+        targetRefPath,
+        targetRefLabel,
+        redraw_instructions,
+      );
+
+      const filename = result.imagePath
+        ? path.basename(result.imagePath)
+        : `scene_${scene_index + 1}.png`;
+      const webUrl = `/downloads/${activeJobFolder}/scenes/${filename}`;
+
+      res.json({
+        success: result.success,
+        scene_index,
+        job_folder: activeJobFolder,
+        scene_image_path: result.imagePath,
+        scene_image_url: webUrl,
+        error: result.error,
         duration_ms: result.durationMs,
       });
+    } catch (err: any) {
+      console.error(
+        `❌ [API /generate-single-scene-image] Error: ${err.message}`,
+      );
+      res.status(500).json({ success: false, error: err.message });
     }
+  },
+);
 
-    const filename = path.basename(result.localPath);
-    const webUrl = `/downloads/${activeJobFolder}/${filename}`;
-    const voicedFilename = result.voicedPath ? path.basename(result.voicedPath) : null;
-    const voicedWebUrl = voicedFilename ? `/downloads/${activeJobFolder}/${voicedFilename}` : null;
+// ── REST: Tạo 1 video phân cảnh đơn lẻ qua Veo (Single Scene Veo Generation) ─
+app.post(
+  "/api/pipeline/generate-single-scene-video",
+  async (req: any, res: any) => {
+    if (req.setTimeout) req.setTimeout(600000); // 10 minutes timeout for Veo video gen
+    if (res.setTimeout) res.setTimeout(600000);
+    try {
+      const {
+        product_name = "scene",
+        scene_index = 0,
+        prompt,
+        dialogue,
+        image_url,
+        scene_image_path,
+        job_folder,
+        render_mode = "browser",
+        aspect_ratio = "9:16",
+        duration_seconds = 10,
+      } = req.body || {};
 
-    res.json({
-      success: true,
-      scene_index,
-      job_folder: activeJobFolder,
-      video_path: result.localPath,     // Bản gốc giữ 100% âm thanh & giọng gốc do Gemini tạo
-      video_url: webUrl,
-      voiced_path: result.voicedPath || null, // Bản lồng tiếng đi kèm
-      voiced_url: voicedWebUrl,
-      duration_ms: result.durationMs,
-    });
-  } catch (err: any) {
-    console.error(`❌ [API /generate-single-scene-video] Error: ${err.message}`);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+      if (!prompt) {
+        return res
+          .status(400)
+          .json({ success: false, error: "prompt phân cảnh là bắt buộc" });
+      }
+
+      const productSlug =
+        product_name
+          .toString()
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .toLowerCase()
+          .trim()
+          .replace(/[^a-z0-9\s-_]/g, "")
+          .replace(/[\s_]+/g, "-") || "scene";
+
+      const activeJobFolder = job_folder || productSlug;
+      const outputDir = path.resolve(
+        __dirname,
+        `../data/downloads/${activeJobFolder}`,
+      );
+      if (!existsSync(outputDir))
+        await fs.mkdir(outputDir, { recursive: true });
+
+      console.log(
+        `\n🌐 [API /generate-single-scene-video] Render Video Part ${scene_index + 1} bằng Trình duyệt Chrome...`,
+      );
+      const { generateSingleVeoSegment } = await import("./veoAutomation.js");
+      const result = await generateSingleVeoSegment(
+        prompt,
+        scene_index,
+        image_url,
+        productSlug,
+        outputDir,
+        scene_image_path,
+        dialogue,
+      );
+
+      if (!result.success || !result.localPath) {
+        return res.status(500).json({
+          success: false,
+          error:
+            result.error || `Tạo video phân cảnh ${scene_index + 1} thất bại`,
+          scene_index,
+          duration_ms: result.durationMs,
+        });
+      }
+
+      const filename = path.basename(result.localPath);
+      const webUrl = `/downloads/${activeJobFolder}/${filename}`;
+      const voicedFilename = result.voicedPath
+        ? path.basename(result.voicedPath)
+        : null;
+      const voicedWebUrl = voicedFilename
+        ? `/downloads/${activeJobFolder}/${voicedFilename}`
+        : null;
+
+      res.json({
+        success: true,
+        scene_index,
+        job_folder: activeJobFolder,
+        video_path: result.localPath, // Bản gốc giữ 100% âm thanh & giọng gốc do Gemini tạo
+        video_url: webUrl,
+        voiced_path: result.voicedPath || null, // Bản lồng tiếng đi kèm
+        voiced_url: voicedWebUrl,
+        duration_ms: result.durationMs,
+      });
+    } catch (err: any) {
+      console.error(
+        `❌ [API /generate-single-scene-video] Error: ${err.message}`,
+      );
+      res.status(500).json({ success: false, error: err.message });
+    }
+  },
+);
 
 // ── Helper: Lấy thời lượng video chính xác bằng ffprobe / ffmpeg ────────────
-function getVideoDurationWithFfmpeg(videoPath: string, defaultDur: number = 0): number {
+function getVideoDurationWithFfmpeg(
+  videoPath: string,
+  defaultDur: number = 0,
+): number {
   try {
     const { execSync } = require("child_process");
-    for (const probe of ["/opt/homebrew/bin/ffprobe", "/usr/local/bin/ffprobe", "ffprobe"]) {
+    for (const probe of [
+      "/opt/homebrew/bin/ffprobe",
+      "/usr/local/bin/ffprobe",
+      "ffprobe",
+    ]) {
       try {
-        const out = execSync(`"${probe}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`, { encoding: "utf-8", stdio: ["pipe", "pipe", "ignore"] });
+        const out = execSync(
+          `"${probe}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`,
+          { encoding: "utf-8", stdio: ["pipe", "pipe", "ignore"] },
+        );
         const d = parseFloat(out.trim());
         if (!isNaN(d) && d > 0) return d;
       } catch {}
@@ -4258,9 +5193,14 @@ function getVideoDurationWithFfmpeg(videoPath: string, defaultDur: number = 0): 
     const { getFfmpegCmd } = require("./scheduler.js");
     const ffmpeg = getFfmpegCmd();
     try {
-      execSync(`"${ffmpeg}" -i "${videoPath}"`, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+      execSync(`"${ffmpeg}" -i "${videoPath}"`, {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      });
     } catch (e: any) {
-      const match = (e.stderr || "").toString().match(/Duration:\s*(\d+):(\d+):([\d.]+)/);
+      const match = (e.stderr || "")
+        .toString()
+        .match(/Duration:\s*(\d+):(\d+):([\d.]+)/);
       if (match) {
         const hours = parseFloat(match[1]) || 0;
         const mins = parseFloat(match[2]) || 0;
@@ -4285,34 +5225,52 @@ app.post("/api/pipeline/trim-part-video", async (req: any, res: any) => {
       from_original = false,
     } = req.body || {};
 
-    const productSlug = product_name
-      .toString()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9\s-_]/g, "")
-      .replace(/[\s_]+/g, "-") || "scene";
+    const productSlug =
+      product_name
+        .toString()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9\s-_]/g, "")
+        .replace(/[\s_]+/g, "-") || "scene";
 
     const activeJobFolder = job_folder || productSlug;
-    const downloadsDir = path.resolve(__dirname, `../data/downloads/${activeJobFolder}`);
+    const downloadsDir = path.resolve(
+      __dirname,
+      `../data/downloads/${activeJobFolder}`,
+    );
     if (!existsSync(downloadsDir)) {
-      return res.status(404).json({ success: false, error: `Thư mục không tồn tại: ${downloadsDir}` });
+      return res.status(404).json({
+        success: false,
+        error: `Thư mục không tồn tại: ${downloadsDir}`,
+      });
     }
 
     const partNum = scene_index + 1;
     const files = await fs.readdir(downloadsDir);
     const partVideoFile = files.find(
-      f => f.endsWith(".mp4") && f.includes(`_part${partNum}_`) && !f.includes("_merged") && !f.includes(".orig") && !f.includes(".bak")
+      (f) =>
+        f.endsWith(".mp4") &&
+        f.includes(`_part${partNum}_`) &&
+        !f.includes("_merged") &&
+        !f.includes(".orig") &&
+        !f.includes(".bak"),
     );
 
     if (!partVideoFile) {
-      return res.status(404).json({ success: false, error: `Không tìm thấy video Part ${partNum} trong thư mục ${activeJobFolder}` });
+      return res.status(404).json({
+        success: false,
+        error: `Không tìm thấy video Part ${partNum} trong thư mục ${activeJobFolder}`,
+      });
     }
 
     const inputVideoPath = path.join(downloadsDir, partVideoFile);
     const backupPath = path.join(downloadsDir, `${partVideoFile}.orig.bak`);
-    const legacyBackupPath = path.join(downloadsDir, `${partVideoFile}.orig.mp4`);
+    const legacyBackupPath = path.join(
+      downloadsDir,
+      `${partVideoFile}.orig.mp4`,
+    );
 
     // Create backup of original before first trim if not already existing
     if (!existsSync(backupPath)) {
@@ -4321,19 +5279,26 @@ app.post("/api/pipeline/trim-part-video", async (req: any, res: any) => {
       } else {
         await fs.copyFile(inputVideoPath, backupPath);
       }
-      console.log(`💾 [TrimVideo] Created backup of original video: ${backupPath}`);
+      console.log(
+        `💾 [TrimVideo] Created backup of original video: ${backupPath}`,
+      );
     }
 
     const { getFfmpegCmd } = await import("./scheduler.js");
     const ffmpeg = getFfmpegCmd();
     const tempTrimmed = path.join(downloadsDir, `temp_trim_${Date.now()}.mp4`);
 
-    const sourceVideoPath = (from_original && existsSync(backupPath)) ? backupPath : inputVideoPath;
+    const sourceVideoPath =
+      from_original && existsSync(backupPath) ? backupPath : inputVideoPath;
     const startSec = Math.max(0, parseFloat(String(start_sec)) || 0);
-    
+
     let durationArg = "";
     let expectedDuration = 0;
-    if (end_sec !== undefined && end_sec !== null && String(end_sec).trim() !== "") {
+    if (
+      end_sec !== undefined &&
+      end_sec !== null &&
+      String(end_sec).trim() !== ""
+    ) {
       const endSec = parseFloat(String(end_sec));
       if (endSec > startSec) {
         const dur = endSec - startSec;
@@ -4347,7 +5312,10 @@ app.post("/api/pipeline/trim-part-video", async (req: any, res: any) => {
     // Check if source video has audio
     let hasAudio = false;
     try {
-      const probeOut = execSync(`"/opt/homebrew/bin/ffprobe" -v error -show_streams -select_streams a -of json "${sourceVideoPath}"`, { encoding: "utf-8", stdio: ["pipe", "pipe", "ignore"] });
+      const probeOut = execSync(
+        `"/opt/homebrew/bin/ffprobe" -v error -show_streams -select_streams a -of json "${sourceVideoPath}"`,
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "ignore"] },
+      );
       const parsed = JSON.parse(probeOut);
       hasAudio = Array.isArray(parsed.streams) && parsed.streams.length > 0;
     } catch {
@@ -4356,7 +5324,9 @@ app.post("/api/pipeline/trim-part-video", async (req: any, res: any) => {
 
     const audioCodec = hasAudio ? "-c:a aac -b:a 192k -ar 48000" : "-an";
     const trimCmd = `"${ffmpeg}" -y -ss ${startSec} -i "${sourceVideoPath}" ${durationArg} -avoid_negative_ts make_zero -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p -r 30 ${audioCodec} "${tempTrimmed}"`;
-    console.log(`✂️ [TrimVideo] Cutting Part ${partNum} (start: ${startSec}s, ${durationArg || 'to: end'})...`);
+    console.log(
+      `✂️ [TrimVideo] Cutting Part ${partNum} (start: ${startSec}s, ${durationArg || "to: end"})...`,
+    );
 
     await new Promise<void>((resolve, reject) => {
       exec(trimCmd, (err, _stdout, stderr) => {
@@ -4369,10 +5339,15 @@ app.post("/api/pipeline/trim-part-video", async (req: any, res: any) => {
     await fs.rename(tempTrimmed, inputVideoPath);
 
     // Read new duration reliably
-    const newDuration = getVideoDurationWithFfmpeg(inputVideoPath, expectedDuration || 0);
+    const newDuration = getVideoDurationWithFfmpeg(
+      inputVideoPath,
+      expectedDuration || 0,
+    );
 
     const webUrl = `/downloads/${activeJobFolder}/${partVideoFile}?t=${Date.now()}`;
-    console.log(`✅ [TrimVideo] Trimmed Part ${partNum} successfully! New duration: ${newDuration.toFixed(2)}s`);
+    console.log(
+      `✅ [TrimVideo] Trimmed Part ${partNum} successfully! New duration: ${newDuration.toFixed(2)}s`,
+    );
 
     res.json({
       success: true,
@@ -4381,7 +5356,7 @@ app.post("/api/pipeline/trim-part-video", async (req: any, res: any) => {
       video_url: webUrl,
       duration_sec: newDuration,
       video_path: inputVideoPath,
-      has_backup: true
+      has_backup: true,
     });
   } catch (err: any) {
     console.error(`❌ [API /trim-part-video] Error: ${err.message}`);
@@ -4398,26 +5373,38 @@ app.post("/api/pipeline/restore-part-video", async (req: any, res: any) => {
       scene_index = 0,
     } = req.body || {};
 
-    const productSlug = product_name
-      .toString()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9\s-_]/g, "")
-      .replace(/[\s_]+/g, "-") || "scene";
+    const productSlug =
+      product_name
+        .toString()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9\s-_]/g, "")
+        .replace(/[\s_]+/g, "-") || "scene";
 
     const activeJobFolder = job_folder || productSlug;
-    const downloadsDir = path.resolve(__dirname, `../data/downloads/${activeJobFolder}`);
+    const downloadsDir = path.resolve(
+      __dirname,
+      `../data/downloads/${activeJobFolder}`,
+    );
     const partNum = scene_index + 1;
 
     const files = await fs.readdir(downloadsDir);
     const partVideoFile = files.find(
-      f => f.endsWith(".mp4") && f.includes(`_part${partNum}_`) && !f.includes("_merged") && !f.includes(".orig") && !f.includes(".bak")
+      (f) =>
+        f.endsWith(".mp4") &&
+        f.includes(`_part${partNum}_`) &&
+        !f.includes("_merged") &&
+        !f.includes(".orig") &&
+        !f.includes(".bak"),
     );
 
     if (!partVideoFile) {
-      return res.status(404).json({ success: false, error: `Không tìm thấy video Part ${partNum}` });
+      return res.status(404).json({
+        success: false,
+        error: `Không tìm thấy video Part ${partNum}`,
+      });
     }
 
     const inputVideoPath = path.join(downloadsDir, partVideoFile);
@@ -4430,12 +5417,17 @@ app.post("/api/pipeline/restore-part-video", async (req: any, res: any) => {
     }
 
     if (!existsSync(backupPath)) {
-      return res.status(400).json({ success: false, error: `Không có bản video gốc nào được lưu cho Part ${partNum}` });
+      return res.status(400).json({
+        success: false,
+        error: `Không có bản video gốc nào được lưu cho Part ${partNum}`,
+      });
     }
 
     // Restore from backup
     await fs.copyFile(backupPath, inputVideoPath);
-    console.log(`🔄 [RestoreVideo] Restored original video for Part ${partNum}`);
+    console.log(
+      `🔄 [RestoreVideo] Restored original video for Part ${partNum}`,
+    );
 
     const origDuration = getVideoDurationWithFfmpeg(inputVideoPath, 0);
     const webUrl = `/downloads/${activeJobFolder}/${partVideoFile}?t=${Date.now()}`;
@@ -4446,7 +5438,7 @@ app.post("/api/pipeline/restore-part-video", async (req: any, res: any) => {
       part_number: partNum,
       video_url: webUrl,
       duration_sec: origDuration,
-      video_path: inputVideoPath
+      video_path: inputVideoPath,
     });
   } catch (err: any) {
     console.error(`❌ [API /restore-part-video] Error: ${err.message}`);
@@ -4468,14 +5460,15 @@ app.post("/api/pipeline/merge-job-videos", async (req: any, res: any) => {
       episodes,
     } = req.body || {};
 
-    const productSlug = product_name
-      .toString()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9\s-_]/g, "")
-      .replace(/[\s_]+/g, "-") || "product";
+    const productSlug =
+      product_name
+        .toString()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9\s-_]/g, "")
+        .replace(/[\s_]+/g, "-") || "product";
 
     const activeJobFolder = job_folder || productSlug;
 
@@ -4496,7 +5489,9 @@ app.post("/api/pipeline/merge-job-videos", async (req: any, res: any) => {
       };
     }
 
-    console.log(`\n🎬 [API /merge-job-videos] Ghép các file Part Video cho "${product_name}" (folder: ${activeJobFolder})...`);
+    console.log(
+      `\n🎬 [API /merge-job-videos] Ghép các file Part Video cho "${product_name}" (folder: ${activeJobFolder})...`,
+    );
     const { mergeJobVideoSegments } = await import("./scheduler.js");
 
     const result = await mergeJobVideoSegments(
@@ -4505,7 +5500,7 @@ app.post("/api/pipeline/merge-job-videos", async (req: any, res: any) => {
       product,
       upload_s3,
       publish_tiktok,
-      Array.isArray(episodes) ? episodes : undefined
+      Array.isArray(episodes) ? episodes : undefined,
     );
 
     res.json(result);
@@ -4534,14 +5529,15 @@ app.post("/api/pipeline/dub-video", async (req: any, res: any) => {
       speaker_voices = {},
     } = req.body || {};
 
-    const productSlug = product_name
-      .toString()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9\s-_]/g, "")
-      .replace(/[\s_]+/g, "-") || "product";
+    const productSlug =
+      product_name
+        .toString()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9\s-_]/g, "")
+        .replace(/[\s_]+/g, "-") || "product";
 
     const activeJobFolder = job_folder || productSlug;
 
@@ -4552,11 +5548,21 @@ app.post("/api/pipeline/dub-video", async (req: any, res: any) => {
     }
     if (!product && product_name) {
       const nameLower = product_name.trim().toLowerCase();
-      product = products.find((p) => p.name && p.name.trim().toLowerCase() === nameLower)
-        || products.find((p) => p.name && (p.name.toLowerCase().includes(productSlug) || productSlug.includes(p.name.toLowerCase())));
+      product =
+        products.find(
+          (p) => p.name && p.name.trim().toLowerCase() === nameLower,
+        ) ||
+        products.find(
+          (p) =>
+            p.name &&
+            (p.name.toLowerCase().includes(productSlug) ||
+              productSlug.includes(p.name.toLowerCase())),
+        );
     }
 
-    console.log(`\n🎙️ [API /dub-video] Lồng tiếng video cho "${product_name}" (folder: ${activeJobFolder})...`);
+    console.log(
+      `\n🎙️ [API /dub-video] Lồng tiếng video cho "${product_name}" (folder: ${activeJobFolder})...`,
+    );
     const { dubVideoWithVieneu } = await import("./videoDubbingService.js");
 
     const result = await dubVideoWithVieneu({
@@ -4587,7 +5593,9 @@ app.post("/api/pipeline/dub-video", async (req: any, res: any) => {
     const hasThumbnail = extractVideoThumbnailSync(voicedPath, thumbPath);
 
     let finalVideoUrl = localVideoUrl;
-    let finalThumbUrl = hasThumbnail ? localThumbUrl : (product?.thumbnail_url || "");
+    let finalThumbUrl = hasThumbnail
+      ? localThumbUrl
+      : product?.thumbnail_url || "";
     let voicedS3Key = "";
 
     if (upload_s3 && S3_BUCKET && process.env.AWS_ACCESS_KEY_ID) {
@@ -4618,11 +5626,15 @@ app.post("/api/pipeline/dub-video", async (req: any, res: any) => {
           }).done();
           finalThumbUrl = `https://${S3_BUCKET}.s3.${process.env.AWS_REGION || "ap-southeast-1"}.amazonaws.com/${thumbKey}`;
         }
-        console.log(`☁️ [VideoDubbing] Uploaded dubbed video to S3: ${finalVideoUrl}`);
+        console.log(
+          `☁️ [VideoDubbing] Uploaded dubbed video to S3: ${finalVideoUrl}`,
+        );
       } catch (uploadErr: any) {
         voicedS3Key = "";
         finalVideoUrl = localVideoUrl;
-        console.warn(`⚠️ [VideoDubbing] S3 upload failed, keeping local Kho Video entry: ${uploadErr.message}`);
+        console.warn(
+          `⚠️ [VideoDubbing] S3 upload failed, keeping local Kho Video entry: ${uploadErr.message}`,
+        );
       }
     }
 
@@ -4632,10 +5644,17 @@ app.post("/api/pipeline/dub-video", async (req: any, res: any) => {
       product_name: product?.name || product_name,
       title: `${product?.name || product_name} (Lồng tiếng)`,
       description: `Bản lồng tiếng ${result.totalLines} câu, tự động đồng bộ theo timeline nhân vật.`,
-      prompt: product?.promptsObj || product?.prompts_obj
-        ? JSON.stringify(product?.promptsObj || product?.prompts_obj)
-        : "",
-      tags: [...new Set([...(product?.hashtags || product?.tags || []), "#longtieng", "#voicesync"])],
+      prompt:
+        product?.promptsObj || product?.prompts_obj
+          ? JSON.stringify(product?.promptsObj || product?.prompts_obj)
+          : "",
+      tags: [
+        ...new Set([
+          ...(product?.hashtags || product?.tags || []),
+          "#longtieng",
+          "#voicesync",
+        ]),
+      ],
       source_url: finalVideoUrl,
       s3_url: finalVideoUrl,
       s3_bucket: voicedS3Key ? S3_BUCKET : "",
@@ -4650,7 +5669,11 @@ app.post("/api/pipeline/dub-video", async (req: any, res: any) => {
     };
 
     const metadata = await loadMetadata();
-    const existingIndex = metadata.findIndex(item => item.local_path && path.resolve(item.local_path) === path.resolve(voicedPath));
+    const existingIndex = metadata.findIndex(
+      (item) =>
+        item.local_path &&
+        path.resolve(item.local_path) === path.resolve(voicedPath),
+    );
     if (existingIndex >= 0) metadata[existingIndex] = metadataEntry;
     else metadata.unshift(metadataEntry);
     await saveMetadata(metadata);
@@ -4674,17 +5697,21 @@ app.get("/api/pipeline/job-parts-status", async (req: any, res: any) => {
     const job_folder = req.query.job_folder as string;
     const product_name = (req.query.product_name as string) || "scene";
 
-    const productSlug = product_name
-      .toString()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9\s-_]/g, "")
-      .replace(/[\s_]+/g, "-") || "scene";
+    const productSlug =
+      product_name
+        .toString()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9\s-_]/g, "")
+        .replace(/[\s_]+/g, "-") || "scene";
 
     const activeJobFolder = job_folder || productSlug;
-    const downloadsDir = path.resolve(__dirname, `../data/downloads/${activeJobFolder}`);
+    const downloadsDir = path.resolve(
+      __dirname,
+      `../data/downloads/${activeJobFolder}`,
+    );
     const scenesDir = path.join(downloadsDir, "scenes");
 
     // Determine total part count dynamically
@@ -4695,9 +5722,14 @@ app.get("/api/pipeline/job-parts-status", async (req: any, res: any) => {
       // Check product promptsObj in products.json (source of truth for active script)
       try {
         const products = await loadProducts();
-        const matchedProd = products.find((p: any) =>
-          (p.id && (p.id === req.query.product_id || p.id === product_name)) ||
-          (p.name && (p.name === product_name || p.name.trim().toLowerCase() === product_name.trim().toLowerCase()))
+        const matchedProd = products.find(
+          (p: any) =>
+            (p.id &&
+              (p.id === req.query.product_id || p.id === product_name)) ||
+            (p.name &&
+              (p.name === product_name ||
+                p.name.trim().toLowerCase() ===
+                  product_name.trim().toLowerCase())),
         );
         if (matchedProd?.promptsObj) {
           for (const k of Object.keys(matchedProd.promptsObj)) {
@@ -4745,7 +5777,9 @@ app.get("/api/pipeline/job-parts-status", async (req: any, res: any) => {
       // Check scene image
       const imgPath = path.join(scenesDir, `scene_${i}.png`);
       const hasImg = existsSync(imgPath);
-      const imgUrl = hasImg ? `/downloads/${activeJobFolder}/scenes/scene_${i}.png` : null;
+      const imgUrl = hasImg
+        ? `/downloads/${activeJobFolder}/scenes/scene_${i}.png`
+        : null;
 
       // Check part video (Original Gemini & Companion Voiced)
       let videoFile: string | null = null;
@@ -4761,7 +5795,13 @@ app.get("/api/pipeline/job-parts-status", async (req: any, res: any) => {
       if (existsSync(downloadsDir)) {
         const files = await fs.readdir(downloadsDir);
         for (const f of files) {
-          if (!f.endsWith(".mp4") || f.includes("_merged") || f.includes(".orig") || f.includes(".bak")) continue;
+          if (
+            !f.endsWith(".mp4") ||
+            f.includes("_merged") ||
+            f.includes(".orig") ||
+            f.includes(".bak")
+          )
+            continue;
           const match = f.match(new RegExp(`_part${i}_`, "i"));
           if (match) {
             const fullP = path.join(downloadsDir, f);
@@ -4810,7 +5850,9 @@ app.get("/api/pipeline/job-parts-status", async (req: any, res: any) => {
 
     const mergedPath = path.join(downloadsDir, `${productSlug}_merged.mp4`);
     const hasMerged = existsSync(mergedPath);
-    const mergedUrl = hasMerged ? `/downloads/${activeJobFolder}/${productSlug}_merged.mp4` : null;
+    const mergedUrl = hasMerged
+      ? `/downloads/${activeJobFolder}/${productSlug}_merged.mp4`
+      : null;
 
     let voicedFile: string | null = null;
     let voicedPath: string | null = null;
@@ -4820,8 +5862,12 @@ app.get("/api/pipeline/job-parts-status", async (req: any, res: any) => {
     if (existsSync(downloadsDir)) {
       const files = await fs.readdir(downloadsDir);
       for (const f of files) {
-        if (!f.endsWith(".mp4") || f.includes(".orig") || f.includes(".bak")) continue;
-        if (f.startsWith(productSlug) && (f.includes("_longtieng_") || f.includes("_voiced"))) {
+        if (!f.endsWith(".mp4") || f.includes(".orig") || f.includes(".bak"))
+          continue;
+        if (
+          f.startsWith(productSlug) &&
+          (f.includes("_longtieng_") || f.includes("_voiced"))
+        ) {
           const fullP = path.join(downloadsDir, f);
           const st = statSync(fullP);
           if (st.mtimeMs > latestVoicedMtime) {
@@ -4877,13 +5923,18 @@ app.post("/api/pipeline/run", async (req: any, res: any) => {
     let product;
     if (product_id) {
       product = dbFindProduct(product_id);
-      if (!product) return res.status(404).json({ success: false, error: `Product not found: ${product_id}` });
-      
+      if (!product)
+        return res
+          .status(404)
+          .json({ success: false, error: `Product not found: ${product_id}` });
+
       // Save prompt immediately to SQLite if custom prompt was supplied
       if (customPromptsObj) {
         dbUpdateProduct(product_id, { promptsObj: customPromptsObj });
         product.promptsObj = customPromptsObj;
-        console.log(`💾 [API] Saved custom prompt into SQLite for product ID: ${product_id}`);
+        console.log(
+          `💾 [API] Saved custom prompt into SQLite for product ID: ${product_id}`,
+        );
       }
     } else if (product_name) {
       product = {
@@ -4891,12 +5942,18 @@ app.post("/api/pipeline/run", async (req: any, res: any) => {
         name: product_name,
         category,
         affiliate_url: "",
-        hashtags: [`#${product_name.toLowerCase().replace(/\s+/g, "")}`, "#affiliate"],
+        hashtags: [
+          `#${product_name.toLowerCase().replace(/\s+/g, "")}`,
+          "#affiliate",
+        ],
         promptsObj: customPromptsObj,
         enabled: true,
       };
     } else {
-      return res.status(400).json({ success: false, error: "product_id hoặc product_name là bắt buộc" });
+      return res.status(400).json({
+        success: false,
+        error: "product_id hoặc product_name là bắt buộc",
+      });
     }
 
     // Chạy pipeline không đồng bộ (trả về 202 Accepted ngay)
@@ -4917,11 +5974,18 @@ app.post("/api/pipeline/run", async (req: any, res: any) => {
       customPromptsObj,
       useAiConsensus: Boolean(use_ai_consensus),
       userFeedback: user_feedback ? String(user_feedback).trim() : undefined,
-      sceneImagePaths: Array.isArray(scene_image_paths) ? scene_image_paths : undefined,
+      sceneImagePaths: Array.isArray(scene_image_paths)
+        ? scene_image_paths
+        : undefined,
       autoGenerateSceneImages: Boolean(auto_generate_scene_images),
-      sceneCount: req.body.scene_count ? parseInt(req.body.scene_count, 10) : undefined,
+      sceneCount: req.body.scene_count
+        ? parseInt(req.body.scene_count, 10)
+        : undefined,
     }).then((result) => {
-      console.log(`\n📊 [API /pipeline/run] Kết quả run_id=${runId}:`, JSON.stringify(result, null, 2));
+      console.log(
+        `\n📊 [API /pipeline/run] Kết quả run_id=${runId}:`,
+        JSON.stringify(result, null, 2),
+      );
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -4932,12 +5996,20 @@ app.post("/api/pipeline/run", async (req: any, res: any) => {
 app.post("/api/pipeline/run-all", async (req: any, res: any) => {
   const status = getPipelineStatus();
   if (status.is_running) {
-    return res.status(409).json({ success: false, error: "Pipeline đang chạy, thử lại sau" });
+    return res
+      .status(409)
+      .json({ success: false, error: "Pipeline đang chạy, thử lại sau" });
   }
   const { dry_run = false } = req.body || {};
-  res.status(202).json({ success: true, message: "Đã kích hoạt pipeline cho tất cả sản phẩm", dry_run });
+  res.status(202).json({
+    success: true,
+    message: "Đã kích hoạt pipeline cho tất cả sản phẩm",
+    dry_run,
+  });
   runAllProducts({ dryRun: dry_run }).then((results) => {
-    console.log(`\n📊 [API /pipeline/run-all] Tổng kết: ${results.length} sản phẩm`);
+    console.log(
+      `\n📊 [API /pipeline/run-all] Tổng kết: ${results.length} sản phẩm`,
+    );
   });
 });
 
@@ -4980,12 +6052,19 @@ app.post("/api/chrome/start", async (_req: any, res: any) => {
     const debugPort = process.env.CHROME_DEBUG_PORT || "9222";
 
     // Check if already running
-    const alreadyRunning = await fetch(`http://localhost:${debugPort}/json/version`).then(r => r.ok).catch(() => false);
+    const alreadyRunning = await fetch(
+      `http://localhost:${debugPort}/json/version`,
+    )
+      .then((r) => r.ok)
+      .catch(() => false);
     if (alreadyRunning) {
       // If user explicitly pressed Start Chrome, move window on-screen so they can see and log in
       try {
         const pup = (await import("puppeteer")).default;
-        const browser = await pup.connect({ browserURL: `http://localhost:${debugPort}`, defaultViewport: null });
+        const browser = await pup.connect({
+          browserURL: `http://localhost:${debugPort}`,
+          defaultViewport: null,
+        });
         const [page] = await browser.pages();
         if (page) {
           const session = await page.createCDPSession();
@@ -4993,14 +6072,24 @@ app.post("/api/chrome/start", async (_req: any, res: any) => {
           if (windowId) {
             await session.send("Browser.setWindowBounds", {
               windowId,
-              bounds: { windowState: "normal", left: 100, top: 100, width: 1280, height: 900 },
+              bounds: {
+                windowState: "normal",
+                left: 100,
+                top: 100,
+                width: 1280,
+                height: 900,
+              },
             });
           }
           await session.detach();
         }
         browser.disconnect();
       } catch {}
-      return res.json({ success: true, status: "already_running", message: "Chrome moved to screen for you to log in!" });
+      return res.json({
+        success: true,
+        status: "already_running",
+        message: "Chrome moved to screen for you to log in!",
+      });
     }
 
     // Setup ChromeAuto dir if not exists
@@ -5010,55 +6099,85 @@ app.post("/api/chrome/start", async (_req: any, res: any) => {
     }
 
     // Remove lock files
-    for (const lock of ["Default/SingletonLock", "Default/SingletonCookie", "SingletonLock"]) {
+    for (const lock of [
+      "Default/SingletonLock",
+      "Default/SingletonCookie",
+      "SingletonLock",
+    ]) {
       const p = path.join(chromeAutoDir, lock);
       if (existsSync(p)) rmSync(p, { force: true });
     }
 
     // Launch Chrome (on-screen by default when explicitly requested via /start)
-    const chromePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+    const chromePath =
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
     const { spawn } = await import("child_process");
     const isHidden = _req.body?.mode === "hidden";
-    const windowPos = isHidden ? "--window-position=10,40" : "--window-position=100,100";
-    const windowSize = isHidden ? "--window-size=680,540" : "--window-size=1280,900";
-    const proc = spawn(chromePath, [
-      `--remote-debugging-port=${debugPort}`,
-      `--user-data-dir=${chromeAutoDir}`,
-      windowPos,
-      windowSize,
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--disable-background-mode",
-      "--disable-blink-features=AutomationControlled",
-      "--disable-background-timer-throttling",
-      "--disable-backgrounding-occluded-windows",
-      "--disable-renderer-backgrounding",
-      "--disable-features=CalculatePageVisibilityState",
-    ], { detached: true, stdio: "ignore" });
+    const windowPos = isHidden
+      ? "--window-position=10,40"
+      : "--window-position=100,100";
+    const windowSize = isHidden
+      ? "--window-size=680,540"
+      : "--window-size=1280,900";
+    const proc = spawn(
+      chromePath,
+      [
+        `--remote-debugging-port=${debugPort}`,
+        `--user-data-dir=${chromeAutoDir}`,
+        windowPos,
+        windowSize,
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-mode",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-features=CalculatePageVisibilityState",
+      ],
+      { detached: true, stdio: "ignore" },
+    );
     proc.unref();
 
     // Wait up to 6s for Chrome to be ready
     let ready = false;
     for (let i = 0; i < 12; i++) {
-      await new Promise(r => setTimeout(r, 500));
-      ready = await fetch(`http://localhost:${debugPort}/json/version`).then(r => r.ok).catch(() => false);
+      await new Promise((r) => setTimeout(r, 500));
+      ready = await fetch(`http://localhost:${debugPort}/json/version`)
+        .then((r) => r.ok)
+        .catch(() => false);
       if (ready) break;
     }
 
     if (!ready) {
-      return res.status(500).json({ success: false, error: "Chrome started but debug port not ready. Check if ChromeAuto needs login first." });
+      return res.status(500).json({
+        success: false,
+        error:
+          "Chrome started but debug port not ready. Check if ChromeAuto needs login first.",
+      });
     }
 
     // Open Gemini tab for user to login
-    const { default: pup } = await import("puppeteer").catch(() => ({ default: null }));
+    const { default: pup } = await import("puppeteer").catch(() => ({
+      default: null,
+    }));
     if (pup) {
-      const browser = await pup.connect({ browserURL: `http://localhost:${debugPort}`, defaultViewport: null });
+      const browser = await pup.connect({
+        browserURL: `http://localhost:${debugPort}`,
+        defaultViewport: null,
+      });
       const page = await browser.newPage();
-      await page.goto("https://gemini.google.com/", { waitUntil: "domcontentloaded" });
+      await page.goto("https://gemini.google.com/", {
+        waitUntil: "domcontentloaded",
+      });
       browser.disconnect();
     }
 
-    res.json({ success: true, status: "launched", message: `Chrome launched! Please log in to Gemini in the Chrome window, then click Generate.` });
+    res.json({
+      success: true,
+      status: "launched",
+      message: `Chrome launched! Please log in to Gemini in the Chrome window, then click Generate.`,
+    });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -5069,7 +6188,10 @@ app.post("/api/chrome/hide", async (_req: any, res: any) => {
   try {
     const debugPort = process.env.CHROME_DEBUG_PORT || "9222";
     const pup = (await import("puppeteer")).default;
-    const browser = await pup.connect({ browserURL: `http://127.0.0.1:${debugPort}`, defaultViewport: null });
+    const browser = await pup.connect({
+      browserURL: `http://127.0.0.1:${debugPort}`,
+      defaultViewport: null,
+    });
     const pages = await browser.pages();
     if (pages.length > 0) {
       const session = await pages[0].createCDPSession();
@@ -5077,7 +6199,13 @@ app.post("/api/chrome/hide", async (_req: any, res: any) => {
       if (windowId) {
         await session.send("Browser.setWindowBounds", {
           windowId,
-          bounds: { windowState: "normal", left: 1300, top: 890, width: 480, height: 400 },
+          bounds: {
+            windowState: "normal",
+            left: 1300,
+            top: 890,
+            width: 480,
+            height: 400,
+          },
         });
       }
       await session.detach();
@@ -5087,13 +6215,26 @@ app.post("/api/chrome/hide", async (_req: any, res: any) => {
     // Restore focus to user app on macOS
     try {
       const { execSync, execFile } = await import("child_process");
-      const activeApp = execSync(`osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true'`, { encoding: "utf8", timeout: 1000 }).trim();
+      const activeApp = execSync(
+        `osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true'`,
+        { encoding: "utf8", timeout: 1000 },
+      ).trim();
       if (activeApp && activeApp !== "Google Chrome") {
-        execFile("osascript", ["-e", `tell application "System Events" to set frontmost of (first process whose name is "${activeApp}") to true`], () => {});
+        execFile(
+          "osascript",
+          [
+            "-e",
+            `tell application "System Events" to set frontmost of (first process whose name is "${activeApp}") to true`,
+          ],
+          () => {},
+        );
       }
     } catch {}
 
-    res.json({ success: true, message: "Chrome moved offscreen (hidden in background)" });
+    res.json({
+      success: true,
+      message: "Chrome moved offscreen (hidden in background)",
+    });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -5104,7 +6245,10 @@ app.post("/api/chrome/show", async (_req: any, res: any) => {
   try {
     const debugPort = process.env.CHROME_DEBUG_PORT || "9222";
     const pup = (await import("puppeteer")).default;
-    const browser = await pup.connect({ browserURL: `http://127.0.0.1:${debugPort}`, defaultViewport: null });
+    const browser = await pup.connect({
+      browserURL: `http://127.0.0.1:${debugPort}`,
+      defaultViewport: null,
+    });
     const pages = await browser.pages();
     if (pages.length > 0) {
       const session = await pages[0].createCDPSession();
@@ -5112,13 +6256,22 @@ app.post("/api/chrome/show", async (_req: any, res: any) => {
       if (windowId) {
         await session.send("Browser.setWindowBounds", {
           windowId,
-          bounds: { windowState: "normal", left: 100, top: 100, width: 1280, height: 900 },
+          bounds: {
+            windowState: "normal",
+            left: 100,
+            top: 100,
+            width: 1280,
+            height: 900,
+          },
         });
       }
       await session.detach();
     }
     browser.disconnect();
-    res.json({ success: true, message: "Chrome moved to main screen (visible)" });
+    res.json({
+      success: true,
+      message: "Chrome moved to main screen (visible)",
+    });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -5132,20 +6285,33 @@ app.get("/api/chrome/status", async (_req: any, res: any) => {
   let running = false;
   let browserInfo = "";
   try {
-    const res2 = await fetch(`http://localhost:${debugPort}/json/version`, { signal: AbortSignal.timeout(2000) });
+    const res2 = await fetch(`http://localhost:${debugPort}/json/version`, {
+      signal: AbortSignal.timeout(2000),
+    });
     if (res2.ok) {
-      const info = await res2.json() as any;
+      const info = (await res2.json()) as any;
       running = true;
       browserInfo = info.Browser || "";
     }
-  } catch { /* not running */ }
+  } catch {
+    /* not running */
+  }
 
   // Infer logged-in status: ChromeAuto dir exists + Chrome is running = likely logged in
-  const chromeAutoDir = path.join(process.env.HOME || "", "ChromeAuto", "Default");
+  const chromeAutoDir = path.join(
+    process.env.HOME || "",
+    "ChromeAuto",
+    "Default",
+  );
   const hasProfile = existsSync(chromeAutoDir);
   const geminiLoggedIn = running && hasProfile;
 
-  res.json({ success: true, chrome_running: running, gemini_logged_in: geminiLoggedIn, browser: browserInfo });
+  res.json({
+    success: true,
+    chrome_running: running,
+    gemini_logged_in: geminiLoggedIn,
+    browser: browserInfo,
+  });
 });
 
 // ── REST: Click Download button on current Gemini video ──────────────────────
@@ -5153,17 +6319,25 @@ app.post("/api/chrome/download", async (_req: any, res: any) => {
   const debugPort = process.env.CHROME_DEBUG_PORT || "9222";
   try {
     const { default: pup } = await import("puppeteer");
-    const browser = await pup.connect({ browserURL: `http://localhost:${debugPort}`, defaultViewport: null });
+    const browser = await pup.connect({
+      browserURL: `http://localhost:${debugPort}`,
+      defaultViewport: null,
+    });
 
     // Find the active tab showing Gemini
     const pages = await browser.pages();
-    const geminiPage = pages.find((p: any) => p.url().includes("gemini.google.com")) || pages[pages.length - 1];
+    const geminiPage =
+      pages.find((p: any) => p.url().includes("gemini.google.com")) ||
+      pages[pages.length - 1];
 
     // Setup CDP download to save to data/downloads/
     const client = await geminiPage.createCDPSession();
     const downloadDir = path.join(process.cwd(), "data/downloads");
     mkdirSync(downloadDir, { recursive: true });
-    await client.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: toHostPath(downloadDir) });
+    await client.send("Browser.setDownloadBehavior", {
+      behavior: "allow",
+      downloadPath: toHostPath(downloadDir),
+    });
 
     // Take screenshot for debug
     const ssPath = path.join(process.cwd(), "data/debug/before_download.png");
@@ -5177,7 +6351,7 @@ app.post("/api/chrome/download", async (_req: any, res: any) => {
       '[data-mat-icon-name="download"]',
       'button mat-icon[data-mat-icon-name="download"]',
       '.mat-mdc-icon-button[aria-label*="download" i]',
-      'a[download]',
+      "a[download]",
     ];
 
     let clicked = false;
@@ -5188,34 +6362,45 @@ app.post("/api/chrome/download", async (_req: any, res: any) => {
         clicked = true;
         console.log(`⬇️  [Download] Clicked: ${sel}`);
         break;
-      } catch { /* try next */ }
+      } catch {
+        /* try next */
+      }
     }
 
     if (!clicked) {
       // Try evaluating in page to find download button
       clicked = await geminiPage.evaluate(() => {
-        const btn = Array.from(document.querySelectorAll("button, a")).find(el => {
-          const aria = el.getAttribute("aria-label")?.toLowerCase() || "";
-          const title = el.getAttribute("title")?.toLowerCase() || "";
-          return aria.includes("download") || title.includes("download");
-        });
-        if (btn) { (btn as HTMLElement).click(); return true; }
+        const btn = Array.from(document.querySelectorAll("button, a")).find(
+          (el) => {
+            const aria = el.getAttribute("aria-label")?.toLowerCase() || "";
+            const title = el.getAttribute("title")?.toLowerCase() || "";
+            return aria.includes("download") || title.includes("download");
+          },
+        );
+        if (btn) {
+          (btn as HTMLElement).click();
+          return true;
+        }
         return false;
       });
     }
 
-    await new Promise(r => setTimeout(r, 3000));
+    await new Promise((r) => setTimeout(r, 3000));
     browser.disconnect();
 
     // Check if file appeared in downloads
-    const files = readdirSync(downloadDir).filter((f: string) => f.endsWith(".mp4") || f.endsWith(".webm"));
+    const files = readdirSync(downloadDir).filter(
+      (f: string) => f.endsWith(".mp4") || f.endsWith(".webm"),
+    );
 
     res.json({
       success: clicked,
       clicked,
       files_in_downloads: files,
       screenshot: ssPath,
-      message: clicked ? `Download clicked! Files: ${files.join(", ") || "pending..."}` : "Download button not found",
+      message: clicked
+        ? `Download clicked! Files: ${files.join(", ") || "pending..."}`
+        : "Download button not found",
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -5246,7 +6431,9 @@ app.post("/api/videos/:id/publish", async (req: any, res: any) => {
       list[idx].tiktok_status = status;
       list[idx].updated_at = new Date().toISOString();
       await saveMetadata(list);
-      console.log(`📝 [TikTok] Updated metadata ${req.params.id} with TikTok ID: ${tiktokVideoId}`);
+      console.log(
+        `📝 [TikTok] Updated metadata ${req.params.id} with TikTok ID: ${tiktokVideoId}`,
+      );
     }
 
     res.json({
@@ -5263,9 +6450,339 @@ app.post("/api/videos/:id/publish", async (req: any, res: any) => {
   }
 });
 
+// ── REST: TikTok Studio – Check Chrome login status ──────────────────────────
+app.get("/api/tiktok/status", async (_req: any, res: any) => {
+  const debugPort = process.env.CHROME_DEBUG_PORT || "9222";
+  let running = false;
+  let browserInfo = "";
+  let tiktokLoggedIn = false;
+  let username: string | undefined;
+
+  try {
+    const r = await fetch(`http://localhost:${debugPort}/json/version`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (r.ok) {
+      const info = (await r.json()) as any;
+      running = true;
+      browserInfo = info.Browser || "";
+    }
+  } catch {
+    /* Chrome not running */
+  }
+
+  // Try to detect TikTok login by checking open tabs
+  if (running) {
+    try {
+      const r2 = await fetch(`http://localhost:${debugPort}/json`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      if (r2.ok) {
+        const tabs = (await r2.json()) as any[];
+        const tiktokTab = tabs.find(
+          (t) =>
+            t.url &&
+            (t.url.includes("studio.tiktok.com") ||
+              t.url.includes("tiktok.com/@")),
+        );
+        if (tiktokTab) {
+          tiktokLoggedIn = true;
+          const m = tiktokTab.url.match(/tiktok\.com\/@([^/?#]+)/);
+          if (m) username = m[1];
+        } else {
+          // Chrome is running and has a profile → assume logged in if ChromeAuto exists
+          const chromeAutoDir = path.join(
+            process.env.HOME || "",
+            "ChromeAuto",
+            "Default",
+          );
+          if (existsSync(chromeAutoDir)) tiktokLoggedIn = true;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  res.json({
+    success: true,
+    connected: running,
+    loggedIn: tiktokLoggedIn,
+    username,
+    browser: browserInfo,
+    message: running
+      ? tiktokLoggedIn
+        ? `Đã kết nối Chrome và đăng nhập TikTok${username ? ": @" + username : ""}`
+        : "Chrome đang chạy nhưng chưa mở TikTok Studio"
+      : "Chrome chưa khởi động – nhấn 'Mở Chrome TikTok'",
+  });
+});
+
+// ── REST: TikTok Studio – Launch Chrome to TikTok Studio ─────────────────────
+app.post("/api/tiktok/launch-chrome", async (_req: any, res: any) => {
+  try {
+    const chromeAutoDir = path.join(process.env.HOME || "~", "ChromeAuto");
+    const debugPort = process.env.CHROME_DEBUG_PORT || "9222";
+
+    // Check if Chrome already running
+    const alreadyRunning = await fetch(
+      `http://localhost:${debugPort}/json/version`,
+    )
+      .then((r) => r.ok)
+      .catch(() => false);
+
+    if (alreadyRunning) {
+      // Connect and open TikTok Studio tab
+      try {
+        const pup = (await import("puppeteer")).default;
+        const browser = await pup.connect({
+          browserURL: `http://localhost:${debugPort}`,
+          defaultViewport: null,
+        });
+        const pages = await browser.pages();
+        const existing = pages.find(
+          (p) =>
+            p.url().includes("tiktok.com") ||
+            p.url().includes("studio.tiktok.com"),
+        );
+        if (existing) {
+          await existing.bringToFront();
+        } else {
+          const page = await browser.newPage();
+          await page.goto("https://www.tiktok.com/creator-center/upload", {
+            waitUntil: "domcontentloaded",
+            timeout: 15000,
+          });
+        }
+        await browser.disconnect();
+      } catch {
+        /* ignore disconnect errors */
+      }
+      return res.json({
+        success: true,
+        message: "Chrome đang chạy – đã mở tab TikTok Studio!",
+      });
+    }
+
+    // Launch Chrome with TikTok Studio
+    const chromePath =
+      process.env.CHROME_PATH ||
+      (process.platform === "darwin"
+        ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        : process.platform === "win32"
+          ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+          : "/usr/bin/google-chrome");
+
+    const { spawn } = await import("child_process");
+    spawn(
+      chromePath,
+      [
+        `--remote-debugging-port=${debugPort}`,
+        `--user-data-dir=${chromeAutoDir}`,
+        "--no-first-run",
+        "--no-default-browser-check",
+        "https://www.tiktok.com/creator-center/upload",
+      ],
+      { detached: true, stdio: "ignore" },
+    ).unref();
+
+    res.json({
+      success: true,
+      message: "Đã khởi động Chrome TikTok Studio! Vui lòng đăng nhập nếu cần.",
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── REST: TikTok Studio – Puppeteer bot upload ────────────────────────────────
+app.post("/api/tiktok/publish-bot", async (req: any, res: any) => {
+  try {
+    const {
+      video_path,
+      video_url,
+      video_id,
+      product_id,
+      title,
+      caption,
+      tags = [],
+      mode = "draft",
+      video_format = "shorts",
+      visibility = "public",
+    } = req.body as {
+      video_path?: string;
+      video_url?: string;
+      video_id?: string;
+      product_id?: string;
+      title: string;
+      caption?: string;
+      tags?: string[];
+      mode?: "post" | "draft";
+      video_format?: string;
+      visibility?: string;
+    };
+
+    if (!title?.trim()) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Thiếu tiêu đề video" });
+    }
+
+    // ── Resolve actual video file path ──────────────────────────────────────
+    const downloadsDir = path.resolve(__dirname, "../data/downloads");
+    const longDownloadsDir = path.resolve(__dirname, "../data/long-downloads");
+    const shortsKitRoot = path.resolve(__dirname, "../shorts-kit");
+
+    let targetFilePath: string | null = null;
+
+    // 1. Direct local path
+    if (video_path && existsSync(video_path)) {
+      targetFilePath = video_path;
+    }
+
+    // 2. URL-based resolution
+    if (!targetFilePath && video_url) {
+      const cleanUrl = String(video_url).split("?")[0].trim();
+      if (cleanUrl.startsWith("/downloads/")) {
+        const p = path.join(
+          downloadsDir,
+          cleanUrl.replace(/^\/downloads\//, ""),
+        );
+        if (existsSync(p)) targetFilePath = p;
+      } else if (cleanUrl.startsWith("/long-downloads/")) {
+        const p = path.join(
+          longDownloadsDir,
+          cleanUrl.replace(/^\/long-downloads\//, ""),
+        );
+        if (existsSync(p)) targetFilePath = p;
+      } else if (existsSync(cleanUrl)) {
+        targetFilePath = cleanUrl;
+      }
+    }
+
+    // 3. shorts-kit/out/<rawId>/ lookup
+    if (!targetFilePath) {
+      const rawIdCandidates: string[] = [];
+      if (video_id)
+        rawIdCandidates.push(
+          String(video_id)
+            .replace(/^(shorts_|long_)/, "")
+            .trim(),
+        );
+      if (product_id)
+        rawIdCandidates.push(
+          String(product_id)
+            .replace(/^(shorts_|long_)/, "")
+            .trim(),
+        );
+      if (video_url) {
+        const m = String(video_url).match(
+          /(?:shorts_|long_|\/)([a-zA-Z0-9_-]+?)(?:-upload|-loud|\.mp4|$)/,
+        );
+        if (m?.[1]) rawIdCandidates.push(m[1]);
+      }
+      for (const rawId of rawIdCandidates.filter(Boolean)) {
+        const checks = [
+          path.join(shortsKitRoot, "out", rawId, `${rawId}-upload.mp4`),
+          path.join(shortsKitRoot, "out", rawId, `${rawId}.mp4`),
+          path.join(shortsKitRoot, "out-long", rawId, `${rawId}-upload.mp4`),
+          path.join(shortsKitRoot, "out-long", rawId, `${rawId}.mp4`),
+          path.join(downloadsDir, `shorts_${rawId}`, `${rawId}-upload.mp4`),
+          path.join(longDownloadsDir, `long_${rawId}`, `${rawId}-upload.mp4`),
+        ];
+        for (const cp of checks) {
+          if (existsSync(cp)) {
+            targetFilePath = cp;
+            break;
+          }
+        }
+        if (targetFilePath) break;
+      }
+    }
+
+    // 4. S3/HTTP download fallback
+    if (!targetFilePath) {
+      const remoteUrl =
+        video_url &&
+        (video_url.startsWith("http://") || video_url.startsWith("https://"))
+          ? video_url
+          : undefined;
+      if (remoteUrl) {
+        const tempPath = path.join(
+          require("os").tmpdir(),
+          `tiktok_bot_${Date.now()}.mp4`,
+        );
+        const fetchRes = await fetch(remoteUrl, {
+          signal: AbortSignal.timeout(60000),
+        });
+        if (fetchRes.ok) {
+          const buffer = Buffer.from(await fetchRes.arrayBuffer());
+          await fs.writeFile(tempPath, buffer);
+          targetFilePath = tempPath;
+        }
+      }
+    }
+
+    if (!targetFilePath || !existsSync(targetFilePath)) {
+      return res.status(404).json({
+        success: false,
+        error: `Không tìm thấy file video để upload lên TikTok (đường dẫn: ${targetFilePath || video_url || video_path})`,
+      });
+    }
+
+    // ── TikTok Studio upload via the dedicated bot (src/tiktokUploader.ts) ──
+    // The previous inline Puppeteer code typed caption + "\n" + tags (hashtags doubled when the
+    // caption already had them), and looked for a non-existent post-button selector, so it never
+    // clicked "Đăng" yet still marked the video as published.
+    const { uploadVideoToTikTokViaBot } = await import("./tiktokUploader.js");
+    const result = await uploadVideoToTikTokViaBot({
+      videoFilePath: targetFilePath,
+      title: title.trim(),
+      caption: caption?.trim() || "",
+      tags,
+      mode: mode === "post" ? "post" : "draft",
+      visibility: (["public", "friends", "private"].includes(visibility) ? visibility : "public") as any,
+      debugPort: Number(process.env.CHROME_DEBUG_PORT || 9222),
+    });
+
+    // Update metadata only after the bot confirmed (re-read to avoid clobbering parallel writes)
+    try {
+      const vidId = video_id || product_id;
+      if (vidId && result.success) {
+        const list = await loadMetadata();
+        const idx = list.findIndex(
+          (v) => v.id === vidId || (v as any).product_id === vidId,
+        );
+        if (idx !== -1) {
+          if (result.mode === "post") {
+            (list[idx] as any).tiktok_status = "published";
+            (list[idx] as any).tiktok_video_id = (list[idx] as any).tiktok_video_id || `tiktok_bot_${Date.now()}`;
+            (list[idx] as any).tiktok_published_at = new Date().toISOString();
+          } else {
+            (list[idx] as any).tiktok_draft_at = new Date().toISOString();
+          }
+          await saveMetadata(list);
+        }
+      }
+    } catch {
+      /* ignore metadata update errors */
+    }
+
+    res.json({ ...result, video_format });
+  } catch (err: any) {
+    const msg = String(err.message || err);
+    if (msg.includes("connect") || msg.includes("ECONNREFUSED")) {
+      return res.status(503).json({
+        success: false,
+        error: "Chrome TikTok Studio chưa chạy. Nhấn 'Mở Chrome TikTok' trước!",
+      });
+    }
+    res.status(500).json({ success: false, error: msg });
+  }
+});
 
 app.get("/api/test", async (req: any, res: any) => {
-  const dryRun   = req.query.dry_run === "true" || req.query.dry_run === "1";
+  const dryRun = req.query.dry_run === "true" || req.query.dry_run === "1";
   const productName = (req.query.product as string) || "AKKO 3068B keyboard";
   const category = (req.query.category as string) || "tech";
 
@@ -5281,7 +6798,11 @@ app.get("/api/test", async (req: any, res: any) => {
     name: productName,
     category,
     affiliate_url: "",
-    hashtags: [`#${productName.toLowerCase().replace(/\s+/g, "")}`, "#affiliate", "#test"],
+    hashtags: [
+      `#${productName.toLowerCase().replace(/\s+/g, "")}`,
+      "#affiliate",
+      "#test",
+    ],
     enabled: true,
   };
 
@@ -5289,8 +6810,8 @@ app.get("/api/test", async (req: any, res: any) => {
   try {
     const result = await runPipelineForProduct(product, {
       dryRun,
-      uploadToS3: false,       // Safe default for testing
-      publishTikTok: false,    // Safe default for testing
+      uploadToS3: false, // Safe default for testing
+      publishTikTok: false, // Safe default for testing
     });
 
     const emoji = result.success ? "✅" : "❌";
@@ -5301,9 +6822,9 @@ app.get("/api/test", async (req: any, res: any) => {
       test_config: { product_name: productName, category, dry_run: dryRun },
       result,
       tips: {
-        full_flow:     `curl "http://localhost:${PORT}/api/test"`,
-        dry_run_only:  `curl "http://localhost:${PORT}/api/test?dry_run=true"`,
-        custom_product:`curl "http://localhost:${PORT}/api/test?product=Sony+WH1000XM5&category=tech"`,
+        full_flow: `curl "http://localhost:${PORT}/api/test"`,
+        dry_run_only: `curl "http://localhost:${PORT}/api/test?dry_run=true"`,
+        custom_product: `curl "http://localhost:${PORT}/api/test?product=Sony+WH1000XM5&category=tech"`,
       },
     });
   } catch (err: any) {
@@ -5358,7 +6879,9 @@ app.post("/mcp", async (req: any, res: any) => {
   } catch (err: any) {
     console.error("❌ MCP request error:", err);
     if (!res.headersSent) {
-      res.status(500).json({ error: "Internal MCP server error", message: err.message });
+      res
+        .status(500)
+        .json({ error: "Internal MCP server error", message: err.message });
     }
   }
 });
@@ -5370,14 +6893,17 @@ app.get("/mcp", async (req: any, res: any) => {
   // Nếu client gửi Accept: text/event-stream (chuẩn MCP SSE Transport)
   if (accept.includes("text/event-stream") || req.query.transport === "sse") {
     console.log("⚡ [SSE Transport] Gemini/Client khởi tạo kết nối SSE...");
-    
+
     // Đặt header chống buffering cho Nginx/Cloudflare HTTP/2 stream
     res.setHeader("X-Accel-Buffering", "no");
     res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("Connection", "keep-alive");
 
     // Tạo URL tuyệt đối (Absolute URL) theo khuyến nghị MCP Client
-    const host = req.headers["x-forwarded-host"] || req.headers.host || "dev.thienstyle.xyz";
+    const host =
+      req.headers["x-forwarded-host"] ||
+      req.headers.host ||
+      "dev.thienstyle.xyz";
     const proto = req.headers["x-forwarded-proto"] || "https";
     const baseUrl = `${proto}://${host}`;
     const msgPath = `${baseUrl}${req.originalUrl.includes("/affiliate") ? "/affiliate" : ""}/mcp/messages`;
@@ -5406,17 +6932,34 @@ app.get("/mcp", async (req: any, res: any) => {
   return res.status(200).json({
     name: "affiliate-mcp-server",
     version: "2.0.0",
-    description: "Affiliate Automation MCP Server: Veo video generation pipeline → S3 → TikTok",
+    description:
+      "Affiliate Automation MCP Server: Veo video generation pipeline → S3 → TikTok",
     protocol: "mcp",
     protocolVersion: "2024-11-05",
     capabilities: { tools: {} },
     tools: [
-      { name: "upload_video", description: "Download video từ URL → Upload lên AWS S3" },
-      { name: "save_metadata", description: "Lưu video metadata vào JSON storage" },
+      {
+        name: "upload_video",
+        description: "Download video từ URL → Upload lên AWS S3",
+      },
+      {
+        name: "save_metadata",
+        description: "Lưu video metadata vào JSON storage",
+      },
       { name: "publish_tiktok", description: "Publish video lên TikTok" },
-      { name: "generate_prompt", description: "Sinh Veo prompt bằng AGY Gemini 3.8, GLM-5 kiểm định ở chế độ consensus" },
-      { name: "generate_video", description: "Tạo video Veo qua Puppeteer + Gemini Web" },
-      { name: "run_full_pipeline", description: "Chạy toàn bộ pipeline affiliate từ A-Z" },
+      {
+        name: "generate_prompt",
+        description:
+          "Sinh Veo prompt bằng AGY Gemini 3.8, GLM-5 kiểm định ở chế độ consensus",
+      },
+      {
+        name: "generate_video",
+        description: "Tạo video Veo qua Puppeteer + Gemini Web",
+      },
+      {
+        name: "run_full_pipeline",
+        description: "Chạy toàn bộ pipeline affiliate từ A-Z",
+      },
     ],
   });
 });
@@ -5462,10 +7005,14 @@ async function main() {
       console.log(`✅ S3 bucket connected: ${S3_BUCKET}`);
     } catch (err: any) {
       console.warn(`⚠️  S3 bucket check failed (${S3_BUCKET}): ${err.message}`);
-      console.warn("   → Server will still start; S3 uploads will fail until credentials are valid.");
+      console.warn(
+        "   → Server will still start; S3 uploads will fail until credentials are valid.",
+      );
     }
   } else {
-    console.warn("⚠️  S3_BUCKET_NAME not set — upload_video tool will return error.");
+    console.warn(
+      "⚠️  S3_BUCKET_NAME not set — upload_video tool will return error.",
+    );
   }
 
   const httpServer = app.listen(PORT, () => {
@@ -5476,27 +7023,69 @@ async function main() {
       (httpServer as any).requestTimeout = 1800000;
     }
     console.log("");
-    console.log("╔════════════════════════════════════════════════════════════╗");
-    console.log("║       🚀 Affiliate Automation MCP Server v2.0 started!     ║");
-    console.log("╠════════════════════════════════════════════════════════════╣");
-    console.log(`║  HTTP:      http://localhost:${PORT}                          ║`);
-    console.log(`║  MCP:       http://localhost:${PORT}/mcp                      ║`);
-    console.log(`║  Health:    http://localhost:${PORT}/health                   ║`);
-    console.log(`║  Videos:    http://localhost:${PORT}/api/videos               ║`);
-    console.log(`║  Products:  http://localhost:${PORT}/api/products             ║`);
-    console.log(`║  Pipeline:  http://localhost:${PORT}/api/pipeline/run         ║`);
-    console.log("╠════════════════════════════════════════════════════════════╣");
-    console.log(`║  TikTok:  ${IS_MOCK_TIKTOK ? "🎭 MOCK mode" : "✅ Real API"}                            ║`);
-    console.log(`║  S3:      ${S3_BUCKET ? `✅ ${S3_BUCKET}` : "⚠️  Not configured"}           ║`);
-    console.log("╠════════════════════════════════════════════════════════════╣");
-    console.log("║  📌 MCP Tools:                                             ║");
-    console.log("║   → upload_video       (download URL → S3)                 ║");
-    console.log("║   → save_metadata      (lưu metadata JSON)                 ║");
-    console.log("║   → publish_tiktok     (publish lên TikTok)                ║");
-    console.log("║   → generate_prompt    (AGY 3.8 → GLM-5 audit → Veo)       ║");
-    console.log("║   → generate_video     (Puppeteer → Gemini Web → MP4)      ║");
-    console.log("║   → run_full_pipeline  (Full A-Z automation)               ║");
-    console.log("╚════════════════════════════════════════════════════════════╝");
+    console.log(
+      "╔════════════════════════════════════════════════════════════╗",
+    );
+    console.log(
+      "║       🚀 Affiliate Automation MCP Server v2.0 started!     ║",
+    );
+    console.log(
+      "╠════════════════════════════════════════════════════════════╣",
+    );
+    console.log(
+      `║  HTTP:      http://localhost:${PORT}                          ║`,
+    );
+    console.log(
+      `║  MCP:       http://localhost:${PORT}/mcp                      ║`,
+    );
+    console.log(
+      `║  Health:    http://localhost:${PORT}/health                   ║`,
+    );
+    console.log(
+      `║  Videos:    http://localhost:${PORT}/api/videos               ║`,
+    );
+    console.log(
+      `║  Products:  http://localhost:${PORT}/api/products             ║`,
+    );
+    console.log(
+      `║  Pipeline:  http://localhost:${PORT}/api/pipeline/run         ║`,
+    );
+    console.log(
+      "╠════════════════════════════════════════════════════════════╣",
+    );
+    console.log(
+      `║  TikTok:  ${IS_MOCK_TIKTOK ? "🎭 MOCK mode" : "✅ Real API"}                            ║`,
+    );
+    console.log(
+      `║  S3:      ${S3_BUCKET ? `✅ ${S3_BUCKET}` : "⚠️  Not configured"}           ║`,
+    );
+    console.log(
+      "╠════════════════════════════════════════════════════════════╣",
+    );
+    console.log(
+      "║  📌 MCP Tools:                                             ║",
+    );
+    console.log(
+      "║   → upload_video       (download URL → S3)                 ║",
+    );
+    console.log(
+      "║   → save_metadata      (lưu metadata JSON)                 ║",
+    );
+    console.log(
+      "║   → publish_tiktok     (publish lên TikTok)                ║",
+    );
+    console.log(
+      "║   → generate_prompt    (AGY 3.8 → GLM-5 audit → Veo)       ║",
+    );
+    console.log(
+      "║   → generate_video     (Puppeteer → Gemini Web → MP4)      ║",
+    );
+    console.log(
+      "║   → run_full_pipeline  (Full A-Z automation)               ║",
+    );
+    console.log(
+      "╚════════════════════════════════════════════════════════════╝",
+    );
     console.log("");
 
     // Khởi động Cronjob scheduler nếu không tắt qua ENV

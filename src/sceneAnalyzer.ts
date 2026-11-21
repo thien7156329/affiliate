@@ -1,4 +1,5 @@
 import { callAgy, isAgyEnabled } from "./agyClient.js";
+import { GEMINI_CARBON_MODEL, GEMINI_ARGON_MODEL } from "./aiModelConfig.js";
 import { callCodexSol, isCodexEnabled } from "./codexClient.js";
 
 export const ALLOWED_SCENE_COUNTS = [3, 4, 5, 6, 8, 10, 12, 15, 18] as const;
@@ -201,7 +202,12 @@ ${description.trim()}
   try {
     let aiResponseStr = '';
     if (isAgyEnabled()) {
-      aiResponseStr = await callAgy(systemPrompt, userPrompt, true, 'gemini-3.8-flash-low');
+      try {
+        aiResponseStr = await callAgy(systemPrompt, userPrompt, true, GEMINI_ARGON_MODEL);
+      } catch (argonErr: any) {
+        console.warn(`⚠️ [suggestScenesWithAi] ${GEMINI_ARGON_MODEL} failed (${argonErr.message}), falling back to ${GEMINI_CARBON_MODEL}...`);
+        aiResponseStr = await callAgy(systemPrompt, userPrompt, true, GEMINI_CARBON_MODEL);
+      }
     } else if (isCodexEnabled()) {
       aiResponseStr = await callCodexSol(systemPrompt, userPrompt, true);
     } else {

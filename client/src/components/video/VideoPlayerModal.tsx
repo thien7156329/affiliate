@@ -1,8 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { VideoItem } from '../../types';
 import { useToast } from '../../context/ToastContext';
+import { useConfirm } from '../../context/ConfirmDialogContext';
 import { YouTubePublishModal } from '../modals/YouTubePublishModal';
 import { FacebookPublishModal } from '../modals/FacebookPublishModal';
+import { TikTokPublishModal } from '../modals/TikTokPublishModal';
+import { compressImageFile } from '../../utils/imageCompressor';
 
 interface VideoPlayerModalProps {
   video: VideoItem | null;
@@ -23,6 +26,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   onUpdateSuccess,
 }) => {
   const { showToast } = useToast();
+  const { confirmDialog } = useConfirm();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [title, setTitle] = useState('');
   const [caption, setCaption] = useState('');
@@ -40,6 +44,8 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   const [isDownloading, setIsDownloading] = useState(false);
   const [showYouTubeModal, setShowYouTubeModal] = useState(false);
   const [showFacebookModal, setShowFacebookModal] = useState(false);
+  const [showTikTokModal, setShowTikTokModal] = useState(false);
+  const [detectedFormat, setDetectedFormat] = useState<'short' | 'long'>('short');
 
 
   useEffect(() => {
@@ -52,6 +58,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
       setStreamUrl(video.stream_url || video.s3_url || '');
       setSelectedEpisodeId('full');
       setVideoDuration(0);
+      setDetectedFormat(video.video_format === 'long' || video.aspect_ratio === '16:9' ? 'long' : 'short');
       setVideoReloadKey((key) => key + 1);
     }
   }, [video, isOpen]);
@@ -183,7 +190,14 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   };
 
   const handleDelete = async () => {
-    if (!window.confirm(`Xóa video "${title || video.title}"? Thao tác này không thể hoàn tác!`)) return;
+    const ok = await confirmDialog({
+      title: 'Xóa Video',
+      message: `Bạn có chắc muốn xóa video "${title || video.title}"? Toàn bộ file và dữ liệu phân cảnh sẽ bị xóa vĩnh viễn. Thao tác này không thể hoàn tác!`,
+      confirmText: 'Xóa Vĩnh Viễn',
+      cancelText: 'Hủy bỏ',
+      type: 'danger',
+    });
+    if (!ok) return;
     try {
       const res = await fetch(`/api/videos/${video.id}`, { method: 'DELETE' });
       const data = await res.json();
@@ -208,6 +222,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
       if (data.success) {
         showToast(`✅ ${data.message || 'Đăng TikTok thành công!'}`);
         onUpdateSuccess();
+        window.dispatchEvent(new CustomEvent('affiliate:video-published'));
         onClose();
       } else {
         showToast('❌ Đăng TikTok thất bại: ' + (data.error || 'Server error'));
@@ -227,13 +242,8 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
       const file = input.files?.[0];
       if (!file) return;
       try {
-        showToast('⏳ Đang tải ảnh lên...');
-        const dataUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = (e) => resolve(e.target?.result as string);
-          reader.onerror = reject;
-          reader.readAsDataURL(file);
-        });
+        showToast('⏳ Đang nén & tải ảnh lên...');
+        const { dataUrl } = await compressImageFile(file, { maxWidth: 1600, maxHeight: 1600, quality: 0.82 });
 
         const res = await fetch('/api/upload/image', {
           method: 'POST',
@@ -261,15 +271,16 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   const isPublished = video.status === 'published';
 
   return (
-    <div className="modal-overlay open" onClick={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="modal-overlay open" id="videoModalOverlay">
       <div
         className="modal"
         onClick={(e) => e.stopPropagation()}
         style={{
-          width: '660px',
-          maxWidth: '92vw',
-          height: 'min(860px, 92vh)',
-          maxHeight: '92vh',
+          width: '840px',
+          minWidth: 'min(760px, 94vw)',
+          maxWidth: '94vw',
+          height: 'min(880px, 94vh)',
+          maxHeight: '94vh',
           padding: '18px 22px',
           borderRadius: '18px',
           display: 'flex',
@@ -278,6 +289,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
           overflow: 'hidden',
           background: 'var(--bg2)',
           border: '1px solid var(--border)',
+          boxShadow: '0 25px 60px rgba(0, 0, 0, 0.7)',
         }}
       >
         <div
@@ -416,7 +428,13 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                   src={streamUrl}
                   controls
                   autoPlay
-                  onLoadedMetadata={(e) => setVideoDuration(e.currentTarget.duration || 0)}
+                  onLoadedMetadata={(e) => {
+                    const el = e.currentTarget;
+                    setVideoDuration(el.duration || 0);
+                    if (el.videoWidth && el.videoHeight) {
+                      setDetectedFormat(el.videoWidth > el.videoHeight ? 'long' : 'short');
+                    }
+                  }}
                   style={{
                     width: '100%',
                     height: '100%',
@@ -638,7 +656,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
-            gap: '6px',
+            gap: '8px',
             paddingTop: '12px',
             borderTop: '1px solid var(--border)',
             background: 'var(--bg2)',
@@ -648,29 +666,45 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
           }}
         >
           {/* Left: Destructive action */}
-          <button
-            type="button"
-            onClick={handleDelete}
-            style={{
-              background: 'rgba(239,68,68,0.1)',
-              color: '#f87171',
-              border: '1px solid rgba(239,68,68,0.2)',
-              padding: '6px 10px',
-              fontSize: '11px',
-              borderRadius: '6px',
-              cursor: 'pointer',
-              whiteSpace: 'nowrap',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '4px',
-            }}
-            title="Xoá video"
-          >
-            🗑️ Xoá
-          </button>
+          <div id="videoModalFooterLeft" style={{ display: 'flex', alignItems: 'center' }}>
+            <button
+              type="button"
+              onClick={handleDelete}
+              style={{
+                background: 'rgba(239,68,68,0.1)',
+                color: '#f87171',
+                border: '1px solid rgba(239,68,68,0.2)',
+                padding: '6px 10px',
+                fontSize: '11px',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                flexShrink: 0,
+              }}
+              title="Xoá video"
+            >
+              🗑️ Xoá
+            </button>
+          </div>
 
           {/* Center: Action buttons */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', justifyContent: 'center' }}>
+          <div
+            id="videoModalFooterCenter"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              flexWrap: 'nowrap',
+              overflowX: 'auto',
+              justifyContent: 'center',
+              flex: 1,
+              minWidth: 0,
+              padding: '2px 4px',
+            }}
+          >
             <button
               type="button"
               onClick={handleVoiceSync}
@@ -688,6 +722,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: '4px',
+                flexShrink: 0,
               }}
               title="Lồng giọng AI cho video"
             >
@@ -711,6 +746,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                   alignItems: 'center',
                   gap: '3px',
                   whiteSpace: 'nowrap',
+                  flexShrink: 0,
                 }}
                 title="Xem trên YouTube"
               >
@@ -734,6 +770,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                 alignItems: 'center',
                 gap: '4px',
                 boxShadow: '0 1px 6px rgba(239, 68, 68, 0.25)',
+                flexShrink: 0,
               }}
               title="Đăng video lên YouTube"
             >
@@ -756,10 +793,34 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                 alignItems: 'center',
                 gap: '4px',
                 boxShadow: '0 1px 6px rgba(24, 119, 242, 0.3)',
+                flexShrink: 0,
               }}
               title="Đăng video lên Facebook (Reels hoặc Video Fanpage)"
             >
               🔵 Đăng FB
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowTikTokModal(true)}
+              style={{
+                background: 'linear-gradient(135deg, #000000 0%, #fe2c55 50%, #25f4ee 100%)',
+                color: '#fff',
+                border: 'none',
+                padding: '6px 10px',
+                borderRadius: '6px',
+                fontSize: '11px',
+                fontWeight: 700,
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                boxShadow: '0 1px 6px rgba(254, 44, 85, 0.35)',
+                flexShrink: 0,
+              }}
+              title="Đăng video tự động lên TikTok Studio bằng Puppeteer Bot"
+            >
+              🎵 Đăng TikTok
             </button>
 
             <button
@@ -780,6 +841,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                 alignItems: 'center',
                 gap: '4px',
                 boxShadow: '0 1px 6px rgba(16,185,129,0.25)',
+                flexShrink: 0,
               }}
               title="Tải file video MP4"
             >
@@ -788,12 +850,12 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
           </div>
 
           {/* Right: Close + Save */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <div id="videoModalFooterRight" style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
             <button
               type="button"
               className="btn-cancel"
               onClick={onClose}
-              style={{ padding: '6px 12px', fontSize: '11px', borderRadius: '6px', whiteSpace: 'nowrap' }}
+              style={{ padding: '6px 12px', fontSize: '11px', borderRadius: '6px', whiteSpace: 'nowrap', flexShrink: 0 }}
             >
               Đóng
             </button>
@@ -811,6 +873,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                 fontSize: '11px',
                 borderRadius: '6px',
                 whiteSpace: 'nowrap',
+                flexShrink: 0,
               }}
             >
               {isSaving ? '⏳' : '💾'} Lưu
@@ -827,6 +890,8 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
           defaultDescription={caption || video.description || video.caption || ''}
           defaultTags={tags ? tags.split(/[\s,]+/).map((t) => t.trim().replace(/^#/, '')).filter(Boolean) : (video.tags || []).map((t) => t.replace(/^#/, ''))}
           defaultThumbnailUrl={video.thumbnail_url || video.source_image_url || ''}
+          defaultVideoFormat={detectedFormat}
+          defaultPlaylistName={video.playlist_name}
           videoUrl={streamUrl || video.video_url}
           videoId={video.id}
           episodes={video.episodes?.map((ep) => ({
@@ -839,6 +904,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
           initialTarget={selectedEpisodeId !== 'full' ? selectedEpisodeId : 'full'}
           onSuccess={() => {
             onUpdateSuccess();
+            window.dispatchEvent(new CustomEvent('affiliate:video-published'));
           }}
         />
       )}
@@ -851,6 +917,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
           defaultDescription={caption || video.description || video.caption || ''}
           defaultTags={tags ? tags.split(/[\s,]+/).map((t) => t.trim().replace(/^#/, '')).filter(Boolean) : (video.tags || []).map((t) => t.replace(/^#/, ''))}
           defaultThumbnailUrl={video.thumbnail_url || video.source_image_url || ''}
+          defaultVideoFormat={detectedFormat}
           videoUrl={streamUrl || video.video_url}
           videoId={video.id}
           episodes={video.episodes?.map((ep) => ({
@@ -863,6 +930,40 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
           initialTarget={selectedEpisodeId !== 'full' ? selectedEpisodeId : 'full'}
           onSuccess={() => {
             onUpdateSuccess();
+            window.dispatchEvent(new CustomEvent('affiliate:video-published'));
+          }}
+        />
+      )}
+
+      {showTikTokModal && video && (
+        <TikTokPublishModal
+          isOpen={showTikTokModal}
+          onClose={() => setShowTikTokModal(false)}
+          defaultTitle={title || video.title}
+          defaultDescription={caption || video.description || video.caption || ''}
+          defaultTags={
+            tags
+              ? tags.split(/[\s,]+/).map((t) => t.trim().replace(/^#/, '')).filter(Boolean)
+              : (video.tags || []).map((t) => t.replace(/^#/, ''))
+          }
+          defaultThumbnailUrl={video.thumbnail_url || video.source_image_url || ''}
+          defaultVideoFormat={detectedFormat}
+          videoPath={video.local_path}
+          videoUrl={streamUrl || video.video_url || video.s3_url || (video as any).source_url}
+          videoId={video.id}
+          productId={video.id}
+          productName={video.title}
+          initialTarget={selectedEpisodeId !== 'full' ? selectedEpisodeId : 'full'}
+          episodes={video.episodes?.map((ep) => ({
+            id: ep.id,
+            title: ep.title,
+            video_url: ep.voiced_url || ep.video_url,
+            local_path: ep.voiced_path || ep.local_path,
+            thumbnail_url: ep.thumbnail_url || video.thumbnail_url || video.source_image_url || '',
+          }))}
+          onSuccess={() => {
+            onUpdateSuccess();
+            window.dispatchEvent(new CustomEvent('affiliate:video-published'));
           }}
         />
       )}

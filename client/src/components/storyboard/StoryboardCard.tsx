@@ -93,7 +93,7 @@ export const StoryboardCard: React.FC<StoryboardCardProps> = memo(({
               }}
             >
               <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#ec4899', animation: 'livePulse 0.8s infinite' }} />
-              <span>🤖 2 AI đang sửa...</span>
+              <span>🤖 AI đang sửa...</span>
             </span>
           )}
           <span

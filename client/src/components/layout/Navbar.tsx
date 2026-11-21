@@ -64,9 +64,9 @@ export const Navbar: React.FC<NavbarProps> = memo(({
 
         <button
           type="button"
-          className="btn-sm"
+          className="btn-sm btn-nav-action"
           style={{
-            padding: '8px 14px',
+            padding: '8px 12px',
             borderRadius: '10px',
             background: 'rgba(16,185,129,0.15)',
             border: '1px solid rgba(16,185,129,0.3)',
@@ -77,17 +77,20 @@ export const Navbar: React.FC<NavbarProps> = memo(({
             alignItems: 'center',
             gap: '6px',
             fontSize: '13px',
+            whiteSpace: 'nowrap',
           }}
           onClick={onOpenCharacterModal}
+          title="Quản lý giọng nhân vật"
         >
-          🎭 Giọng Nhân Vật
+          <span>🎭</span>
+          <span className="btn-nav-text">Giọng Nhân Vật</span>
         </button>
 
         <button
           type="button"
-          className="btn-sm"
+          className="btn-sm btn-nav-action"
           style={{
-            padding: '8px 14px',
+            padding: '8px 12px',
             borderRadius: '10px',
             background: 'rgba(124,58,237,0.15)',
             border: '1px solid rgba(124,58,237,0.3)',
@@ -98,18 +101,23 @@ export const Navbar: React.FC<NavbarProps> = memo(({
             alignItems: 'center',
             gap: '6px',
             fontSize: '13px',
+            whiteSpace: 'nowrap',
           }}
           onClick={onOpenConcatModal}
+          title="Nối các video ngắn thành video hoàn chỉnh"
         >
-          🔗 Nối Video
+          <span>🔗</span>
+          <span className="btn-nav-text">Nối Video</span>
         </button>
 
         <button
           type="button"
           className="btn-generate"
           onClick={onOpenGenerateModal}
+          title="Tạo video mới với AI"
         >
-          ▶ Generate Video
+          <span>▶</span>
+          <span className="btn-nav-generate-text">Generate Video</span>
         </button>
       </div>
     </header>

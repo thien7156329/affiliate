@@ -5,9 +5,10 @@
   "main": "build/bootstrap.js",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k -p \"[{name}]\" -n \"BACKEND,FRONTEND\" -c \"cyan.bold,magenta.bold\" \"npm run dev:server\" \"npm run dev:client\"",
+    "dev": "concurrently -k -p \"[{name}]\" -n \"BACKEND,FRONTEND,SHORTS-KIT\" -c \"cyan.bold,magenta.bold,green.bold\" \"npm run dev:server\" \"npm run dev:client\" \"npm run dev:shorts\"",
     "dev:server": "npx nodemon --watch src -e ts --exec 'npx tsx src/bootstrap.ts'",
     "dev:client": "npm --prefix client run dev",
+    "dev:shorts": "export PATH=\"$HOME/.bun/bin:/opt/homebrew/bin:$PATH\" && (lsof -ti:7788 | xargs kill -9 2>/dev/null || true) && cd shorts-kit && bun --watch scripts/preview.ts",
     "dev:bridge": "npx tsx src/workspaceBridge.ts",
     "client:dev": "npm --prefix client run dev",
     "client:build": "npm --prefix client run build",

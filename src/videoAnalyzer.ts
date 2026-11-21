@@ -11,6 +11,7 @@ import fs from "fs";
 import path from "path";
 import { execSync } from "child_process";
 import { callAgy, isAgyEnabled, AGY_DEFAULT_MODEL } from "./agyClient.js";
+import { GEMINI_CARBON_MODEL, GEMINI_ARGON_MODEL } from "./aiModelConfig.js";
 
 export interface DialogueSegment {
   id?: string;
@@ -83,7 +84,18 @@ Rules:
 Script:
 "${providedScript || "Phim hoạt hình ngắn 60s"}"`;
 
-      const rawText = await callAgy(systemPrompt, userPrompt, true);
+      const candidateModels = [AGY_DEFAULT_MODEL, GEMINI_CARBON_MODEL, GEMINI_ARGON_MODEL].filter(
+        (m, idx, arr) => Boolean(m) && arr.indexOf(m) === idx
+      );
+      let rawText = "";
+      for (const cand of candidateModels) {
+        try {
+          rawText = await callAgy(systemPrompt, userPrompt, true, cand);
+          if (rawText) break;
+        } catch (candErr: any) {
+          console.warn(`⚠️ [VideoAnalyzer] ${cand} failed (${candErr.message}), trying next fallback...`);
+        }
+      }
       if (rawText) {
         const cleanJson = rawText.replace(/```json/gi, "").replace(/```/g, "").trim();
         const parsed = JSON.parse(cleanJson);

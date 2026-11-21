@@ -17,6 +17,7 @@ interface FacebookPublishModalProps {
   defaultDescription?: string;
   defaultTags?: string[];
   defaultThumbnailUrl?: string;
+  defaultVideoFormat?: 'short' | 'long';
   videoPath?: string;
   videoUrl?: string;
   videoId?: string;
@@ -25,14 +26,24 @@ interface FacebookPublishModalProps {
   onSuccess?: (result: any) => void;
 }
 
-export function cleanStoryDescriptionForFB(rawDesc?: string, title: string = ''): string {
+export function cleanStoryDescriptionForFB(
+  rawDesc?: string,
+  title: string = '',
+  format: 'short' | 'long' = 'short'
+): string {
+  const defaultTagTail =
+    format === 'long'
+      ? '#kienthuc #giaima #xuhuong #trending #videodai #facebookwatch'
+      : '#viral #xuhuong #trending #shorts #reels #fyp';
+
   if (!rawDesc || typeof rawDesc !== 'string') {
-    return title
-      ? `${title} ✨ Chúc các bạn xem video vui vẻ!\n\n#Reels #FacebookReels #Shorts #HoatHinh #Chibi`
-      : 'Video hoạt hình chibi đặc sắc.\n\n#Reels #FacebookReels #Shorts #HoatHinh #Chibi';
+    return title ? `${title}\n\n${defaultTagTail}` : `Video xu hướng.\n\n${defaultTagTail}`;
   }
 
-  const trimmed = rawDesc.trim();
+  let trimmed = rawDesc.trim();
+  if (format === 'long') {
+    trimmed = trimmed.replace(/#(shorts|short|reels|reel)\b/gi, '').replace(/\s{2,}/g, ' ').trim();
+  }
 
   if (
     trimmed.startsWith('{') ||
@@ -51,7 +62,7 @@ export function cleanStoryDescriptionForFB(rawDesc?: string, title: string = '')
       }
 
       if (parsed) {
-        const storyTitle = parsed.story_title || title || 'Câu Chuyện Chibi';
+        const storyTitle = parsed.story_title || title || 'Video Ngắn Xu Hướng';
         const storyTheme = parsed.story_theme || '';
 
         const highlights: string[] = [];
@@ -68,27 +79,25 @@ export function cleanStoryDescriptionForFB(rawDesc?: string, title: string = '')
         let summary = `🎬 ${storyTitle}`;
         if (storyTheme) {
           summary += `\n${storyTheme}`;
-        } else {
-          summary += `\nCâu chuyện hoạt hình chibi dễ thương, hài hước và ấm áp!`;
         }
 
         if (highlights.length > 0) {
           summary += `\n\n💬 Điểm nhấn:\n` + highlights.map((l) => `• ${l}`).join('\n');
         }
 
-        summary += `\n\n👉 Nhấn Theo Dõi Fanpage & Thả Tim để đón xem các tập mới nhất nhé!\n#Reels #FacebookReels #Shorts #HoatHinh #Chibi #Funny`;
+        summary += `\n\n👉 Nhấn Theo Dõi Fanpage & Thả Tim để đón xem các video mới nhất nhé!\n#viral #xuhuong #trending #shorts #reels #fyp`;
         return summary;
       }
     } catch {}
 
     return title
-      ? `${title}\n\n👉 Nhấn Theo Dõi Fanpage & Thả Tim nhé!\n#Reels #FacebookReels #Shorts #HoatHinh #Chibi`
-      : 'Câu chuyện hoạt hình chibi đặc sắc.\n\n#Reels #FacebookReels #Shorts #HoatHinh #Chibi';
+      ? `${title}\n\n👉 Nhấn Theo Dõi Fanpage & Thả Tim nhé!\n#viral #xuhuong #trending #shorts #reels #fyp`
+      : 'Video ngắn xu hướng.\n\n#viral #xuhuong #trending #shorts #reels #fyp';
   }
 
   let res = trimmed;
-  if (!res.includes('#Reels')) {
-    res += '\n\n#Reels #FacebookReels #Shorts #HoatHinh #Chibi';
+  if (!/#(viral|xuhuong|trending|reels|kienthuc|videodai)\b/i.test(res)) {
+    res += `\n\n${defaultTagTail}`;
   }
   return res;
 }
@@ -100,6 +109,7 @@ export const FacebookPublishModal: React.FC<FacebookPublishModalProps> = memo(({
   defaultDescription = '',
   defaultTags = [],
   defaultThumbnailUrl = '',
+  defaultVideoFormat = 'short',
   videoPath = '',
   videoUrl = '',
   videoId = '',
@@ -125,10 +135,10 @@ export const FacebookPublishModal: React.FC<FacebookPublishModalProps> = memo(({
   const [isSavingConfig, setIsSavingConfig] = useState(false);
 
   // Form State
-  const [videoType, setVideoType] = useState<'reel' | 'feed'>('reel'); // Default to Reels/Short video!
+  const [videoType, setVideoType] = useState<'reel' | 'feed'>(defaultVideoFormat === 'long' ? 'feed' : 'reel');
   const [selectedTarget, setSelectedTarget] = useState<'full' | 'all' | string>('full');
   const [title, setTitle] = useState(defaultTitle);
-  const [description, setDescription] = useState(() => cleanStoryDescriptionForFB(defaultDescription, defaultTitle));
+  const [description, setDescription] = useState(() => cleanStoryDescriptionForFB(defaultDescription, defaultTitle, defaultVideoFormat));
 
   // Upload State
   const [isUploading, setIsUploading] = useState(false);
@@ -167,17 +177,23 @@ export const FacebookPublishModal: React.FC<FacebookPublishModalProps> = memo(({
     }
   };
 
+  const handleSwitchFbMode = (nextType: 'reel' | 'feed') => {
+    setVideoType(nextType);
+    setDescription(cleanStoryDescriptionForFB(defaultDescription, title || defaultTitle, nextType === 'feed' ? 'long' : 'short'));
+  };
+
   useEffect(() => {
     if (isOpen) {
       checkStatus();
+      setVideoType(defaultVideoFormat === 'long' ? 'feed' : 'reel');
       setTitle(defaultTitle);
-      setDescription(cleanStoryDescriptionForFB(defaultDescription, defaultTitle));
+      setDescription(cleanStoryDescriptionForFB(defaultDescription, defaultTitle, defaultVideoFormat));
       setSelectedTarget(initialTarget || 'full');
       setPublishedResults([]);
       setIsUploading(false);
       setShowConfigEdit(false);
     }
-  }, [isOpen, defaultTitle, defaultDescription, defaultTags, defaultThumbnailUrl, initialTarget]);
+  }, [isOpen, defaultTitle, defaultDescription, defaultTags, defaultThumbnailUrl, defaultVideoFormat, initialTarget]);
 
   const handleSaveConfig = async () => {
     if (!tokenInput.trim() && !pageIdInput.trim()) {
@@ -321,7 +337,6 @@ export const FacebookPublishModal: React.FC<FacebookPublishModalProps> = memo(({
     <div
       className="modal-overlay open"
       style={{ zIndex: 10050 }}
-      onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
         className="modal"
@@ -662,12 +677,12 @@ export const FacebookPublishModal: React.FC<FacebookPublishModalProps> = memo(({
             {/* Kiểu video: Short / Reels vs Video chuẩn */}
             <div>
               <label style={{ display: 'block', fontSize: '11.5px', fontWeight: 700, color: 'var(--text)', marginBottom: '5px' }}>
-                Kiểu định dạng tải lên:
+                📐 Chế độ Short (9:16) / Long (16:9):
               </label>
               <div style={{ display: 'flex', gap: '6px' }}>
                 <button
                   type="button"
-                  onClick={() => setVideoType('reel')}
+                  onClick={() => handleSwitchFbMode('reel')}
                   style={{
                     flex: 1,
                     padding: '8px 10px',
@@ -684,12 +699,12 @@ export const FacebookPublishModal: React.FC<FacebookPublishModalProps> = memo(({
                     color: videoType === 'reel' ? '#f472b6' : 'var(--muted)',
                   }}
                 >
-                  <span>📱 Facebook Reel</span>
-                  <span style={{ fontSize: '9.5px', fontWeight: 500 }}>Tối ưu video ngắn 9:16</span>
+                  <span>📱 Short / FB Reel</span>
+                  <span style={{ fontSize: '9.5px', fontWeight: 500 }}>Video dọc ngắn 9:16</span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => setVideoType('feed')}
+                  onClick={() => handleSwitchFbMode('feed')}
                   style={{
                     flex: 1,
                     padding: '8px 10px',
@@ -706,8 +721,8 @@ export const FacebookPublishModal: React.FC<FacebookPublishModalProps> = memo(({
                     color: videoType === 'feed' ? '#60a5fa' : 'var(--muted)',
                   }}
                 >
-                  <span>🎬 Video Chuẩn</span>
-                  <span style={{ fontSize: '9.5px', fontWeight: 500 }}>Feed / Tab Video Page</span>
+                  <span>🖥️ Long Video 16:9</span>
+                  <span style={{ fontSize: '9.5px', fontWeight: 500 }}>Màn ngang HD / Watch</span>
                 </button>
               </div>
             </div>

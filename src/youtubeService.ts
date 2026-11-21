@@ -19,12 +19,22 @@ export interface YoutubeConfig {
 export interface YoutubeChannelStatus {
   configured: boolean;
   authenticated: boolean;
+  hasPlaylistWriteScope?: boolean;
   clientId?: string;
   redirectUri?: string;
   channelTitle?: string;
   channelId?: string;
   avatarUrl?: string;
   error?: string;
+}
+
+export interface YoutubePlaylistItem {
+  id: string;
+  title: string;
+  description?: string;
+  itemCount?: number;
+  privacyStatus?: string;
+  thumbnailUrl?: string;
 }
 
 export interface YoutubeUploadParams {
@@ -36,6 +46,50 @@ export interface YoutubeUploadParams {
   privacyStatus?: "public" | "unlisted" | "private";
   madeForKids?: boolean;
   categoryId?: string;
+  playlistId?: string;
+  playlistTitle?: string;
+  videoFormat?: "short" | "long";
+}
+
+export function normalizePlaylistTitleByFormat(
+  rawTitle: string,
+  videoFormat: "short" | "long" = "short"
+): string {
+  const trimmed = (rawTitle || "").replace(/[<>]/g, "").trim();
+  if (!trimmed) return "";
+
+  const targetTag = videoFormat === "long" ? "[Video Dài]" : "[Shorts]";
+  const hasShortsTag = /\[\s*shorts?\s*\]|\(\s*shorts?\s*\)/i.test(trimmed);
+  const hasLongTag = /\[\s*video\s*dài\s*\]|\(\s*video\s*dài\s*\)/i.test(trimmed);
+
+  // If it has the opposite tag, replace it with targetTag
+  if (videoFormat === "long" && hasShortsTag) {
+    return trimmed
+      .replace(/\[\s*shorts?\s*\]|\(\s*shorts?\s*\)/gi, targetTag)
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  }
+  if (videoFormat === "short" && hasLongTag) {
+    return trimmed
+      .replace(/\[\s*video\s*dài\s*\]|\(\s*video\s*dài\s*\)/gi, targetTag)
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  }
+
+  // Already tagged properly
+  if ((videoFormat === "long" && hasLongTag) || (videoFormat === "short" && hasShortsTag)) {
+    return trimmed;
+  }
+
+  // Insert format tag right after leading emoji(s) if present, otherwise prepend
+  const leadingEmojiMatch = trimmed.match(/^((?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]\uFE0F?\s*)+)(.+)$/u);
+  if (leadingEmojiMatch) {
+    const emojiPart = leadingEmojiMatch[1].trim();
+    const restText = leadingEmojiMatch[2].trim();
+    return `${emojiPart} ${targetTag} ${restText}`;
+  }
+
+  return `${targetTag} ${trimmed}`;
 }
 
 export interface YoutubeUploadResult {
@@ -45,6 +99,10 @@ export interface YoutubeUploadResult {
   shortsUrl?: string;
   title?: string;
   privacyStatus?: string;
+  playlistId?: string;
+  playlistTitle?: string;
+  playlistUrl?: string;
+  playlistWarning?: string;
   error?: string;
 }
 
@@ -133,6 +191,7 @@ export function getYoutubeAuthUrl(): string {
     access_type: "offline",
     prompt: "select_account consent",
     scope: [
+      "https://www.googleapis.com/auth/youtube",
       "https://www.googleapis.com/auth/youtube.upload",
       "https://www.googleapis.com/auth/youtube.readonly",
     ],
@@ -186,9 +245,15 @@ export async function getYoutubeStatus(): Promise<YoutubeChannelStatus> {
     });
 
     const channel = res.data.items?.[0];
+    const scopeStr = String(tokens?.scope || "");
+    const hasPlaylistWriteScope =
+      scopeStr.split(/\s+/).includes("https://www.googleapis.com/auth/youtube") ||
+      scopeStr.includes("youtube.force-ssl");
+
     return {
       configured: true,
       authenticated: true,
+      hasPlaylistWriteScope,
       clientId: config.clientId ? `${config.clientId.slice(0, 12)}...` : "",
       redirectUri: config.redirectUri,
       channelTitle: channel?.snippet?.title || "Kênh YouTube của bạn",
@@ -247,12 +312,21 @@ export async function uploadVideoToYouTube(params: YoutubeUploadParams): Promise
     .slice(0, 5000);
 
   const sanitizedTags: string[] = [];
-  let totalTagsLength = 0;
+  // YouTube Data API limits total tag characters to 500.
+  // CRITICAL: YouTube calculates tag bytes with quotes for tags with spaces (adding 2 characters) plus 1 byte per delimiter comma.
+  let calculatedYtBytes = 0;
   for (const rawTag of tags) {
-    const cleanTag = String(rawTag).replace(/[<>]/g, "").trim().slice(0, 100);
-    if (cleanTag && totalTagsLength + cleanTag.length + 1 <= 480) {
+    const cleanTag = String(rawTag)
+      .replace(/[<>]/g, "")
+      .replace(/^#+/, "")
+      .trim()
+      .slice(0, 100);
+    if (!cleanTag) continue;
+    // Overhead: +2 if contains space, +1 for delimiter
+    const tagCost = cleanTag.length + (cleanTag.includes(" ") ? 2 : 0) + 1;
+    if (calculatedYtBytes + tagCost <= 420) {
       sanitizedTags.push(cleanTag);
-      totalTagsLength += cleanTag.length + 1;
+      calculatedYtBytes += tagCost;
     }
   }
 
@@ -315,6 +389,32 @@ export async function uploadVideoToYouTube(params: YoutubeUploadParams): Promise
   console.log(`   Watch URL: ${youtubeUrl}`);
   console.log(`   Shorts URL: ${shortsUrl}`);
 
+  let finalPlaylistId: string | undefined;
+  let finalPlaylistTitle: string | undefined;
+  let finalPlaylistUrl: string | undefined;
+  let playlistWarning: string | undefined;
+
+  if (params.playlistId || params.playlistTitle) {
+    try {
+      const plRes = await ensureAndAddVideoToPlaylist({
+        videoId,
+        playlistId: params.playlistId,
+        playlistTitle: params.playlistTitle,
+        privacyStatus,
+        videoFormat: params.videoFormat,
+      });
+      finalPlaylistId = plRes.playlistId;
+      finalPlaylistTitle = plRes.playlistTitle;
+      finalPlaylistUrl = plRes.playlistId
+        ? `https://www.youtube.com/playlist?list=${plRes.playlistId}`
+        : undefined;
+      if (plRes.warning) playlistWarning = plRes.warning;
+    } catch (plErr: any) {
+      playlistWarning = plErr.message;
+      console.warn(`⚠️ [YouTube Playlist] Không thể thêm video vào playlist: ${plErr.message}`);
+    }
+  }
+
   return {
     success: true,
     videoId,
@@ -322,7 +422,175 @@ export async function uploadVideoToYouTube(params: YoutubeUploadParams): Promise
     shortsUrl,
     title,
     privacyStatus,
+    playlistId: finalPlaylistId,
+    playlistTitle: finalPlaylistTitle,
+    playlistUrl: finalPlaylistUrl,
+    playlistWarning,
   };
+}
+
+export async function listYoutubePlaylists(): Promise<YoutubePlaylistItem[]> {
+  const oauth2Client = getOAuth2Client();
+  const tokens = getStoredTokens();
+  if (!oauth2Client || !tokens) return [];
+
+  try {
+    const youtube = google.youtube({ version: "v3", auth: oauth2Client });
+    const res = await youtube.playlists.list({
+      part: ["snippet", "contentDetails", "status"],
+      mine: true,
+      maxResults: 50,
+    });
+    return (res.data.items || []).map((item) => ({
+      id: item.id || "",
+      title: item.snippet?.title || "Playlist không tên",
+      description: item.snippet?.description || "",
+      itemCount: item.contentDetails?.itemCount ?? 0,
+      privacyStatus: item.status?.privacyStatus || "public",
+      thumbnailUrl: item.snippet?.thumbnails?.medium?.url || item.snippet?.thumbnails?.default?.url || undefined,
+    })).filter((p) => Boolean(p.id));
+  } catch (err: any) {
+    console.warn(`⚠️ [YouTube Playlist] Không thể tải danh sách playlist: ${err.message}`);
+    return [];
+  }
+}
+
+export async function createYoutubePlaylist(
+  title: string,
+  description: string = "",
+  privacyStatus: "public" | "unlisted" | "private" = "public"
+): Promise<YoutubePlaylistItem> {
+  const cleanTitle = title.replace(/[<>]/g, "").trim().slice(0, 140);
+  if (!cleanTitle) throw new Error("Tên Playlist không được để trống!");
+
+  const oauth2Client = getOAuth2Client();
+  const tokens = getStoredTokens();
+  if (!oauth2Client || !tokens) {
+    throw new Error("Chưa đăng nhập kênh YouTube!");
+  }
+
+  // Check if playlist with exact same title already exists to prevent duplicates
+  const existing = await listYoutubePlaylists();
+  const matched = existing.find((p) => p.title.trim().toLowerCase() === cleanTitle.toLowerCase());
+  if (matched) {
+    return matched;
+  }
+
+  const youtube = google.youtube({ version: "v3", auth: oauth2Client });
+  try {
+    const res = await youtube.playlists.insert({
+      part: ["snippet", "status"],
+      requestBody: {
+        snippet: {
+          title: cleanTitle,
+          description: (description || `Tuyển tập video chuyên đề: ${cleanTitle}`).replace(/[<>]/g, "").slice(0, 4500),
+          defaultLanguage: "vi",
+        },
+        status: {
+          privacyStatus,
+        },
+      },
+    });
+    const item = res.data;
+    console.log(`📂 [YouTube Playlist] Đã tạo Playlist mới "${cleanTitle}" (ID: ${item.id})`);
+    return {
+      id: item.id || "",
+      title: item.snippet?.title || cleanTitle,
+      description: item.snippet?.description || "",
+      itemCount: 0,
+      privacyStatus: item.status?.privacyStatus || privacyStatus,
+    };
+  } catch (err: any) {
+    const msg = String(err?.message || err);
+    if (msg.includes("insufficientPermissions") || msg.includes("Insufficient Permission")) {
+      throw new Error(
+        "Tài khoản YouTube hiện tại cần cấp thêm quyền Quản lý Playlist (1 click ở nút 'Cấp quyền Playlist' bên trên)."
+      );
+    }
+    throw err;
+  }
+}
+
+export async function ensureAndAddVideoToPlaylist(params: {
+  videoId: string;
+  playlistId?: string;
+  playlistTitle?: string;
+  privacyStatus?: "public" | "unlisted" | "private";
+  videoFormat?: "short" | "long";
+}): Promise<{ playlistId?: string; playlistTitle?: string; warning?: string }> {
+  const oauth2Client = getOAuth2Client();
+  const tokens = getStoredTokens();
+  if (!oauth2Client || !tokens) {
+    return { warning: "Chưa kết nối YouTube" };
+  }
+
+  const fmt: "short" | "long" = params.videoFormat === "long" ? "long" : "short";
+  let targetId = (params.playlistId || "").trim();
+  let targetTitle = (params.playlistTitle || "").trim();
+
+  // Safeguard: verify targetId doesn't belong to the opposite format (e.g. putting Long 16:9 into [Shorts] or Short 9:16 into [Video Dài])
+  if (targetId) {
+    const existingList = await listYoutubePlaylists();
+    const foundById = existingList.find((p) => p.id === targetId);
+    if (foundById) {
+      const isShortsPl = /\[\s*shorts?\s*\]|\(\s*shorts?\s*\)/i.test(foundById.title);
+      const isLongPl = /\[\s*video\s*dài\s*\]|\(\s*video\s*dài\s*\)/i.test(foundById.title);
+      if ((fmt === "long" && isShortsPl) || (fmt === "short" && isLongPl)) {
+        console.log(
+          `🔀 [YouTube Playlist] Tách biệt định dạng: Bỏ qua playlist "${foundById.title}" vì video đang đăng là ${fmt === "long" ? "Video Dài 16:9" : "Shorts 9:16"}.`
+        );
+        targetId = "";
+        targetTitle = normalizePlaylistTitleByFormat(targetTitle || foundById.title, fmt);
+      } else if (!targetTitle) {
+        targetTitle = foundById.title;
+      }
+    }
+  }
+
+  if (!targetId && targetTitle) {
+    targetTitle = normalizePlaylistTitleByFormat(targetTitle, fmt);
+    const descPrefix =
+      fmt === "long"
+        ? "Tuyển tập Video Dài (16:9) phân tích chuyên sâu"
+        : "Tuyển tập Video Ngắn (YouTube Shorts 9:16) súc tích";
+    const created = await createYoutubePlaylist(
+      targetTitle,
+      `${descPrefix} — ${targetTitle}`,
+      params.privacyStatus || "public"
+    );
+    targetId = created.id;
+    targetTitle = created.title;
+  }
+
+  if (!targetId) return {};
+
+  const youtube = google.youtube({ version: "v3", auth: oauth2Client });
+  try {
+    await youtube.playlistItems.insert({
+      part: ["snippet"],
+      requestBody: {
+        snippet: {
+          playlistId: targetId,
+          resourceId: {
+            kind: "youtube#video",
+            videoId: params.videoId,
+          },
+        },
+      },
+    });
+    console.log(`✅ [YouTube Playlist] Đã thêm video ${params.videoId} vào Playlist "${targetTitle || targetId}"!`);
+    return { playlistId: targetId, playlistTitle: targetTitle };
+  } catch (err: any) {
+    const msg = String(err?.message || err);
+    if (msg.includes("insufficientPermissions") || msg.includes("Insufficient Permission")) {
+      return {
+        playlistId: targetId,
+        playlistTitle: targetTitle,
+        warning: "Cần bấm '🔄 Cấp quyền Playlist' 1 lần để tự động gán video vào Danh sách phát trên YouTube.",
+      };
+    }
+    throw err;
+  }
 }
 
 export async function updateVideoThumbnail(videoId: string, thumbnailPath: string): Promise<boolean> {

@@ -55,6 +55,7 @@ function _initSchema(db: Database.Database) {
       debate_messages     TEXT DEFAULT NULL,           -- JSON array
       part_feedback       TEXT DEFAULT '',
       episodes            TEXT DEFAULT NULL,           -- JSON array
+      world_style         TEXT DEFAULT 'auto',
       enabled             INTEGER NOT NULL DEFAULT 1,
       created_at          TEXT DEFAULT (datetime('now')),
       updated_at          TEXT DEFAULT (datetime('now'))
@@ -62,6 +63,10 @@ function _initSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_products_created ON products(created_at);
     CREATE INDEX IF NOT EXISTS idx_products_enabled ON products(enabled);
   `);
+  const columns = db.prepare(`PRAGMA table_info(products)`).all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "world_style")) {
+    db.exec(`ALTER TABLE products ADD COLUMN world_style TEXT DEFAULT 'auto'`);
+  }
 }
 
 // ── Product type (same as scheduler.ts) ─────────────────────────────────────────
@@ -82,6 +87,7 @@ export interface Product {
   debate_messages?: any[];
   part_feedback?: string;
   episodes?: any[];
+  world_style?: string;
   enabled: boolean;
   created_at?: string;
   updated_at?: string;
@@ -106,6 +112,7 @@ function rowToProduct(row: any): Product {
     debate_messages: _parseJson(row.debate_messages, undefined),
     part_feedback: row.part_feedback || "",
     episodes: _parseJson(row.episodes, undefined),
+    world_style: row.world_style || "auto",
     enabled: row.enabled === 1,
     created_at: row.created_at || undefined,
     updated_at: row.updated_at || undefined,
@@ -199,11 +206,13 @@ export function createProduct(data: Partial<Product> & { id: string; name: strin
       id, name, category, affiliate_url, hashtags, description,
       image_url, images, video_url, promptsObj, scene_images, scene_urls,
       consensus_feedback, debate_messages, part_feedback, episodes,
+      world_style,
       enabled, created_at, updated_at
     ) VALUES (
       @id, @name, @category, @affiliate_url, @hashtags, @description,
       @image_url, @images, @video_url, @promptsObj, @scene_images, @scene_urls,
       @consensus_feedback, @debate_messages, @part_feedback, @episodes,
+      @world_style,
       @enabled, @created_at, @updated_at
     )
   `);
@@ -225,6 +234,7 @@ export function createProduct(data: Partial<Product> & { id: string; name: strin
     debate_messages: _jsonOrNull(data.debate_messages),
     part_feedback: data.part_feedback || "",
     episodes: _jsonOrNull(data.episodes),
+    world_style: data.world_style || "auto",
     enabled: data.enabled !== false ? 1 : 0,
     created_at: data.created_at || nowIso,
     updated_at: data.updated_at || nowIso,
@@ -247,7 +257,7 @@ export function updateProduct(id: string, updates: Partial<Product>): Product | 
 
   const directFields: (keyof Product)[] = [
     "name", "category", "affiliate_url", "description",
-    "image_url", "video_url", "consensus_feedback", "part_feedback",
+    "image_url", "video_url", "consensus_feedback", "part_feedback", "world_style",
   ];
   for (const f of directFields) {
     if (updates[f] !== undefined) {

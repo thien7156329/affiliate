@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, memo, useCallback } from 'react';
 import { AiDebateMessage } from '../../types';
 import { useToast } from '../../context/ToastContext';
 import { DebateFeedView } from './DebateFeedView';
+import { ActiveAiModelsState, DEFAULT_AI_MODELS, fetchActiveAiModels } from '../../utils/aiModels';
 
 interface ConsensusDebateBoxProps {
   productName: string;
@@ -9,7 +10,7 @@ interface ConsensusDebateBoxProps {
   imageUrl?: string;
   productDesc?: string;
   onConsensusReached: (promptsObj: Record<string, string>) => void;
-  onOpenPartEditor?: (partNum: number) => void;
+  onOpenPartEditor?: (partNum: number, initialPrompt?: string, initialDialogue?: string) => void;
 }
 
 const DebateCardItem: React.FC<{ msg: AiDebateMessage }> = memo(({ msg }) => {
@@ -57,10 +58,15 @@ export const ConsensusDebateBox: React.FC<ConsensusDebateBoxProps> = memo(({
   const [currentRound, setCurrentRound] = useState(1);
   const [statusText, setStatusText] = useState('');
   const [preFeedback, setPreFeedback] = useState('');
+  const [aiModels, setAiModels] = useState<ActiveAiModelsState>(DEFAULT_AI_MODELS);
   const [liveFeedback, setLiveFeedback] = useState('');
   const [sceneCount, setSceneCount] = useState<number>(8);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    fetchActiveAiModels().then(setAiModels);
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -90,7 +96,7 @@ export const ConsensusDebateBox: React.FC<ConsensusDebateBoxProps> = memo(({
     if (!continuePrevious) {
       setMessages([]);
       setCurrentRound(1);
-      setStatusText('🎭 AI 1 (Codex Sol Light) & 🧐 AI 2 (Gemini 3.8 Low) đang khởi tạo phiên kiểm định...');
+      setStatusText(`🎭 ${aiModels.ai1.name} & 🧐 ${aiModels.ai2.name} đang khởi tạo phiên kiểm định...`);
     } else {
       setCurrentRound(targetStartRound);
       setStatusText(`📢 Tiếp thu góp ý của Đạo diễn và bắt đầu tranh biện Round ${targetStartRound}...`);
@@ -117,7 +123,7 @@ export const ConsensusDebateBox: React.FC<ConsensusDebateBoxProps> = memo(({
           product_name: productName.trim(),
           category,
           product_image_url: imageUrl || undefined,
-          product_description: productDesc || undefined,
+          product_description: productDesc ?? '',
           scene_count: sceneCount,
           user_feedback: customFeedback || preFeedback.trim() || undefined,
           session_id: newSessionId,
@@ -157,14 +163,36 @@ export const ConsensusDebateBox: React.FC<ConsensusDebateBoxProps> = memo(({
                 setCurrentRound(evt.round);
                 setStatusText(`🔄 Round ${evt.round}: Đang tranh biện kịch bản & kiểm định độ khớp nhân vật...`);
               } else if (evt.type === 'ai1_start') {
-                setStatusText(`🎭 AI 1 (AGY 3.8) đang sáng tác và tối ưu kịch bản 3D (Round ${evt.round})...`);
+                setStatusText(evt.message || `🎭 ${aiModels.ai1.name} đang sáng tác và tối ưu kịch bản 3D (Round ${evt.round})...`);
               } else if (evt.type === 'ai1_done') {
                 if (evt.message) {
                   const m = { ...evt.message, round: evt.round || currentRound };
                   setMessages((prev) => [...prev, m]);
                 }
               } else if (evt.type === 'ai2_start') {
-                setStatusText(`🧐 AI 2 (Gemini 3.8 Low) đang kiểm định tiêu chí nhân vật & bố cục...`);
+                if (evt.ai2_name) {
+                  setAiModels((prev) => ({
+                    ...prev,
+                    ai2: {
+                      ...prev.ai2,
+                      name: evt.ai2_name.startsWith('AI 2') ? evt.ai2_name : `AI 2 (${evt.ai2_name})`,
+                      label: evt.ai2_name,
+                    },
+                  }));
+                }
+                setStatusText(evt.message || `🧐 ${evt.ai2_name ? (evt.ai2_name.startsWith('AI 2') ? evt.ai2_name : `AI 2 (${evt.ai2_name})`) : aiModels.ai2.name} đang kiểm định tiêu chí nhân vật & bố cục...`);
+              } else if (evt.type === 'ai2_fallback') {
+                if (evt.ai2_name) {
+                  setAiModels((prev) => ({
+                    ...prev,
+                    ai2: {
+                      ...prev.ai2,
+                      name: evt.ai2_name.startsWith('AI 2') ? evt.ai2_name : `AI 2 (${evt.ai2_name})`,
+                      label: evt.ai2_name,
+                    },
+                  }));
+                }
+                if (evt.message) setStatusText(evt.message);
               } else if (evt.type === 'ai2_done') {
                 if (evt.message) {
                   const m = { ...evt.message, round: evt.round || currentRound };
@@ -175,6 +203,22 @@ export const ConsensusDebateBox: React.FC<ConsensusDebateBoxProps> = memo(({
                 } else {
                   setStatusText(`⚠️ Round ${evt.round} đạt ${evt.percentage}%. Chuyển sang Round ${evt.round + 1}...`);
                 }
+              } else if (evt.type === 'preflight_start') {
+                setStatusText(evt.message || `🛡️ ${aiModels.validator.label} đang kiểm tra bản quyền & lỗi từng prompt...`);
+              } else if (evt.type === 'validating_scene') {
+                setStatusText(evt.message || `🛡️ Đang kiểm định Phân cảnh ${evt.scene_index} (Lần ${evt.attempt}/${evt.max_attempts})...`);
+              } else if (evt.type === 'scene_issues_found') {
+                setStatusText(evt.message || `⚠️ Phân cảnh ${evt.scene_index} có rủi ro. Đang tự động sửa (Lần ${evt.attempt}/${evt.max_attempts})...`);
+              } else if (evt.type === 'scene_passed') {
+                setStatusText(evt.message || `✅ Phân cảnh ${evt.scene_index}: Đạt chuẩn an toàn Veo 3!`);
+              } else if (evt.type === 'preflight_passed') {
+                setStatusText(evt.message || '🎉 100% prompt an toàn và sẵn sàng cho Veo 3!');
+              } else if (evt.type === 'prompt_validation_error') {
+                const sIdx = evt.scene_index || evt.failed_scene?.scene_index || 1;
+                setStatusText(`❌ Dừng kịch bản: Phân cảnh ${sIdx} vẫn lỗi sau 3 lần sửa. Vui lòng đổi nội dung!`);
+                showToast(`❌ Dừng kịch bản: Phân cảnh ${sIdx} bị lỗi sau 3 lần sửa!`);
+                setIsStreaming(false);
+                return;
               } else if (evt.type === 'complete') {
                 if (evt.result?.promptsObj) {
                   onConsensusReached(evt.result.promptsObj);
@@ -220,7 +264,7 @@ export const ConsensusDebateBox: React.FC<ConsensusDebateBoxProps> = memo(({
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
         <div style={{ fontSize: '13px', fontWeight: 600, color: '#c4b5fd', display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <span>🤝 2-AI Validation (Codex Sol sáng tác, Gemini 3.8 Low kiểm định đến khi đạt 100%)</span>
+          <span>🤝 2-AI Validation ({aiModels.ai1.label} sáng tác, {aiModels.ai2.label} kiểm định đến khi đạt 100%)</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
           <select
@@ -238,6 +282,8 @@ export const ConsensusDebateBox: React.FC<ConsensusDebateBoxProps> = memo(({
               fontWeight: 600,
               outline: 'none',
               cursor: 'pointer',
+              maxWidth: '100%',
+              flex: '1 1 auto',
             }}
           >
             <option value={8}>⭐ 8 Cảnh (~80s) - Short 80s Chuẩn (Mặc định)</option>

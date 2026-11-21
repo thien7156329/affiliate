@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useToast } from '../../context/ToastContext';
+import { useConfirm } from '../../context/ConfirmDialogContext';
 
 interface CharacterModalProps {
   isOpen: boolean;
@@ -8,6 +9,7 @@ interface CharacterModalProps {
 
 export const CharacterModal: React.FC<CharacterModalProps> = ({ isOpen, onClose }) => {
   const { showToast } = useToast();
+  const { confirmDialog } = useConfirm();
   const [characters, setCharacters] = useState<any[]>([]);
   const [charId, setCharId] = useState('');
   const [charName, setCharName] = useState('');
@@ -83,7 +85,14 @@ export const CharacterModal: React.FC<CharacterModalProps> = ({ isOpen, onClose 
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm(`Bạn có chắc muốn xóa nhân vật ${id}?`)) return;
+    const ok = await confirmDialog({
+      title: 'Xóa Nhân Vật',
+      message: `Bạn có chắc muốn xóa nhân vật "${id}"? Thao tác này không thể hoàn tác.`,
+      confirmText: 'Xóa Nhân Vật',
+      cancelText: 'Hủy bỏ',
+      type: 'danger',
+    });
+    if (!ok) return;
     try {
       const res = await fetch(`/api/characters/${id}`, { method: 'DELETE' });
       const data = await res.json();
@@ -97,7 +106,7 @@ export const CharacterModal: React.FC<CharacterModalProps> = ({ isOpen, onClose 
   };
 
   return (
-    <div className="modal-overlay open" id="characterModalOverlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="modal-overlay open" id="characterModalOverlay">
       <div className="modal" style={{ width: '780px', maxWidth: '96vw', padding: '26px', borderRadius: '20px', display: 'flex', flexDirection: 'column', gap: '18px', maxHeight: '90vh', overflowY: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)', paddingBottom: '14px' }}>
           <div>
@@ -123,6 +132,7 @@ export const CharacterModal: React.FC<CharacterModalProps> = ({ isOpen, onClose 
             characters.map((char) => (
               <div
                 key={char.id}
+                className="char-item-row"
                 style={{
                   background: 'var(--bg2)',
                   border: '1px solid var(--border)',
@@ -134,28 +144,28 @@ export const CharacterModal: React.FC<CharacterModalProps> = ({ isOpen, onClose 
                   gap: '12px',
                 }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                  <div style={{ fontSize: '26px', width: '42px', height: '42px', background: 'var(--bg3)', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
+                  <div style={{ fontSize: '26px', width: '42px', height: '42px', background: 'var(--bg3)', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                     {char.avatar_emoji || '👤'}
                   </div>
-                  <div>
-                    <div style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      {char.name}
+                  <div style={{ minWidth: 0, overflow: 'hidden' }}>
+                    <div style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                      <span>{char.name}</span>
                       <span style={{ fontSize: '11px', color: '#a78bfa', background: 'rgba(124,58,237,0.15)', padding: '1px 6px', borderRadius: '4px' }}>
                         ID: {char.id}
                       </span>
                     </div>
-                    <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px', wordBreak: 'break-word' }}>
                       Voice ID: <strong style={{ color: '#34d399' }}>{char.voice_settings?.elevenlabs_voice_id || char.voice_id || 'default'}</strong> | Pitch: <strong>{char.voice_settings?.pitch_shift || 1.0}x</strong> | Speed: <strong>{char.voice_settings?.speech_rate || 175}</strong>
                     </div>
                   </div>
                 </div>
 
-                <div>
+                <div className="char-item-actions">
                   <button
                     type="button"
                     onClick={() => handleDelete(char.id)}
-                    style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)', color: '#f87171', padding: '6px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 600, cursor: 'pointer' }}
+                    style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)', color: '#f87171', padding: '6px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}
                   >
                     🗑️ Xóa
                   </button>
@@ -168,7 +178,7 @@ export const CharacterModal: React.FC<CharacterModalProps> = ({ isOpen, onClose 
         {/* Add Character Form */}
         <form onSubmit={handleAdd} style={{ background: 'var(--bg3)', border: '1px dashed var(--border)', borderRadius: '12px', padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <span style={{ fontSize: '13px', fontWeight: 700, color: '#34d399' }}>➕ Thêm Nhân Vật Mới</span>
-          <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr 1fr', gap: '10px' }}>
+          <div className="char-grid-3" style={{ display: 'grid', gridTemplateColumns: '80px 1fr 1fr', gap: '10px' }}>
             <input
               type="text"
               placeholder="Emoji (🐶)"
@@ -193,7 +203,7 @@ export const CharacterModal: React.FC<CharacterModalProps> = ({ isOpen, onClose 
               style={{ padding: '8px', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: '8px', color: 'var(--text)', fontSize: '13px' }}
             />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '10px' }}>
+          <div className="char-grid-2" style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '10px' }}>
             <input
               type="text"
               placeholder="Voice ID ElevenLabs (e.g. 21m00Tcm4TlvDq8ikWAM)"

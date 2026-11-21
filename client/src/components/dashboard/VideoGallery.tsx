@@ -8,6 +8,8 @@ interface VideoGalleryProps {
   currentPage: number;
   totalPages: number;
   isLoading: boolean;
+  videoFormatTab?: 'short' | 'long';
+  onChangeVideoFormatTab?: (tab: 'short' | 'long') => void;
   onPageChange: (page: number) => void;
   onRefresh: () => void;
   onOpenConcatModal: () => void;
@@ -21,6 +23,8 @@ export const VideoGallery: React.FC<VideoGalleryProps> = ({
   currentPage,
   totalPages,
   isLoading,
+  videoFormatTab = 'short',
+  onChangeVideoFormatTab,
   onPageChange,
   onRefresh,
   onOpenConcatModal,
@@ -29,8 +33,55 @@ export const VideoGallery: React.FC<VideoGalleryProps> = ({
 }) => {
   return (
     <div id="sectionDashboard">
-      <div className="section-header">
-        <h2>🎞️ Video Gallery</h2>
+      <div className="section-header" style={{ flexWrap: 'wrap', gap: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          <h2>{videoFormatTab === 'long' ? '🖥️ Kho Video Dài (16:9)' : '📱 Kho Video Shorts (9:16)'}</h2>
+          {onChangeVideoFormatTab && (
+            <div
+              style={{
+                display: 'inline-flex',
+                background: 'rgba(15, 23, 42, 0.8)',
+                border: '1px solid rgba(148, 163, 184, 0.25)',
+                borderRadius: '10px',
+                padding: '3px',
+                gap: '4px',
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => onChangeVideoFormatTab('short')}
+                style={{
+                  padding: '5px 12px',
+                  borderRadius: '7px',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  background: videoFormatTab === 'short' ? '#0284c7' : 'transparent',
+                  color: videoFormatTab === 'short' ? '#ffffff' : '#94a3b8',
+                }}
+              >
+                📱 Video Shorts (9:16)
+              </button>
+              <button
+                type="button"
+                onClick={() => onChangeVideoFormatTab('long')}
+                style={{
+                  padding: '5px 12px',
+                  borderRadius: '7px',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  background: videoFormatTab === 'long' ? '#f59e0b' : 'transparent',
+                  color: videoFormatTab === 'long' ? '#0f172a' : '#94a3b8',
+                }}
+              >
+                🖥️ Video Dài (16:9 · Lưu Riêng)
+              </button>
+            </div>
+          )}
+        </div>
         <div style={{ display: 'flex', gap: '8px' }}>
           <button
             type="button"

@@ -5,7 +5,7 @@ interface SidebarProps {
   onSelectSection: (section: string) => void;
   isOpen: boolean;
   onClose: () => void;
-  onTriggerDryRun: () => void;
+  onTriggerDryRun?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = memo(({
@@ -13,7 +13,6 @@ export const Sidebar: React.FC<SidebarProps> = memo(({
   onSelectSection,
   isOpen,
   onClose,
-  onTriggerDryRun,
 }) => {
   const handleSelect = (section: string) => {
     onSelectSection(section);
@@ -33,6 +32,14 @@ export const Sidebar: React.FC<SidebarProps> = memo(({
         </a>
 
         <a
+          className={`nav-item ${activeSection === 'shorts-studio' ? 'active' : ''}`}
+          onClick={() => handleSelect('shorts-studio')}
+        >
+          <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"/></svg>
+          Shorts Studio (AI)
+        </a>
+
+        <a
           className={`nav-item ${activeSection === 'videos' ? 'active' : ''}`}
           onClick={() => handleSelect('videos')}
         >
@@ -48,24 +55,12 @@ export const Sidebar: React.FC<SidebarProps> = memo(({
           Products
         </a>
 
-        <div className="nav-label">Automation</div>
         <a
-          className="nav-item"
-          onClick={() => {
-            onTriggerDryRun();
-            onClose();
-          }}
+          className={`nav-item ${activeSection === 'long-studio' ? 'active' : ''}`}
+          onClick={() => handleSelect('long-studio')}
         >
-          <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-          Dry Run Test
-        </a>
-
-        <a
-          className={`nav-item ${activeSection === 'logs' ? 'active' : ''}`}
-          onClick={() => handleSelect('logs')}
-        >
-          <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-          Activity Log
+          <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="13" rx="2"/><polygon points="10 8 15 10.5 10 13 10 8" fill="currentColor" stroke="none"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          Video Dài 16:9 (AI)
         </a>
       </aside>
 

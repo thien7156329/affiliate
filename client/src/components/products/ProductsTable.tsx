@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Product } from '../../types';
 import { getDisplayImageUrl } from '../../utils/image';
 
@@ -13,6 +13,7 @@ interface ProductsTableProps {
   onEditProduct: (product: Product) => void;
   onDeleteProduct: (id: string) => void;
   onGenerateForProduct: (product: Product) => void;
+  onZoomImage?: (url: string) => void;
 }
 
 export const ProductsTable: React.FC<ProductsTableProps> = ({
@@ -26,7 +27,9 @@ export const ProductsTable: React.FC<ProductsTableProps> = ({
   onEditProduct,
   onDeleteProduct,
   onGenerateForProduct,
+  onZoomImage,
 }) => {
+  const [hoverImg, setHoverImg] = useState<{ src: string; x: number; y: number; name: string } | null>(null);
   return (
     <div id="sectionProducts">
       <div className="section-header">
@@ -55,13 +58,13 @@ export const ProductsTable: React.FC<ProductsTableProps> = ({
       </div>
 
       <div className="table-wrap">
-        <table>
+        <table style={{ width: '100%', tableLayout: 'fixed' }}>
           <thead>
             <tr>
-              <th>Name</th>
-              <th>Category</th>
-              <th>Hashtags</th>
-              <th>Actions</th>
+              <th style={{ width: 'auto' }}>Name</th>
+              <th style={{ width: '120px' }}>Category</th>
+              <th style={{ width: '180px' }}>Hashtags</th>
+              <th style={{ width: '275px' }}>Actions</th>
             </tr>
           </thead>
           <tbody id="productsTable">
@@ -84,10 +87,27 @@ export const ProductsTable: React.FC<ProductsTableProps> = ({
 
                 return (
                   <tr key={p.id}>
-                    <td data-label="Product" style={{ minWidth: 0 }}>
+                    <td data-label="Product" style={{ minWidth: 0, overflow: 'hidden' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, width: '100%' }}>
                         {displayImg ? (
                           <div
+                            onClick={() => {
+                              setHoverImg(null);
+                              onZoomImage?.(displayImg);
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.transform = 'scale(1.15)';
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              let x = rect.right + 12;
+                              if (x + 280 > window.innerWidth - 16) x = Math.max(16, rect.left - 292);
+                              const y = Math.min(Math.max(16, rect.top - 40), window.innerHeight - 310);
+                              setHoverImg({ src: displayImg, x, y, name: p.name });
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.transform = 'scale(1)';
+                              setHoverImg(null);
+                            }}
+                            title="🔍 Rê chuột để xem nhanh • Click để phóng to"
                             style={{
                               width: '36px',
                               height: '36px',
@@ -97,6 +117,8 @@ export const ProductsTable: React.FC<ProductsTableProps> = ({
                               backgroundPosition: 'center',
                               border: '1px solid var(--border)',
                               flexShrink: 0,
+                              cursor: 'zoom-in',
+                              transition: 'transform 0.15s ease',
                             }}
                           />
                         ) : (
@@ -117,23 +139,22 @@ export const ProductsTable: React.FC<ProductsTableProps> = ({
                             📦
                           </div>
                         )}
-                        <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
                           <strong
                             style={{
-                              display: '-webkit-box',
-                              WebkitLineClamp: 2,
-                              WebkitBoxOrient: 'vertical',
+                              display: 'block',
                               overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
                               lineHeight: 1.4,
-                              wordBreak: 'break-word',
-                              maxWidth: '320px',
+                              color: 'var(--text)',
                             }}
                             title={p.name}
                           >
                             {p.name}
                           </strong>
                           {p.created_at && (
-                            <span style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '3px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '3px', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                               <span>🕒</span>
                               <span>{new Date(p.created_at).toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
                             </span>
@@ -141,7 +162,7 @@ export const ProductsTable: React.FC<ProductsTableProps> = ({
                         </div>
                       </div>
                     </td>
-                    <td data-label="Category">
+                    <td data-label="Category" style={{ whiteSpace: 'nowrap' }}>
                       <span className={`pill ${p.category}`}>{p.category}</span>
                     </td>
                     <td
@@ -152,19 +173,18 @@ export const ProductsTable: React.FC<ProductsTableProps> = ({
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',
-                        maxWidth: '200px',
                         minWidth: 0,
                       }}
                       title={(p.hashtags || []).map((h) => (h.startsWith('#') ? h : `#${h}`)).join(' ')}
                     >
                       {(p.hashtags || []).map((h) => (h.startsWith('#') ? h : `#${h}`)).join(' ')}
                     </td>
-                    <td data-label="Actions">
-                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                    <td data-label="Actions" style={{ whiteSpace: 'nowrap' }}>
+                      <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'nowrap' }}>
                         <button
                           type="button"
                           className="btn-action primary"
-                          style={{ padding: '6px 12px', borderRadius: '7px', boxShadow: 'none' }}
+                          style={{ padding: '6px 12px', borderRadius: '7px', boxShadow: 'none', whiteSpace: 'nowrap' }}
                           onClick={() => onGenerateForProduct(p)}
                         >
                           🚀 Generate
@@ -172,7 +192,7 @@ export const ProductsTable: React.FC<ProductsTableProps> = ({
                         <button
                           type="button"
                           className="btn-action"
-                          style={{ padding: '6px 12px', borderRadius: '7px', background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text)' }}
+                          style={{ padding: '6px 12px', borderRadius: '7px', background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text)', whiteSpace: 'nowrap' }}
                           onClick={() => onEditProduct(p)}
                         >
                           ✏️ Edit
@@ -180,7 +200,7 @@ export const ProductsTable: React.FC<ProductsTableProps> = ({
                         <button
                           type="button"
                           className="btn-action"
-                          style={{ padding: '6px 12px', borderRadius: '7px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171' }}
+                          style={{ padding: '6px 12px', borderRadius: '7px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171', whiteSpace: 'nowrap' }}
                           onClick={() => onDeleteProduct(p.id)}
                         >
                           🗑️ Delete
@@ -216,6 +236,34 @@ export const ProductsTable: React.FC<ProductsTableProps> = ({
           >
             Next ▶
           </button>
+        </div>
+      )}
+
+      {hoverImg && (
+        <div
+          style={{
+            position: 'fixed',
+            left: `${hoverImg.x}px`,
+            top: `${hoverImg.y}px`,
+            width: '280px',
+            background: 'rgba(15, 23, 42, 0.96)',
+            backdropFilter: 'blur(12px)',
+            border: '1.5px solid rgba(168,85,247,0.55)',
+            borderRadius: '14px',
+            padding: '10px',
+            boxShadow: '0 20px 50px rgba(0,0,0,0.85)',
+            zIndex: 100000,
+            pointerEvents: 'none',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '6px',
+          }}
+        >
+          <div style={{ width: '100%', height: '240px', borderRadius: '10px', overflow: 'hidden', background: '#090d16', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <img src={hoverImg.src} alt={hoverImg.name} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+          </div>
+          <div style={{ fontSize: '11.5px', fontWeight: 700, color: '#f8fafc', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{hoverImg.name}</div>
+          <div style={{ fontSize: '10px', color: '#94a3b8' }}>🔍 Click vào ảnh để xem toàn màn hình</div>
         </div>
       )}
     </div>

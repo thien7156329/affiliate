@@ -27,6 +27,7 @@ export interface Product {
   debate_messages?: any[];
   part_feedback?: string;
   episodes?: EpisodeDefinition[];
+  world_style?: string;
 }
 
 export interface EpisodeDefinition {
@@ -78,6 +79,17 @@ export interface VideoItem {
   youtube_url?: string;
   youtube_shorts_url?: string;
   youtube_published_at?: string;
+  fb_video_id?: string;
+  fb_post_url?: string;
+  fb_reel_url?: string;
+  fb_page_id?: string;
+  fb_published_at?: string;
+  tiktok_published_at?: string;
+  is_published?: boolean;
+  published_at?: string;
+  aspect_ratio?: '9:16' | '16:9';
+  video_format?: 'short' | 'long';
+  playlist_name?: string;
 }
 
 export interface AiDebateMessage {

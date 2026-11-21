@@ -1,6 +1,7 @@
 import React, { useState, useEffect, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useToast } from '../../context/ToastContext';
+import { compressImageFile } from '../../utils/imageCompressor';
 
 interface EpisodeOption {
   id: string;
@@ -17,6 +18,8 @@ interface YouTubePublishModalProps {
   defaultDescription?: string;
   defaultTags?: string[];
   defaultThumbnailUrl?: string;
+  defaultVideoFormat?: 'short' | 'long';
+  defaultPlaylistName?: string;
   videoPath?: string;
   videoUrl?: string;
   videoId?: string;
@@ -27,15 +30,177 @@ interface YouTubePublishModalProps {
   onSuccess?: (result: any) => void;
 }
 
-export function cleanStoryDescription(rawDesc?: string, title: string = ''): string {
+export function inferDefaultYoutubePlaylist(
+  textHint: string = '',
+  format: 'short' | 'long' = 'short'
+): string {
+  const tag = format === 'long' ? '[Video Dài]' : '[Shorts]';
+  const lower = textHint.toLowerCase();
+  if (/(thuế|luật|nghị định|phạt|bảo hiểm|bhxh|quyền lợi|pháp lý|truy thu)/i.test(lower)) {
+    return `⚖️ ${tag} Luật Pháp & Quyền Lợi Sát Sườn`;
+  }
+  if (/(tài chính|tiền|lương|đầu tư|vay|nợ|trả góp|thuê nhà|mua nhà|vàng|lãi suất|nhượng quyền|kinh doanh|phí|cuốc xe)/i.test(lower)) {
+    return `💰 ${tag} Tiền Bạc & Kinh Doanh Thực Chiến`;
+  }
+  if (/(sức khỏe|đường huyết|ung thư|thuốc|bệnh|ngủ|giảm cân|dinh dưỡng|tâm lý|chiều cao|thói quen|cơ thể)/i.test(lower)) {
+    return `🧠 ${tag} Tâm Lý Học & Sức Khỏe Đời Sống`;
+  }
+  return `🍿 ${tag} Hóng Hớt & Giải Mã Sự Thật`;
+}
+
+export function formatYoutubePlaylistName(
+  rawTitle: string = '',
+  format: 'short' | 'long' = 'short',
+  fallbackHint: string = ''
+): string {
+  const trimmed = rawTitle.replace(/[<>]/g, '').trim();
+  if (!trimmed) {
+    return inferDefaultYoutubePlaylist(fallbackHint, format);
+  }
+  const targetTag = format === 'long' ? '[Video Dài]' : '[Shorts]';
+  const hasShorts = /\[\s*shorts?\s*\]|\(\s*shorts?\s*\)/i.test(trimmed);
+  const hasLong = /\[\s*video\s*dài\s*\]|\(\s*video\s*dài\s*\)/i.test(trimmed);
+
+  if (format === 'long' && hasShorts) {
+    return trimmed.replace(/\[\s*shorts?\s*\]|\(\s*shorts?\s*\)/gi, targetTag).replace(/\s{2,}/g, ' ').trim();
+  }
+  if (format === 'short' && hasLong) {
+    return trimmed.replace(/\[\s*video\s*dài\s*\]|\(\s*video\s*dài\s*\)/gi, targetTag).replace(/\s{2,}/g, ' ').trim();
+  }
+  if ((format === 'long' && hasLong) || (format === 'short' && hasShorts)) {
+    return trimmed;
+  }
+
+  const emojiMatch = trimmed.match(/^((?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]\uFE0F?\s*)+)(.+)$/u);
+  if (emojiMatch) {
+    return `${emojiMatch[1].trim()} ${targetTag} ${emojiMatch[2].trim()}`;
+  }
+  return `${targetTag} ${trimmed}`;
+}
+
+export function formatViralYoutubeTitle(rawTitle: string, format: 'short' | 'long' = 'short'): string {
+  const base = rawTitle.replace(/#(shorts|short|phimhai|toptrending|trending|xuhuong|funny|viral|fyp|videodai)\b/gi, '').replace(/\s+/g, ' ').trim();
+  if (format === 'long') {
+    return base.slice(0, 100);
+  }
+  const tailCandidates = ['#viral', '#xuhuong', '#trending', '#shorts'];
+  let built = base;
+  for (const tag of tailCandidates) {
+    if (built.length + 1 + tag.length <= 100) {
+      built = `${built} ${tag}`;
+    }
+  }
+  if (!/#shorts?\b/i.test(built) && built.length + 8 <= 100) {
+    built = `${built} #shorts`;
+  }
+  return built.slice(0, 100);
+}
+
+export function buildViralHashtagList(
+  title: string = '',
+  rawDesc: string = '',
+  existingTags: string[] = [],
+  format: 'short' | 'long' = 'short'
+): string[] {
+  const result: string[] = [];
+  const addTag = (raw: string) => {
+    const clean = raw.replace(/^#+/, '').trim().toLowerCase();
+    if (format === 'long' && (clean === 'shorts' || clean === 'short')) return;
+    if (clean.length >= 2 && !result.includes(`#${clean}`)) {
+      result.push(`#${clean}`);
+    }
+  };
+
+  if (format === 'long') {
+    addTag('kienthuc');
+    addTag('giaima');
+    addTag('xuhuong');
+    addTag('trending');
+    addTag('viral');
+  } else {
+    // Mặc định luôn ưu tiên bộ hashtag xu hướng chuẩn cho các clip: #viral, #xuhuong, #trending, #shorts
+    addTag('viral');
+    addTag('xuhuong');
+    addTag('trending');
+    addTag('shorts');
+    addTag('short');
+    addTag('fyp');
+    addTag('toptrending');
+  }
+
+  // Giữ lại các hashtag hợp lệ sẵn có của video (bỏ qua các tag phim hài cũ nếu không liên quan)
+  const legacyComedyTags = new Set(['phimhai', 'haihuoc', 'funny', 'comedy', 'tieuphamhai', 'caiketbatngo', 'chutichvacaiket']);
+  existingTags.forEach((t) => {
+    const c = t.replace(/^#+/, '').trim().toLowerCase();
+    if (c && !legacyComedyTags.has(c)) {
+      addTag(c);
+    }
+  });
+
+  const combinedVi = `${title} ${rawDesc}`.toLowerCase();
+
+  // Tự động nhận diện và gắn thêm các hashtag chủ đề mà người dùng Việt Nam đang quan tâm nhất
+  if (/(tài chính|tiền|lương|đầu tư|vay|nợ|tiết kiệm|lãi suất|vàng|mua nhà|thuê nhà)/i.test(combinedVi)) {
+    addTag('taichinh');
+    addTag('taichinhcanhan');
+    addTag('kiemtien');
+    addTag('dautu');
+  }
+  if (/(giao thông|đèn đỏ|đèn vàng|phạt|xe máy|ô tô|nghị định|bằng lái|nồng độ cồn|đua xe)/i.test(combinedVi)) {
+    addTag('luatgiaothong');
+    addTag('nghidinh168');
+    addTag('antoangiaothong');
+    addTag('canhgiac');
+  }
+  if (/(sức khỏe|giảm cân|ăn sáng|bệnh|thói quen|cơ thể|thức khuya|đột quỵ|dinh dưỡng|tập thể dục)/i.test(combinedVi)) {
+    addTag('suckhoe');
+    addTag('chamsocthanhtam');
+    addTag('meosuckhoe');
+  }
+  if (/(lừa đảo|cảnh giác|deepfake|ai|công nghệ|điện thoại|mẹo|hack|nghề nghiệp|việc làm)/i.test(combinedVi)) {
+    addTag('canhgiac');
+    addTag('congnghe');
+    addTag('meovat');
+    addTag('kynangsong');
+  }
+  if (/(thuế|bảo hiểm|bhxh|luật|quyền lợi|người lao động)/i.test(combinedVi)) {
+    addTag('phapluat');
+    addTag('quyenloi');
+    addTag('laodong');
+  }
+
+  // Các chủ đề đời sống & kiến thức đại chúng người dùng luôn quan tâm cao
+  addTag('kienthuc');
+  addTag('doisong');
+  addTag('khampha');
+  addTag('suthatthuvi');
+  addTag('kynangsong');
+  addTag('meovatcuocsong');
+  addTag('tamlyhoc');
+  addTag('baihoccuocsong');
+
+  return result.slice(0, 18);
+}
+
+export function cleanStoryDescription(
+  rawDesc?: string,
+  title: string = '',
+  existingTags: string[] = [],
+  format: 'short' | 'long' = 'short'
+): string {
+  const viralTagsStr = buildViralHashtagList(title, rawDesc || '', existingTags, format).join(' ');
+
   if (!rawDesc || typeof rawDesc !== 'string') {
     return title
-      ? `Cùng theo dõi câu chuyện hoạt hình chibi đáng yêu: "${title}". Chúc các bạn xem video vui vẻ!\n\n#hoathinh #chibi #shorts`
-      : 'Video hoạt hình chibi đáng yêu.\n\n#hoathinh #chibi #shorts';
+      ? `${title}\nĐừng quên nhấn Like & Đăng ký kênh để đón xem video mới nhất nhé!\n\n${viralTagsStr}`
+      : `${viralTagsStr}`;
   }
 
   // Remove forbidden YouTube characters '<' and '>'
-  const trimmed = rawDesc.replace(/[<>]/g, '').trim();
+  let trimmed = rawDesc.replace(/[<>]/g, '').trim();
+  if (format === 'long') {
+    trimmed = trimmed.replace(/#shorts?\b/gi, '').replace(/\s{2,}/g, ' ').trim();
+  }
 
   // If it's a JSON string or contains AI prompt directives
   if (
@@ -55,7 +220,7 @@ export function cleanStoryDescription(rawDesc?: string, title: string = ''): str
       }
 
       if (parsed) {
-        const storyTitle = parsed.story_title || title || 'Câu Chuyện Chibi';
+        const storyTitle = parsed.story_title || title || 'Video Ngắn Xu Hướng';
         const storyTheme = parsed.story_theme || '';
 
         const highlights: string[] = [];
@@ -69,18 +234,16 @@ export function cleanStoryDescription(rawDesc?: string, title: string = ''): str
           }
         }
 
-        let summary = `Cùng theo dõi câu chuyện hoạt hình chibi đáng yêu: "${storyTitle}".`;
+        let summary = `🎬 ${storyTitle}`;
         if (storyTheme) {
           summary += `\n${storyTheme}`;
-        } else {
-          summary += `\nMột câu chuyện dễ thương, ấm áp và ngập tràn tiếng cười của các bạn nhỏ!`;
         }
 
         if (highlights.length > 0) {
-          summary += `\n\n💬 Điểm nhấn câu chuyện:\n` + highlights.map((l) => `• ${l}`).join('\n');
+          summary += `\n\n💬 Điểm nhấn trong video:\n` + highlights.map((l) => `• ${l}`).join('\n');
         }
 
-        summary += `\n\nĐừng quên nhấn Like & Đăng ký kênh để đón xem những tập mới nhất nhé!\n#hoathinh #chibi #shorts`;
+        summary += `\n\nĐừng quên nhấn Like & Đăng ký kênh để đón xem những video mới nhất nhé!\n${viralTagsStr}`;
         return summary;
       }
     } catch {
@@ -88,8 +251,13 @@ export function cleanStoryDescription(rawDesc?: string, title: string = ''): str
     }
 
     return title
-      ? `Cùng theo dõi câu chuyện hoạt hình chibi đáng yêu: "${title}".\nMột câu chuyện dễ thương, ấm áp và ngập tràn tiếng cười của các bạn nhỏ!\n\nĐừng quên nhấn Like & Đăng ký kênh để đón xem những tập mới nhất nhé!\n#hoathinh #chibi #shorts`
-      : 'Câu chuyện hoạt hình chibi dễ thương dành cho các bạn nhỏ.\n\n#hoathinh #chibi #shorts';
+      ? `🎬 ${title}\n\nĐừng quên nhấn Like & Đăng ký kênh để đón xem những video mới nhất nhé!\n${viralTagsStr}`
+      : `${viralTagsStr}`;
+  }
+
+  // Nếu chưa có bộ hashtag viral ở cuối thì đính kèm
+  if (!/#(viral|xuhuong|trending)\b/i.test(trimmed)) {
+    return `${trimmed}\n\n${viralTagsStr}`;
   }
 
   return trimmed;
@@ -102,6 +270,8 @@ export const YouTubePublishModal: React.FC<YouTubePublishModalProps> = memo(({
   defaultDescription = '',
   defaultTags = [],
   defaultThumbnailUrl = '',
+  defaultVideoFormat = 'short',
+  defaultPlaylistName = '',
   videoPath = '',
   videoUrl = '',
   videoId = '',
@@ -113,29 +283,68 @@ export const YouTubePublishModal: React.FC<YouTubePublishModalProps> = memo(({
 }) => {
   const { showToast } = useToast();
 
+  // Upload Form
+  const [ytFormat, setYtFormat] = useState<'short' | 'long'>(defaultVideoFormat);
+  const formatTag = ytFormat === 'long' ? '[Video Dài]' : '[Shorts]';
+
+  const PLAYLIST_PRESETS =
+    ytFormat === 'long'
+      ? [
+          { label: '🍿 [Video Dài] Hóng Hớt & Giải Mã', title: '🍿 [Video Dài] Hóng Hớt & Giải Mã Sự Thật' },
+          { label: '💰 [Video Dài] Tiền Bạc & Kinh Doanh', title: '💰 [Video Dài] Tiền Bạc & Kinh Doanh Thực Chiến' },
+          { label: '⚖️ [Video Dài] Luật & Quyền Lợi', title: '⚖️ [Video Dài] Luật Pháp & Quyền Lợi Sát Sườn' },
+          { label: '🧠 [Video Dài] Tâm Lý & Sức Khỏe', title: '🧠 [Video Dài] Tâm Lý Học & Sức Khỏe Đời Sống' },
+          { label: '🎭 [Video Dài] Truyện Kể & Đời Sống', title: '🎭 [Video Dài] Truyện Kể & Góc Khuất Đời Sống' },
+        ]
+      : [
+          { label: '🍿 [Shorts] Hóng Hớt & Giải Mã', title: '🍿 [Shorts] Hóng Hớt & Giải Mã Sự Thật' },
+          { label: '💰 [Shorts] Tiền Bạc & Kinh Doanh', title: '💰 [Shorts] Tiền Bạc & Kinh Doanh Thực Chiến' },
+          { label: '⚖️ [Shorts] Luật & Quyền Lợi', title: '⚖️ [Shorts] Luật Pháp & Quyền Lợi Sát Sườn' },
+          { label: '🧠 [Shorts] Tâm Lý & Sức Khỏe', title: '🧠 [Shorts] Tâm Lý Học & Sức Khỏe Đời Sống' },
+          { label: '🎭 [Shorts] Truyện Dân Gian & Hài', title: '🎭 [Shorts] Truyện Dân Gian & Hài Hước' },
+        ];
+
   // YouTube Account Status
   const [loadingStatus, setLoadingStatus] = useState(true);
   const [isConfigured, setIsConfigured] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [hasPlaylistWriteScope, setHasPlaylistWriteScope] = useState(true);
   const [channelTitle, setChannelTitle] = useState('');
   const [avatarUrl, setAvatarUrl] = useState('');
 
-  // Upload Form
+  // Playlist State
+  const [channelPlaylists, setChannelPlaylists] = useState<Array<{ id: string; title: string; itemCount?: number }>>([]);
+  const [selectedPlaylistId, setSelectedPlaylistId] = useState<string>('');
+  const [playlistTitle, setPlaylistTitle] = useState<string>(() =>
+    formatYoutubePlaylistName(defaultPlaylistName, defaultVideoFormat, `${defaultTitle} ${defaultDescription}`)
+  );
+  const [isCreatingPlaylist, setIsCreatingPlaylist] = useState(false);
+
   const [selectedTarget, setSelectedTarget] = useState<'full' | 'all' | string>('full');
   const [title, setTitle] = useState(defaultTitle);
-  const [description, setDescription] = useState(() => cleanStoryDescription(defaultDescription, defaultTitle));
-  const [tags, setTags] = useState(defaultTags.join(', '));
+  const [description, setDescription] = useState(() => cleanStoryDescription(defaultDescription, defaultTitle, defaultTags, defaultVideoFormat));
+  const [tags, setTags] = useState(() => buildViralHashtagList(defaultTitle, defaultDescription, defaultTags, defaultVideoFormat).join(', '));
   const [thumbnailUrl, setThumbnailUrl] = useState<string>(defaultThumbnailUrl);
   const [privacyStatus, setPrivacyStatus] = useState<'public' | 'unlisted' | 'private'>('public');
   const [madeForKids, setMadeForKids] = useState(false); // Default: No, it's not made for kids
-  const [categoryId, setCategoryId] = useState('1'); // 1: Film & Animation
+  const [categoryId, setCategoryId] = useState(defaultVideoFormat === 'long' ? '27' : '23');
 
   // Upload State
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgressText, setUploadProgressText] = useState('');
-  const [publishedResults, setPublishedResults] = useState<Array<{ title: string; url: string; shortsUrl?: string }>>([]);
+  const [publishedResults, setPublishedResults] = useState<Array<{ title: string; url: string; shortsUrl?: string; playlistTitle?: string }>>([]);
   const [currentYtVideoId, setCurrentYtVideoId] = useState(youtubeVideoId);
   const [isUpdatingThumb, setIsUpdatingThumb] = useState(false);
+
+  const loadPlaylists = async () => {
+    try {
+      const res = await fetch('/api/youtube/playlists');
+      const data = await res.json();
+      if (data.success && Array.isArray(data.playlists)) {
+        setChannelPlaylists(data.playlists);
+      }
+    } catch {}
+  };
 
   const checkStatus = async () => {
     setLoadingStatus(true);
@@ -145,8 +354,12 @@ export const YouTubePublishModal: React.FC<YouTubePublishModalProps> = memo(({
       if (data.success) {
         setIsConfigured(Boolean(data.configured));
         setIsAuthenticated(Boolean(data.authenticated));
+        setHasPlaylistWriteScope(data.hasPlaylistWriteScope !== false);
         setChannelTitle(data.channelTitle || '');
         setAvatarUrl(data.avatarUrl || '');
+        if (data.authenticated) {
+          loadPlaylists();
+        }
       }
     } catch (err: any) {
       console.error('Error fetching YouTube status:', err);
@@ -155,20 +368,100 @@ export const YouTubePublishModal: React.FC<YouTubePublishModalProps> = memo(({
     }
   };
 
+  const handleCreatePlaylistNow = async () => {
+    const cleanName = playlistTitle.trim();
+    if (!cleanName) {
+      showToast('⚠️ Vui lòng nhập hoặc chọn tên Playlist!');
+      return;
+    }
+    setIsCreatingPlaylist(true);
+    try {
+      const res = await fetch('/api/youtube/playlists', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: cleanName,
+          description:
+            ytFormat === 'long'
+              ? `Tuyển tập Video Dài (16:9) phân tích chuyên sâu — ${cleanName}`
+              : `Tuyển tập Video Ngắn (YouTube Shorts 9:16) súc tích — ${cleanName}`,
+          privacy_status: privacyStatus,
+          video_format: ytFormat,
+        }),
+      });
+      const data = await res.json();
+      if (data.success && data.playlist) {
+        showToast(`✅ Đã tạo/chọn Playlist "${data.playlist.title}" trên kênh YouTube!`);
+        setSelectedPlaylistId(data.playlist.id);
+        setPlaylistTitle(data.playlist.title);
+        loadPlaylists();
+      } else {
+        showToast('⚠️ ' + (data.error || 'Chưa tạo được Playlist trực tiếp — hệ thống sẽ gắn tên Series vào mô tả video'));
+      }
+    } catch (err: any) {
+      showToast('❌ Lỗi tạo Playlist: ' + err.message);
+    } finally {
+      setIsCreatingPlaylist(false);
+    }
+  };
+
+  const handleSwitchYtFormat = (nextFmt: 'short' | 'long') => {
+    setYtFormat(nextFmt);
+    setDescription(cleanStoryDescription(defaultDescription, title || defaultTitle, defaultTags, nextFmt));
+    setTags(buildViralHashtagList(title || defaultTitle, defaultDescription, defaultTags, nextFmt).join(', '));
+    setPlaylistTitle((prev) => {
+      const nextPl = prev.trim()
+        ? formatYoutubePlaylistName(prev, nextFmt, `${title || defaultTitle} ${defaultDescription}`)
+        : '';
+      const matched = channelPlaylists.find(
+        (cp) => cp.title.trim().toLowerCase() === nextPl.toLowerCase()
+      );
+      setSelectedPlaylistId(matched?.id || '');
+      return nextPl;
+    });
+    if (nextFmt === 'long') {
+      setTitle((prev) => prev.replace(/#shorts?\b/gi, '').replace(/\s{2,}/g, ' ').trim());
+      setCategoryId('27');
+    } else {
+      setCategoryId('23');
+    }
+  };
+
   useEffect(() => {
     if (isOpen) {
       checkStatus();
-      setTitle(defaultTitle);
-      setDescription(cleanStoryDescription(defaultDescription, defaultTitle));
-      setTags(defaultTags.join(', '));
+      setYtFormat(defaultVideoFormat);
+      const cleanedTitle =
+        defaultVideoFormat === 'long'
+          ? defaultTitle.replace(/#shorts?\b/gi, '').replace(/\s{2,}/g, ' ').trim()
+          : defaultTitle;
+      setTitle(cleanedTitle);
+      setDescription(cleanStoryDescription(defaultDescription, cleanedTitle, defaultTags, defaultVideoFormat));
+      setTags(buildViralHashtagList(cleanedTitle, defaultDescription, defaultTags, defaultVideoFormat).join(', '));
       setThumbnailUrl(defaultThumbnailUrl || '');
       setSelectedTarget(initialTarget || 'full');
       setMadeForKids(false);
+      setCategoryId(defaultVideoFormat === 'long' ? '27' : '23');
+      const normalizedPl = formatYoutubePlaylistName(
+        defaultPlaylistName,
+        defaultVideoFormat,
+        `${cleanedTitle} ${defaultDescription}`
+      );
+      setPlaylistTitle(normalizedPl);
+      setSelectedPlaylistId('');
       setCurrentYtVideoId(youtubeVideoId || '');
       setPublishedResults([]);
       setIsUploading(false);
     }
-  }, [isOpen, defaultTitle, defaultDescription, defaultTags, defaultThumbnailUrl, initialTarget, youtubeVideoId]);
+  }, [isOpen, defaultTitle, defaultDescription, defaultTags, defaultThumbnailUrl, defaultVideoFormat, defaultPlaylistName, initialTarget, youtubeVideoId]);
+
+  useEffect(() => {
+    if (!playlistTitle.trim() || channelPlaylists.length === 0) return;
+    const matched = channelPlaylists.find(
+      (cp) => cp.title.trim().toLowerCase() === playlistTitle.trim().toLowerCase()
+    );
+    setSelectedPlaylistId(matched?.id || '');
+  }, [channelPlaylists, playlistTitle]);
 
   // Listen for OAuth success popup callback or window focus
   useEffect(() => {
@@ -238,7 +531,7 @@ export const YouTubePublishModal: React.FC<YouTubePublishModalProps> = memo(({
         // Upload all episodes
         episodes.forEach((ep, idx) => {
           queue.push({
-            title: `${title} - ${ep.title || `Tập ${idx + 1}`} #Shorts`,
+            title: formatViralYoutubeTitle(`${title} - ${ep.title || `Tập ${idx + 1}`}`, ytFormat),
             url: ep.video_url,
             path: ep.local_path,
             thumbnailUrl: ep.thumbnail_url || thumbnailUrl || defaultThumbnailUrl,
@@ -249,7 +542,7 @@ export const YouTubePublishModal: React.FC<YouTubePublishModalProps> = memo(({
         const found = episodes.find((e) => e.id === selectedTarget);
         if (found) {
           queue.push({
-            title: `${title} - ${found.title} #Shorts`,
+            title: formatViralYoutubeTitle(`${title} - ${found.title}`, ytFormat),
             url: found.video_url,
             path: found.local_path,
             thumbnailUrl: found.thumbnail_url || thumbnailUrl || defaultThumbnailUrl,
@@ -257,7 +550,7 @@ export const YouTubePublishModal: React.FC<YouTubePublishModalProps> = memo(({
         }
       } else {
         // Full Story Video
-        const fullTitle = /#shorts/i.test(title) ? title.trim() : `${title.trim()} #Shorts`;
+        const fullTitle = formatViralYoutubeTitle(title.trim(), ytFormat);
         queue.push({
           title: fullTitle,
           url: videoUrl,
@@ -291,6 +584,9 @@ export const YouTubePublishModal: React.FC<YouTubePublishModalProps> = memo(({
             privacy_status: privacyStatus,
             made_for_kids: madeForKids,
             category_id: categoryId,
+            playlist_id: selectedPlaylistId || undefined,
+            playlist_title: playlistTitle.trim() || undefined,
+            video_format: ytFormat,
           }),
         });
 
@@ -367,7 +663,6 @@ export const YouTubePublishModal: React.FC<YouTubePublishModalProps> = memo(({
     <div
       className="modal-overlay open"
       style={{ zIndex: 10050 }}
-      onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
         className="modal"
@@ -494,6 +789,244 @@ export const YouTubePublishModal: React.FC<YouTubePublishModalProps> = memo(({
                   Đăng Xuất
                 </button>
               )}
+            </div>
+          </div>
+
+          {/* Quick Mode Toggle: Short (9:16) vs Long Video (16:9) */}
+          <div>
+            <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text)', display: 'block', marginBottom: '6px' }}>
+              📐 Chế Độ Định Dạng Upload Nhanh (Short / Long):
+            </label>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+              <button
+                type="button"
+                onClick={() => handleSwitchYtFormat('short')}
+                style={{
+                  padding: '9px 12px',
+                  borderRadius: '9px',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  background: ytFormat === 'short' ? 'rgba(239, 68, 68, 0.18)' : 'var(--bg3)',
+                  border: ytFormat === 'short' ? '1.5px solid #ef4444' : '1px solid var(--border)',
+                  color: ytFormat === 'short' ? '#fecaca' : 'var(--muted)',
+                }}
+              >
+                <div style={{ fontSize: '12.5px', fontWeight: 800, color: ytFormat === 'short' ? '#fff' : 'var(--text)' }}>
+                  📱 YouTube Shorts (9:16)
+                </div>
+                <div style={{ fontSize: '10.5px', marginTop: '2px' }}>Tự gắn #shorts • Đề xuất kệ Shorts dọc</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSwitchYtFormat('long')}
+                style={{
+                  padding: '9px 12px',
+                  borderRadius: '9px',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  background: ytFormat === 'long' ? 'rgba(56, 189, 248, 0.18)' : 'var(--bg3)',
+                  border: ytFormat === 'long' ? '1.5px solid #38bdf8' : '1px solid var(--border)',
+                  color: ytFormat === 'long' ? '#bae6fd' : 'var(--muted)',
+                }}
+              >
+                <div style={{ fontSize: '12.5px', fontWeight: 800, color: ytFormat === 'long' ? '#fff' : 'var(--text)' }}>
+                  🖥️ Video Dài Chuẩn 16:9 (Long)
+                </div>
+                <div style={{ fontSize: '10.5px', marginTop: '2px' }}>Gỡ #shorts • Đề xuất trang chủ + Thumbnail 16:9</div>
+              </button>
+            </div>
+          </div>
+
+          {/* Playlist / Series Grouping */}
+          <div
+            style={{
+              padding: '12px 14px',
+              borderRadius: '10px',
+              background: 'rgba(245, 158, 11, 0.08)',
+              border: '1px solid rgba(245, 158, 11, 0.3)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '8px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+              <label style={{ fontSize: '12px', fontWeight: 700, color: ytFormat === 'long' ? '#38bdf8' : '#fbbf24', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                {ytFormat === 'long'
+                  ? '🖥️ Playlist YouTube — Video Dài 16:9 (Tách riêng với Shorts):'
+                  : '📱 Playlist YouTube — Shorts 9:16 (Tách riêng với Video Dài):'}
+                <span
+                  style={{
+                    fontSize: '10.5px',
+                    padding: '1px 7px',
+                    borderRadius: '999px',
+                    background: ytFormat === 'long' ? 'rgba(56, 189, 248, 0.18)' : 'rgba(245, 158, 11, 0.2)',
+                    border: ytFormat === 'long' ? '1px solid rgba(56, 189, 248, 0.45)' : '1px solid rgba(245, 158, 11, 0.45)',
+                    color: ytFormat === 'long' ? '#7dd3fc' : '#fde68a',
+                  }}
+                >
+                  {formatTag}
+                </span>
+              </label>
+              {isAuthenticated && !hasPlaylistWriteScope && (
+                <button
+                  type="button"
+                  onClick={handleConnectYoutube}
+                  style={{
+                    background: 'rgba(245, 158, 11, 0.2)',
+                    border: '1px solid #f59e0b',
+                    color: '#fde68a',
+                    padding: '3px 9px',
+                    borderRadius: '6px',
+                    fontSize: '10.5px',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  🔑 Cấp quyền tạo Playlist tự động (1 click)
+                </button>
+              )}
+            </div>
+
+            {/* Quick Series Chips */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+              {PLAYLIST_PRESETS.map((p) => {
+                const isSelected = playlistTitle === p.title;
+                return (
+                  <button
+                    key={p.title}
+                    type="button"
+                    onClick={() => {
+                      setPlaylistTitle(p.title);
+                      const existing = channelPlaylists.find(
+                        (cp) => cp.title.trim().toLowerCase() === p.title.toLowerCase()
+                      );
+                      setSelectedPlaylistId(existing?.id || '');
+                    }}
+                    style={{
+                      padding: '4px 10px',
+                      borderRadius: '999px',
+                      fontSize: '11px',
+                      fontWeight: isSelected ? 700 : 600,
+                      cursor: 'pointer',
+                      background: isSelected
+                        ? ytFormat === 'long'
+                          ? 'rgba(56, 189, 248, 0.22)'
+                          : 'rgba(245, 158, 11, 0.25)'
+                        : 'var(--bg3)',
+                      border: isSelected
+                        ? ytFormat === 'long'
+                          ? '1.5px solid #38bdf8'
+                          : '1.5px solid #f59e0b'
+                        : '1px solid var(--border)',
+                      color: isSelected ? (ytFormat === 'long' ? '#e0f2fe' : '#fef3c7') : 'var(--muted)',
+                    }}
+                  >
+                    {p.label}
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                onClick={() => {
+                  setPlaylistTitle('');
+                  setSelectedPlaylistId('');
+                }}
+                style={{
+                  padding: '4px 10px',
+                  borderRadius: '999px',
+                  fontSize: '11px',
+                  fontWeight: !playlistTitle ? 700 : 500,
+                  cursor: 'pointer',
+                  background: !playlistTitle ? 'rgba(148, 163, 184, 0.2)' : 'transparent',
+                  border: '1px solid var(--border)',
+                  color: 'var(--muted)',
+                }}
+              >
+                🚫 Không gắn Playlist
+              </button>
+            </div>
+
+            {/* Channel Playlist Dropdown (filtered by format) + Custom Input + Create Button */}
+            {(() => {
+              const compatiblePlaylists = channelPlaylists.filter((cp) => {
+                const isShortsPl = /\[\s*shorts?\s*\]|\(\s*shorts?\s*\)/i.test(cp.title);
+                const isLongPl = /\[\s*video\s*dài\s*\]|\(\s*video\s*dài\s*\)/i.test(cp.title);
+                if (ytFormat === 'long' && isShortsPl) return false;
+                if (ytFormat === 'short' && isLongPl) return false;
+                return true;
+              });
+              return (
+                <div style={{ display: 'grid', gridTemplateColumns: compatiblePlaylists.length > 0 ? '1fr 1.2fr auto' : '1fr auto', gap: '8px' }}>
+                  {compatiblePlaylists.length > 0 && (
+                    <select
+                      value={selectedPlaylistId}
+                      onChange={(e) => {
+                        const pid = e.target.value;
+                        setSelectedPlaylistId(pid);
+                        const found = compatiblePlaylists.find((cp) => cp.id === pid);
+                        if (found) setPlaylistTitle(found.title);
+                      }}
+                      style={{
+                        padding: '7px 10px',
+                        borderRadius: '8px',
+                        background: 'var(--bg3)',
+                        border: '1px solid var(--border)',
+                        color: '#fff',
+                        fontSize: '12px',
+                      }}
+                    >
+                      <option value="">
+                        {ytFormat === 'long'
+                          ? `-- Chọn Playlist Video Dài trên kênh (${compatiblePlaylists.length}) --`
+                          : `-- Chọn Playlist Shorts trên kênh (${compatiblePlaylists.length}) --`}
+                      </option>
+                      {compatiblePlaylists.map((cp) => (
+                        <option key={cp.id} value={cp.id}>
+                          📂 {cp.title} ({cp.itemCount ?? 0} video)
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <input
+                    type="text"
+                    value={playlistTitle}
+                    onChange={(e) => {
+                      setPlaylistTitle(e.target.value);
+                      setSelectedPlaylistId('');
+                    }}
+                    placeholder={`Nhập tên Playlist (VD: 🍿 ${formatTag} Hóng Hớt & Giải Mã Sự Thật)...`}
+                    style={{
+                      padding: '7px 10px',
+                      borderRadius: '8px',
+                      background: 'var(--bg3)',
+                      border: '1px solid var(--border)',
+                      color: '#fff',
+                      fontSize: '12px',
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={handleCreatePlaylistNow}
+                    disabled={isCreatingPlaylist || !playlistTitle.trim()}
+                    style={{
+                      padding: '7px 12px',
+                      borderRadius: '8px',
+                      background: 'rgba(245, 158, 11, 0.2)',
+                      border: '1px solid rgba(245, 158, 11, 0.5)',
+                      color: '#fde68a',
+                      fontSize: '11.5px',
+                      fontWeight: 700,
+                      cursor: isCreatingPlaylist || !playlistTitle.trim() ? 'not-allowed' : 'pointer',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {isCreatingPlaylist ? '⏳ Đang tạo...' : '+ Tạo / Lưu Playlist'}
+                  </button>
+                </div>
+              );
+            })()}
+            <div style={{ fontSize: '10.5px', color: 'var(--muted)' }}>
+              💡 Hệ thống tự động tách riêng Playlist <b>[Video Dài]</b> (16:9) và <b>[Shorts]</b> (9:16) để không bao giờ bị trộn lẫn định dạng trên kênh YouTube.
             </div>
           </div>
 
@@ -704,17 +1237,23 @@ export const YouTubePublishModal: React.FC<YouTubePublishModalProps> = memo(({
                       type="file"
                       accept="image/*"
                       style={{ display: 'none' }}
-                      onChange={(e) => {
+                      onChange={async (e) => {
                         const file = e.target.files?.[0];
                         if (file) {
-                          const reader = new FileReader();
-                          reader.onload = () => {
-                            if (typeof reader.result === 'string') {
-                              setThumbnailUrl(reader.result);
-                              showToast('🖼️ Đã chọn ảnh bìa mới!');
-                            }
-                          };
-                          reader.readAsDataURL(file);
+                          try {
+                            const { dataUrl } = await compressImageFile(file, { maxWidth: 1280, maxHeight: 720, quality: 0.85 });
+                            setThumbnailUrl(dataUrl);
+                            showToast('🖼️ Đã nén & chọn ảnh bìa mới!');
+                          } catch {
+                            const reader = new FileReader();
+                            reader.onload = () => {
+                              if (typeof reader.result === 'string') {
+                                setThumbnailUrl(reader.result);
+                                showToast('🖼️ Đã chọn ảnh bìa mới!');
+                              }
+                            };
+                            reader.readAsDataURL(file);
+                          }
                         }
                       }}
                     />
@@ -810,12 +1349,35 @@ export const YouTubePublishModal: React.FC<YouTubePublishModalProps> = memo(({
           </div>
 
           <div>
-            <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text)', display: 'block', marginBottom: '4px' }}>Tags (ngăn cách bằng dấu phẩy):</label>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+              <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text)', margin: 0 }}>
+                Tags & Hashtags (Mặc định gắn #viral, #xuhuong, #trending, #shorts):
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  const smart = buildViralHashtagList(title, description, []);
+                  setTags(smart.join(', '));
+                }}
+                style={{
+                  background: 'rgba(16, 185, 129, 0.15)',
+                  border: '1px solid rgba(16, 185, 129, 0.4)',
+                  color: '#34d399',
+                  borderRadius: '5px',
+                  padding: '2px 8px',
+                  fontSize: '11px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                ✨ Làm mới Hashtag Viral
+              </button>
+            </div>
             <input
               type="text"
               value={tags}
               onChange={(e) => setTags(e.target.value)}
-              placeholder="truyen thieu nhi, hoat hinh 3d, shorts, ngu ngon, ke chuyen be"
+              placeholder="#viral, #xuhuong, #trending, #shorts, #short, #fyp, #kienthuc"
               style={{ width: '100%', padding: '7px 12px', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: '8px', color: 'var(--text)', fontSize: '12px' }}
             />
           </div>
@@ -841,8 +1403,9 @@ export const YouTubePublishModal: React.FC<YouTubePublishModalProps> = memo(({
                 onChange={(e) => setCategoryId(e.target.value)}
                 style={{ width: '100%', padding: '7px 10px', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: '8px', color: 'var(--text)', fontSize: '12px' }}
               >
-                <option value="1">🎬 Phim & Hoạt họa (Film & Animation)</option>
+                <option value="23">😂 Hài kịch / Phim hài (Comedy - Khuyên dùng)</option>
                 <option value="24">🎪 Giải trí (Entertainment)</option>
+                <option value="1">🎬 Phim & Hoạt họa (Film & Animation)</option>
                 <option value="27">🎓 Giáo dục (Education)</option>
                 <option value="15">🐾 Động vật & Thú cưng (Pets & Animals)</option>
               </select>

@@ -136,7 +136,7 @@ export const ConcatModal: React.FC<ConcatModalProps> = ({
   });
 
   return (
-    <div className="modal-overlay open" id="concatModalOverlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="modal-overlay open" id="concatModalOverlay">
       <div className="modal" style={{ width: '960px', maxWidth: '96vw', padding: '26px', borderRadius: '20px', display: 'flex', flexDirection: 'column', gap: '18px', maxHeight: '92vh', overflowY: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)', paddingBottom: '14px' }}>
           <div>

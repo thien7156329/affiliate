@@ -29,7 +29,209 @@ Category-specific styles:
 import axios from "axios";
 import "dotenv/config";
 import { AGY_DEFAULT_MODEL, callAgy, isAgyEnabled } from "./agyClient.js";
-import { CODEX_MODEL, callCodexSol, isCodexEnabled } from "./codexClient.js";
+import { CODEX_TERRA_MODEL, callCodexTerra, isCodexEnabled } from "./codexClient.js";
+import { buildWorldStyleDirective, normalizeVisualStyle } from "./worldStyles.js";
+import {
+  formatModelDisplayName,
+  getScriptwriterModel,
+  getAuditorModel,
+  GEMINI_CARBON_MODEL,
+  GEMINI_ARGON_MODEL,
+} from "./aiModelConfig.js";
+
+const SCRIPTWRITER_PRIMARY_MODEL = getScriptwriterModel();
+const AUDITOR_PRIMARY_MODEL = getAuditorModel();
+
+// Track models that recently threw Quota / Rate-limit (429) errors so we fail-fast immediately (0s delay)
+const modelQuotaBlockedUntil = new Map<string, { blockedUntil: number; reason: string }>();
+
+export function isModelQuotaBlocked(model: string): { blocked: boolean; reason?: string } {
+  const entry = modelQuotaBlockedUntil.get(model);
+  if (!entry) return { blocked: false };
+  if (Date.now() > entry.blockedUntil) {
+    modelQuotaBlockedUntil.delete(model);
+    return { blocked: false };
+  }
+  return { blocked: true, reason: entry.reason };
+}
+
+export function markModelQuotaBlocked(model: string, reason: string, durationMs: number = 30 * 60 * 1000) {
+  modelQuotaBlockedUntil.set(model, { blockedUntil: Date.now() + durationMs, reason });
+}
+
+/** Write/revise screenplay drafts with primary scriptwriter model (Opus 5.5) first, then Gemini 4 Carbon -> Gemini 4 Argon fallback on error. */
+export async function callScriptwriter(
+  systemPrompt: string,
+  userPrompt: string,
+  imageUrl?: string,
+  jsonMode: boolean = false,
+  onModelChange?: (model: string) => void
+): Promise<{ text: string; model: string }> {
+  const prompt = imageUrl
+    ? `${userPrompt}\n\nREFERENCE IMAGE URL (inspect it when accessible): ${imageUrl}`
+    : userPrompt;
+  const primaryModel = getScriptwriterModel();
+
+  if (isAgyEnabled()) {
+    const candidateModels = [
+      primaryModel,
+      GEMINI_CARBON_MODEL,
+      GEMINI_ARGON_MODEL,
+      "gemini-4-argon-medium",
+    ].filter((m, idx, arr) => Boolean(m) && arr.indexOf(m) === idx);
+
+    for (let i = 0; i < candidateModels.length; i++) {
+      const candidate = candidateModels[i];
+      const quotaCheck = isModelQuotaBlocked(candidate);
+      if (quotaCheck.blocked) {
+        const nextCandidate = candidateModels[i + 1];
+        console.warn(
+          `⚡ [PromptGen] ${formatModelDisplayName(candidate)} đang hết Quota (${quotaCheck.reason}) → Bỏ qua chuyển ngay sang ${nextCandidate ? formatModelDisplayName(nextCandidate) : "Bedrock"}!`
+        );
+        continue;
+      }
+
+      try {
+        onModelChange?.(candidate);
+        const text = await callAgy(systemPrompt, prompt, jsonMode, candidate);
+        return { text, model: candidate };
+      } catch (err: any) {
+        const errMsg = String(err?.message || err);
+        const isQuotaError =
+          errMsg.includes("429") ||
+          errMsg.toLowerCase().includes("quota") ||
+          errMsg.includes("RESOURCE_EXHAUSTED");
+        const nextCandidate = candidateModels[i + 1];
+        if (isQuotaError) {
+          console.warn(
+            `⛔ [PromptGen] ${formatModelDisplayName(candidate)} gặp lỗi Quota/Rate-limit → Ghi nhớ 30p và chuyển ngay sang ${nextCandidate ? formatModelDisplayName(nextCandidate) : "Bedrock"}!`
+          );
+          markModelQuotaBlocked(candidate, "Quota reached / 429", 30 * 60 * 1000);
+        } else {
+          console.warn(
+            `⚠️ [PromptGen] ${formatModelDisplayName(candidate)} lỗi (${errMsg}) → Fallback sang ${nextCandidate ? formatModelDisplayName(nextCandidate) : "Bedrock"}...`
+          );
+        }
+      }
+    }
+  }
+  onModelChange?.("bedrock");
+  const text = await callBedrock(systemPrompt, prompt, imageUrl, jsonMode, undefined, true);
+  return { text, model: "bedrock" };
+}
+
+/**
+ * Audit and review screenplay with primary auditor (via AGY)
+ * with robust fallbacks to Gemini 4 Carbon -> Gemini 4 Argon -> Codex Terra -> Zhipu GLM-5.
+ */
+export async function callAuditor(
+  systemPrompt: string,
+  userPrompt: string,
+  jsonMode: boolean = false,
+  imageUrl?: string,
+  onFallback?: (failedModel: string, fallbackModel: string, reason: string) => void
+): Promise<{ text: string; model: string }> {
+  const prompt = imageUrl
+    ? `${userPrompt}\n\nREFERENCE IMAGE URL (inspect it when accessible): ${imageUrl}`
+    : userPrompt;
+  const primaryAuditor = getAuditorModel();
+
+  if (isAgyEnabled()) {
+    // Priority order in AGY: Primary Auditor -> Gemini 4 Carbon -> Gemini 4 Argon Low -> Gemini 4 Argon Medium
+    const candidateAgyModels = [
+      primaryAuditor,
+      GEMINI_CARBON_MODEL,
+      GEMINI_ARGON_MODEL,
+      "gemini-4-argon-medium",
+    ].filter((m, idx, arr) => Boolean(m) && arr.indexOf(m) === idx);
+
+    for (let i = 0; i < candidateAgyModels.length; i++) {
+      const model = candidateAgyModels[i];
+      const quotaCheck = isModelQuotaBlocked(model);
+      if (quotaCheck.blocked) {
+        const nextModel = candidateAgyModels[i + 1];
+        console.warn(
+          `⚡ [Auditor] ${formatModelDisplayName(model)} đang hết Quota (${quotaCheck.reason}) → Chuyển ngay sang ${nextModel ? formatModelDisplayName(nextModel) : "Codex/GLM-5"}!`
+        );
+        if (nextModel) {
+          onFallback?.(formatModelDisplayName(model), formatModelDisplayName(nextModel), quotaCheck.reason || "Quota blocked");
+        }
+        continue;
+      }
+
+      const lowerModel = model.toLowerCase();
+      const isArgon = lowerModel.includes("argon");
+      const isCarbon = lowerModel.includes("carbon");
+      const modelTimeout = isCarbon
+        ? Number(process.env.CARBON_TIMEOUT_MS || 270_000)
+        : isArgon
+        ? Number(process.env.ARGON_TIMEOUT_MS || 240_000)
+        : Number(process.env.AGY_TIMEOUT_MS || 240_000);
+
+      try {
+        console.log(`🧐 [Auditor] AI 2 (${formatModelDisplayName(model)}) reviewing script (timeout: ${Math.round(modelTimeout / 1000)}s)...`);
+        const text = await callAgy(systemPrompt, prompt, jsonMode, model, modelTimeout);
+        return { text, model };
+      } catch (err: any) {
+        const errMsg = String(err?.message || err);
+        const isQuotaError =
+          errMsg.includes("429") ||
+          errMsg.toLowerCase().includes("quota") ||
+          errMsg.includes("RESOURCE_EXHAUSTED");
+        console.warn(`⚠️ [Auditor] ${formatModelDisplayName(model)} error: ${errMsg}`);
+
+        if (isQuotaError) {
+          markModelQuotaBlocked(model, "Quota reached / 429", 30 * 60 * 1000);
+        } else if ((isArgon || isCarbon) && i === 0) {
+          // Transient glitch retry once for primary model when NOT quota-blocked
+          try {
+            console.log(`🔄 [Auditor] Retrying AI 2 (${formatModelDisplayName(model)}) once more after transient failure...`);
+            await new Promise(r => setTimeout(r, 2000));
+            const retryText = await callAgy(systemPrompt, prompt, jsonMode, model, modelTimeout);
+            return { text: retryText, model };
+          } catch (retryErr: any) {
+            console.warn(`⚠️ [Auditor] Retry ${formatModelDisplayName(model)} also failed: ${retryErr?.message || retryErr}`);
+          }
+        }
+
+        const nextModel = candidateAgyModels[i + 1];
+        if (nextModel) {
+          console.warn(`⚠️ [Auditor] ${formatModelDisplayName(model)} failed; trying ${formatModelDisplayName(nextModel)}...`);
+          onFallback?.(
+            formatModelDisplayName(model),
+            formatModelDisplayName(nextModel),
+            errMsg
+          );
+        } else {
+          console.warn(`⚠️ [Auditor] All AGY Gemini (Carbon/Argon) models failed (${errMsg}). Falling back to Codex/GLM-5...`);
+        }
+      }
+    }
+  }
+
+  if (isCodexEnabled()) {
+    try {
+      console.log(`🧐 [Auditor] Falling back to Codex Terra (${formatModelDisplayName(CODEX_TERRA_MODEL)})...`);
+      onFallback?.(
+        formatModelDisplayName(primaryAuditor),
+        formatModelDisplayName(CODEX_TERRA_MODEL),
+        "AGY unavailable or rate-limited"
+      );
+      const text = await callCodexTerra(systemPrompt, prompt, jsonMode);
+      return { text, model: CODEX_TERRA_MODEL };
+    } catch (codexErr: any) {
+      console.warn(`⚠️ [Auditor] Codex Terra failed (${codexErr?.message || codexErr}). Falling back to Bedrock GLM-5...`);
+    }
+  }
+
+  onFallback?.(
+    formatModelDisplayName(primaryAuditor),
+    "Zhipu AI GLM-5",
+    "Falling back to Bedrock"
+  );
+  const text = await callBedrock(systemPrompt, userPrompt, imageUrl, jsonMode, "zai.glm-5");
+  return { text, model: "zai.glm-5" };
+}
 
 /**
  * Shared contract between prompt generation, Veo and videoDubbingService.
@@ -38,23 +240,13 @@ import { CODEX_MODEL, callCodexSol, isCodexEnabled } from "./codexClient.js";
  */
 function dubbingTimelineRules(sceneCount: number): string {
   return `
-8. MACHINE-READABLE DUBBING & LIP-SYNC TIMELINE (MANDATORY — CRITICAL GATE):
-- Every prompt1..prompt${sceneCount} describes exactly one scene of AT MOST 10.0 seconds and MUST contain an explicit DUB_TIMELINE block.
-- Scene length is CONTENT-DRIVEN (typically 4-9s): the timeline ENDS right after the last spoken line or key action plus a short (0.4-0.8s) closed-mouth reaction beat. NEVER pad the scene with idle waiting, empty staring or meaningless silence just to reach 10s.
-- Every spoken line in dialogueN MUST have exactly one matching interval in promptN, in the same order and with the exact same speaker name.
-- Use this exact parseable grammar for every interval: "X.X-Y.Ys, CharacterName says the line with precise Vietnamese lip-sync."
-- Use ASCII hyphen '-' and the trailing lowercase 's'; timestamps are relative to that scene, never global.
-- Spoken intervals must remain inside 0.4-9.4s, must never overlap, and must have at least 0.25s of silence between speakers.
-- Allocate realistic duration from the actual Vietnamese line length at 2.5-3.5 words/second. Never squeeze a long sentence into a short mouth-motion window.
-- Keep each scene to 1-3 short spoken lines. Prefer at most 12 Vietnamese words per line and at most 24 spoken words per scene.
-- Explicitly describe all remaining ranges as "no dialogue; both mouths closed". Do not let laughter, gasps, or idle mouth motion overlap speech.
-- During a spoken interval, ONLY the named speaker may move their mouth; every listener keeps a naturally closed, still mouth.
-- Each speaking face must be visible and unobstructed in a stable medium/close shot for its complete interval; avoid cuts, profile occlusion, or objects covering the muzzle/lips.
-- End every spoken interval with a definite closed-mouth pose before the next silent gap.
-- dialogueN remains plain newline-separated Vietnamese in the exact format: CharacterName: "Exact spoken text". Do not put timestamps inside dialogueN.
-
-Required example inside every visual prompt:
-DUB_TIMELINE: 0.0-0.6s, no dialogue; both mouths closed. 0.6-3.2s, Character A says the first line with precise Vietnamese lip-sync; only Character A's mouth moves while Character B listens with mouth closed. 3.2-3.6s, no dialogue; both mouths closed. 3.6-6.0s, Character B says the second line with precise Vietnamese lip-sync; only Character B's mouth moves while Character A listens with mouth closed. 6.0-6.7s, no dialogue; both mouths closed, scene ends.
+DUB_TIMELINE (end of every prompt1..prompt${sceneCount}):
+- One line, scene-relative, 3-10s, starting with a 0.3s visual entry settle ("0.0-0.3s, no dialogue; ...") and ending with a 0.4s visual exit settle so cuts between scenes transition smoothly without abrupt jumps.
+- Pacing should fit the natural context of each scene: keep dialogue transitions lively and engaging (typically ~0.2-0.4s gap for snappy conversation, or a natural 0.5-1.0s beat when a physical action happens first).
+- SOLO vs MULTI-CHARACTER BLOCKING:
+  * When 2+ characters are on screen: Speaker and Listener(s) turn their bodies, shoulders, and heads toward each other at a 3/4 inward angle with locked eye contact ("X.X-Y.Ys, Name turns toward Listener at a 3/4 inward angle with direct eye contact and speaks line N in Vietnamese (\\"exact Vietnamese dialogue line\\") with expressive acting and precise lip-sync; only Name's mouth moves while Listener faces Name attentively with mouth closed.").
+  * When ONLY 1 character is on screen (solo scene): NEVER mention "listener" or "all listeners"! Write: "X.X-Y.Ys, Name (solo in frame, angled 3/4 to camera) speaks line N in Vietnamese (\\"exact Vietnamese dialogue line\\") with expressive acting and precise lip-sync."
+- Each dialogue line maps to one interval in order, same speaker, no overlaps, only the speaker's mouth moves.
 `;
 }
 
@@ -99,7 +291,9 @@ export function validateDubbingTimelineStructure(
 
     const dialogueLines = dialogue.split("\n").map(line => line.trim()).filter(Boolean);
     const spokenIntervals = intervals.filter(({ desc }) =>
-      !/no dialogue|dialogue[- ]free|mouths? closed/i.test(desc)
+      // A spoken interval legitimately says that listeners keep their mouths
+      // closed. Only an interval explicitly declared as no-dialogue is silent.
+      !/^\s*(?:no dialogue|dialogue[- ]free)\b/i.test(desc)
       && /\b(says?|speaks?|delivers?|asks?|line|question|lip-sync)\b/i.test(desc)
     );
     if (spokenIntervals.length !== dialogueLines.length) {
@@ -110,10 +304,10 @@ export function validateDubbingTimelineStructure(
 }
 
 /**
- * Automatically repairs or synthesizes a structurally valid DUB_TIMELINE block
- * for a 10.0-second scene based on dialogue turns, preventing endless debate rejections.
+ * Repairs/synthesizes a content-driven DUB_TIMELINE. The scene ends shortly
+ * after its final line instead of being padded to 10 seconds.
  */
-export function autoRepairDubbingTimeline(prompt: string, dialogue: string): string {
+export function autoRepairDubbingTimeline(prompt: string, dialogue: string, characterBible?: string): string {
   const dialogueLines = (dialogue || "").split("\n").map(l => l.trim()).filter(Boolean);
   const speakers: string[] = [];
   for (const line of dialogueLines) {
@@ -121,39 +315,70 @@ export function autoRepairDubbingTimeline(prompt: string, dialogue: string): str
     speakers.push(m ? m[1].trim() : "Character");
   }
 
-  let timelineBlock = "";
-  if (speakers.length === 0) {
-    timelineBlock = "DUB_TIMELINE: 0.0-10.0s, no dialogue; both mouths closed.";
-  } else if (speakers.length === 1) {
-    timelineBlock = `DUB_TIMELINE: 0.0-1.0s, no dialogue; both mouths closed. 1.0-6.5s, ${speakers[0]} says the line with precise Vietnamese lip-sync. 6.5-10.0s, no dialogue; both mouths closed.`;
-  } else if (speakers.length === 2) {
-    const s1 = speakers[0];
-    const s2 = speakers[1];
-    timelineBlock = `DUB_TIMELINE: 0.0-0.8s, no dialogue; both mouths closed. 0.8-4.2s, ${s1} says the first line with precise Vietnamese lip-sync; only ${s1}'s mouth moves while ${s2} listens with mouth closed. 4.2-4.8s, no dialogue; both mouths closed. 4.8-8.2s, ${s2} says the second line with precise Vietnamese lip-sync; only ${s2}'s mouth moves while ${s1} listens with mouth closed. 8.2-10.0s, no dialogue; both mouths closed.`;
-  } else {
-    // 3 or more lines: distribute evenly within 0.5s - 9.5s
-    const totalDuration = 9.0;
-    const startOffset = 0.5;
-    const gap = 0.3;
-    const availableForSpeech = totalDuration - (speakers.length - 1) * gap;
-    const slotDuration = Math.max(1.5, availableForSpeech / speakers.length);
-
-    const parts: string[] = [`0.0-${startOffset.toFixed(1)}s, no dialogue; both mouths closed.`];
-    let cur = startOffset;
-    for (let i = 0; i < speakers.length; i++) {
-      const spk = speakers[i];
-      const end = Math.min(9.5, cur + slotDuration);
-      parts.push(`${cur.toFixed(1)}-${end.toFixed(1)}s, ${spk} says the line with precise Vietnamese lip-sync.`);
-      cur = end;
-      if (i < speakers.length - 1) {
-        const gapEnd = Math.min(9.8, cur + gap);
-        parts.push(`${cur.toFixed(1)}-${gapEnd.toFixed(1)}s, no dialogue; both mouths closed.`);
-        cur = gapEnd;
+  // Also detect silent on-screen characters mentioned in the prompt from characterBible
+  const bodyWithoutTimeline = prompt.replace(/DUB_TIMELINE\s*:[\s\S]*$/i, "").trim();
+  const knownCharacters = new Set<string>(speakers.filter(s => s !== "Character"));
+  if (characterBible) {
+    for (const rawLine of characterBible.split("\n")) {
+      const m = rawLine.replace(/^[-*•\d.)\s]+/, "").match(/^([^:—–-]+)\s*[:—–-]/);
+      if (m) {
+        const candidateName = m[1].trim();
+        if (candidateName && candidateName.length <= 35 && bodyWithoutTimeline.toLowerCase().includes(candidateName.toLowerCase())) {
+          knownCharacters.add(candidateName);
+        }
       }
     }
-    if (cur < 10.0) {
-      parts.push(`${cur.toFixed(1)}-10.0s, no dialogue; both mouths closed.`);
+  }
+
+  let timelineBlock = "";
+  if (speakers.length === 0) {
+    timelineBlock = "DUB_TIMELINE: 0.0-3.0s, no dialogue; all mouths closed; complete the scripted action and end scene.";
+  } else {
+    const spokenTexts = dialogueLines.map(line => {
+      const quoted = line.match(/["“]([\s\S]*?)["”]\s*$/);
+      return (quoted?.[1] || line.replace(/^[^:]+:\s*/, "")).trim();
+    });
+    const idealDurations = spokenTexts.map(text => {
+      const words = text.split(/\s+/).filter(Boolean).length;
+      return Math.max(1.1, Math.min(4.2, words / 3));
+    });
+    const initial = 0.3;
+    const gap = 0.2;
+    const tail = 0.4;
+    const fixed = initial + gap * Math.max(0, speakers.length - 1) + tail;
+    const available = 10 - fixed;
+    const idealTotal = idealDurations.reduce((sum, value) => sum + value, 0);
+    const scale = idealTotal > available ? available / idealTotal : 1;
+
+    const explicitSolo = /\b(only person in frame|solo scene|solo in frame|alone in frame|stands alone)\b/i.test(bodyWithoutTimeline);
+    const isSoloScene = explicitSolo || (knownCharacters.size <= 1 && new Set(speakers.map(s => s.toLowerCase())).size <= 1);
+
+    const parts: string[] = [
+      isSoloScene
+        ? `0.0-${initial.toFixed(1)}s, no dialogue; mouth closed.`
+        : `0.0-${initial.toFixed(1)}s, no dialogue; all mouths closed.`
+    ];
+    let cur = initial;
+    for (let i = 0; i < speakers.length; i++) {
+      const end = cur + idealDurations[i] * scale;
+      const otherCharacters = Array.from(knownCharacters).filter(
+        (c) => c.toLowerCase() !== speakers[i].toLowerCase()
+      );
+      const inlineLineText = spokenTexts[i].replace(/"/g, "'").replace(/(\d+)\s*-\s*(\d+)s/gi, "$1 to $2 seconds");
+      if (isSoloScene || otherCharacters.length === 0) {
+        parts.push(`${cur.toFixed(1)}-${end.toFixed(1)}s, ${speakers[i]} (angled 3/4 to camera) speaks line ${i + 1} in Vietnamese ("${inlineLineText}") with expressive acting and precise lip-sync.`);
+      } else {
+        const listeners = otherCharacters.join(" and ");
+        parts.push(`${cur.toFixed(1)}-${end.toFixed(1)}s, ${speakers[i]} turns toward ${listeners} at a 3/4 inward angle with direct eye contact and speaks line ${i + 1} in Vietnamese ("${inlineLineText}") with expressive acting and precise lip-sync; only ${speakers[i]}'s mouth moves while ${listeners} face ${speakers[i]} attentively with mouths closed.`);
+      }
+      cur = end;
+      if (i < speakers.length - 1) {
+        parts.push(`${cur.toFixed(1)}-${(cur + gap).toFixed(1)}s, no dialogue; ${isSoloScene ? "mouth closed." : "all mouths closed."}`);
+        cur += gap;
+      }
     }
+    const sceneEnd = Math.min(10, Math.max(3, cur + tail));
+    parts.push(`${cur.toFixed(1)}-${sceneEnd.toFixed(1)}s, no dialogue; ${isSoloScene ? "mouth closed" : "all mouths closed"}; scene settles smoothly.`);
     timelineBlock = `DUB_TIMELINE: ${parts.join(" ")}`;
   }
 
@@ -165,23 +390,92 @@ export function autoRepairDubbingTimeline(prompt: string, dialogue: string): str
   }
 }
 
-/** Each scene is rendered independently, so repeat the same approved identity anchor. */
+/**
+ * Injects ultra-compact character outfit/trait anchors from character_bible into individual scene prompts
+ * ONLY when an on-screen character is named without their core visual look, while strictly respecting the ~235-word budget
+ * so isolated Veo 3 tabs never lose character costumes or props!
+ */
+export function stripCastLockTag(prompt: string): string {
+  if (!prompt || typeof prompt !== "string") return "";
+  return prompt
+    .replace(/\s*Cast Lock:\s*[^\n]+?(?=\s*(?:\n\s*DUB_TIMELINE\s*:|\bDUB_TIMELINE\s*:|$))/gi, "")
+    .trim();
+}
+
 export function attachCharacterBibleToScenes(
   promptsObj: Record<string, string>,
   characterBible: string,
   sceneCount: number
 ): Record<string, string> {
-  const bible = characterBible.trim();
-  if (!bible) return promptsObj;
+  const bible = (characterBible || "").trim();
   const anchored = { ...promptsObj };
+  if (!bible) return anchored;
+
   anchored.character_bible = bible;
-  for (let scene = 1; scene <= sceneCount; scene++) {
-    const key = `prompt${scene}`;
-    const prompt = anchored[key]?.trim();
-    if (!prompt) continue;
-    if (prompt.startsWith("CHARACTER BIBLE — SAME CAST IN EVERY SCENE:")) continue;
-    anchored[key] = `CHARACTER BIBLE — SAME CAST IN EVERY SCENE:\n${bible}\n\nCONTINUITY: Treat this bible as immutable; if the original reference depicts these characters, preserve their visual identity too. Keep each character's face, chibi proportions, uniform, fixed accessories and assigned props identical. Only the action, gaze, mouth movement and explicitly scripted emotion may change; carry any changed prop state into the next scene.\n\n${prompt}`;
+
+  // Parse "Name: compact trait summary" entries from character_bible
+  const entries: Array<{ name: string; compactTrait: string }> = [];
+  for (const rawLine of bible.split("\n")) {
+    const cleaned = rawLine.replace(/^[-*•\d.)\s]+/, "").trim();
+    if (!cleaned || /^\[?CHARACTER_BIBLE\]?$/i.test(cleaned)) continue;
+    const m = cleaned.match(/^([^:—–-]+)\s*[:—–-]\s*(.+)$/);
+    if (!m) continue;
+    const name = m[1].trim();
+    const descWords = m[2].trim().replace(/\s+/g, " ").split(" ");
+    // Keep at most 14 words per character so it stays razor-sharp and under word limits
+    const compactTrait = descWords.slice(0, 14).join(" ").replace(/[.;,]+$/, "");
+    if (name && name.length <= 32 && compactTrait.length >= 6) {
+      entries.push({ name, compactTrait });
+    }
   }
+  if (entries.length === 0) return anchored;
+
+  for (let s = 1; s <= sceneCount; s++) {
+    const key = `prompt${s}`;
+    const originalRaw = anchored[key];
+    if (!originalRaw || typeof originalRaw !== "string") continue;
+
+    // Always strip any stale Cast Lock from earlier drafts so old outfits/roles never linger
+    const rawPrompt = stripCastLockTag(originalRaw);
+    anchored[key] = rawPrompt;
+
+    const wordCount = rawPrompt.trim().split(/\s+/).length;
+    if (wordCount >= 235) continue; // Already detailed enough; don't push near the 260-word validator cap
+
+    const [bodyPart, dubPart] = rawPrompt.split(/\bDUB_TIMELINE\s*:/i);
+    const bodyLower = bodyPart.toLowerCase();
+
+    const missingAnchors: string[] = [];
+    for (const entry of entries) {
+      const nameLower = entry.name.toLowerCase();
+      const nameIdx = bodyLower.indexOf(nameLower);
+      if (nameIdx === -1) continue;
+
+      // If the scene prompt already explicitly describes this character's outfit/look right around their name,
+      // respect the scene's own description 100% instead of overriding it with Cast Lock!
+      const localWindow = bodyLower.slice(Math.max(0, nameIdx - 40), Math.min(bodyLower.length, nameIdx + nameLower.length + 180));
+      const alreadyHasExplicitLook = /\b(wearing|dressed\s+in|in\s+a\s+[a-z-]+\s+(?:shirt|coat|jacket|dress|suit|robe|tunic|uniform|jersey|gown|vest|blouse|hoodie|sweater|t-shirt|apron|ao\s+dai|ao\s+ba\s+ba))\b/i.test(localWindow);
+      if (alreadyHasExplicitLook) continue;
+
+      // Check if at least 2 distinctive words (>=5 chars) from compactTrait are already in bodyPart
+      const keywords = entry.compactTrait
+        .toLowerCase()
+        .split(/[^a-z0-9à-ỹ]+/i)
+        .filter((w) => w.length >= 5 && !["woman", "young", "adult", "vietnamese", "wearing", "person", "actor"].includes(w));
+      const hits = keywords.filter((kw) => bodyLower.includes(kw)).length;
+      if (hits < 2) {
+        missingAnchors.push(`${entry.name} (${entry.compactTrait})`);
+      }
+    }
+
+    if (missingAnchors.length > 0) {
+      const castLockLine = `Cast Lock: ${missingAnchors.slice(0, 2).join("; ")}.`;
+      anchored[key] = dubPart !== undefined
+        ? `${bodyPart.trim()} ${castLockLine}\nDUB_TIMELINE: ${dubPart.trim()}`
+        : `${bodyPart.trim()} ${castLockLine}`;
+    }
+  }
+
   return anchored;
 }
 
@@ -196,24 +490,54 @@ export interface AiDebateMessage {
 }
 
 export type ConsensusProgressEvent = 
-  | { type: "heartbeat"; elapsedSec: number; currentRound?: number; stage?: string }
+  | { type: "heartbeat"; elapsedSec: number; currentRound?: number; stage?: string; ai2_name?: string; message?: string }
   | { type: "round_start"; round: number }
   | { type: "user_feedback"; round: number; feedback: string; message: AiDebateMessage }
-  | { type: "ai1_start"; round: number }
-  | { type: "ai1_done"; round: number; message: AiDebateMessage }
-  | { type: "ai2_start"; round: number }
+  | { type: "ai1_start"; round: number; message?: string; agent?: string }
+  | { type: "ai1_done"; round: number; message: AiDebateMessage; prompts_obj?: any }
+  | { type: "ai2_start"; round: number; message?: string; agent?: string; ai2_name?: string }
+  | { type: "ai2_fallback"; round?: number; stage?: string; ai2_name: string; message: string; elapsedSec?: number }
   | { type: "ai2_done"; round: number; percentage: number; reached: boolean; message: AiDebateMessage }
+  | { type: "preflight_start"; total_scenes?: number; message?: string }
+  | { type: "validating_scene"; scene_index?: number; attempt?: number; max_attempts?: number; prompt?: string; message?: string }
+  | { type: "scene_issues_found"; scene_index?: number; attempt?: number; max_attempts?: number; issues?: any[]; technical_issues?: string[]; suggested_prompt?: string; message?: string }
+  | { type: "scene_passed"; scene_index?: number; attempt?: number; max_attempts?: number; prompt?: string; message?: string }
+  | { type: "preflight_passed"; repaired_count?: number; total_scenes?: number; message?: string }
+  | { type: "prompt_validation_error"; scene_index?: number; attempt?: number; max_attempts?: number; issues?: any[]; technical_issues?: string[]; error: string; prompt?: string; message?: string; failed_scene?: any; result?: any }
   | { type: "complete"; result: AiConsensusResult }
-  | { type: "error"; error: string };
+  | { type: "error"; error: string; code?: string; issues?: any[] };
 
 export type ConsensusProgressCallback = (event: ConsensusProgressEvent) => void;
 
 export interface ActiveDebateSession {
   sessionId: string;
   pendingFeedbacks: string[];
+  aborted?: boolean;
 }
 
 export const activeDebateSessions = new Map<string, ActiveDebateSession>();
+let lastAiAbortTimestamp = 0;
+
+export function isAiTaskAborted(taskStartTime: number, sessionId?: string): boolean {
+  if (lastAiAbortTimestamp > 0 && taskStartTime <= lastAiAbortTimestamp) {
+    return true;
+  }
+  if (sessionId && activeDebateSessions.get(sessionId)?.aborted) {
+    return true;
+  }
+  return false;
+}
+
+export function abortAllActiveAiTasks(sessionId?: string): void {
+  lastAiAbortTimestamp = Date.now();
+  if (sessionId && activeDebateSessions.has(sessionId)) {
+    activeDebateSessions.get(sessionId)!.aborted = true;
+  }
+  for (const sess of activeDebateSessions.values()) {
+    sess.aborted = true;
+  }
+  console.log(`⛔ [PromptGen] Aborted active AI debate/revision tasks.`);
+}
 
 export function registerDebateSession(sessionId: string): ActiveDebateSession {
   const existing = activeDebateSessions.get(sessionId);
@@ -239,22 +563,27 @@ export function sendSessionFeedback(sessionId: string, feedback: string): boolea
  */
 export function cleanProductDescription(raw?: string): string {
   if (!raw) return "";
-  let text = raw.trim();
+  const text = raw.trim();
   if (text.startsWith("{") && text.endsWith("}")) {
     try {
       const parsed = JSON.parse(text);
-      if (parsed.prompt1) {
-        const p1 = String(parsed.prompt1);
-        const bibleMatch = p1.match(/CHARACTER BIBLE[\s\S]*?(?=\n\n(?:GLOBAL RULES|SCENE|$))/i);
-        if (bibleMatch) {
-          return bibleMatch[0].trim();
+      if (parsed && typeof parsed === "object") {
+        const parts: string[] = [];
+        if (parsed.story_title) parts.push(`Title: ${parsed.story_title}`);
+        if (parsed.description) parts.push(String(parsed.description));
+        if (parsed.character_bible) parts.push(`CHARACTER BIBLE:\n${parsed.character_bible}`);
+        const dlgLines: string[] = [];
+        for (let i = 1; i <= 25; i++) {
+          if (parsed[`dialogue${i}`]) dlgLines.push(`Scene ${i}: ${parsed[`dialogue${i}`]}`);
+          else if (parsed[`prompt${i}`]) dlgLines.push(`Scene ${i}: ${String(parsed[`prompt${i}`]).slice(0, 220)}`);
         }
-        return p1.slice(0, 1500).trim();
+        if (dlgLines.length > 0) parts.push(dlgLines.join("\n"));
+        if (parts.length > 0) return parts.join("\n\n").slice(0, 4000).trim();
       }
     } catch {}
   }
-  if (text.length > 3000) {
-    return text.slice(0, 3000) + "...";
+  if (text.length > 4000) {
+    return text.slice(0, 4000) + "...";
   }
   return text;
 }
@@ -273,23 +602,37 @@ export async function callBedrock(
   userPrompt: string,
   imageUrl?: string,
   jsonMode: boolean = false,
-  preferredModel?: string
+  preferredModel?: string,
+  skipAgy: boolean = false
 ): Promise<string> {
   const isGlmAudit = preferredModel?.toLowerCase().includes("glm");
 
-  // AGY Gemini 3.8 is the primary text intelligence provider. GLM-5 remains
-  // deliberately separate when requested as the independent prompt auditor.
-  if (!isGlmAudit && isAgyEnabled()) {
-    try {
-      console.log(`✨ [AGY] Trying primary model ${AGY_DEFAULT_MODEL}...`);
-      const agyUserPrompt = imageUrl
-        ? `${userPrompt}\n\nREFERENCE IMAGE URL (inspect it when accessible): ${imageUrl}`
-        : userPrompt;
-      const result = await callAgy(systemPrompt, agyUserPrompt, jsonMode);
-      console.log(`✅ [AGY] Model ${AGY_DEFAULT_MODEL} responded successfully!`);
-      return result;
-    } catch (err: any) {
-      console.warn(`⚠️ [AGY] Primary call failed (${err.message}). Falling back to Bedrock...`);
+  // AGY Gemini is the primary text intelligence provider (Carbon -> Argon fallback).
+  // GLM-5 remains deliberately separate when requested as the independent prompt auditor.
+  if (!isGlmAudit && !skipAgy && isAgyEnabled()) {
+    const agyUserPrompt = imageUrl
+      ? `${userPrompt}\n\nREFERENCE IMAGE URL (inspect it when accessible): ${imageUrl}`
+      : userPrompt;
+    const agyCandidates = [
+      AGY_DEFAULT_MODEL,
+      GEMINI_CARBON_MODEL,
+      GEMINI_ARGON_MODEL,
+    ].filter((m, idx, arr) => Boolean(m) && arr.indexOf(m) === idx);
+
+    for (const candidate of agyCandidates) {
+      if (isModelQuotaBlocked(candidate).blocked) continue;
+      try {
+        console.log(`✨ [AGY] Trying model ${formatModelDisplayName(candidate)} (${candidate})...`);
+        const result = await callAgy(systemPrompt, agyUserPrompt, jsonMode, candidate);
+        console.log(`✅ [AGY] Model ${formatModelDisplayName(candidate)} responded successfully!`);
+        return result;
+      } catch (err: any) {
+        const errMsg = String(err?.message || err);
+        if (errMsg.includes("429") || errMsg.toLowerCase().includes("quota") || errMsg.includes("RESOURCE_EXHAUSTED")) {
+          markModelQuotaBlocked(candidate, "Quota reached / 429", 30 * 60 * 1000);
+        }
+        console.warn(`⚠️ [AGY] Model ${candidate} failed (${errMsg}). Trying next fallback...`);
+      }
     }
   }
 
@@ -473,21 +816,25 @@ Category: ${category}`;
 2. Build a scene description detailing: the subject (the product with its key variants/colors/materials from description), the environment/background, lighting style, camera angle, and camera motion.
 3. Keep it within 1 to 3 concise, visually descriptive sentences in pure English. Do not include introductory text, conversational remarks, or explanations.`;
 
-    const agyDraft = await callBedrock(SYSTEM_PROMPT, userMessage, imageUrl, false);
+    const scriptDraft = await callScriptwriter(SYSTEM_PROMPT, userMessage, imageUrl);
+    const draft = scriptDraft.text;
     try {
-      const auditSystemPrompt = `You are GLM-5, an independent senior Google Veo prompt auditor.
+      const auditorName = formatModelDisplayName(getAuditorModel());
+      const auditSystemPrompt = `You are ${auditorName}, an independent senior Google Veo prompt auditor.
 Check the draft for fidelity to the supplied product, fluent English, cinematic specificity, camera feasibility, and the requested 1-3 sentence length.
 Silently correct every issue you find. Output only the final validated English Veo prompt, with no score, label, explanation, or Markdown.`;
       const auditUserPrompt = `PRODUCT: "${productName}"
 CATEGORY: ${category}
 ${productDescription ? `PRODUCT DETAILS: ${productDescription}` : ""}
 
-AGY GEMINI 3.8 DRAFT:
-${agyDraft}`;
-      return await callBedrock(auditSystemPrompt, auditUserPrompt, imageUrl, false, "zai.glm-5");
+DRAFT:
+${draft}`;
+
+      const audited = await callAuditor(auditSystemPrompt, auditUserPrompt, false, imageUrl);
+      return audited.text;
     } catch (auditErr: any) {
-      console.warn(`⚠️ [PromptGen] GLM-5 audit failed; returning AGY draft: ${auditErr.message}`);
-      return agyDraft;
+      console.warn(`⚠️ [PromptGen] Audit failed; returning draft: ${auditErr.message}`);
+      return draft;
     }
   } catch (err: any) {
     console.error(`❌ [PromptGen] Bedrock API error: ${err.message}`);
@@ -683,7 +1030,7 @@ const SPECIES_REGISTRY: SpeciesEntry[] = [
     negatives: ["cat", "rabbit", "rat"]
   },
   {
-    pattern: /cá(?!o|\s*sấu)|fish|cá vàng|goldfish|cá heo|dolphin/i,
+    pattern: /(?<=^|[^\p{L}\p{N}])(?:cá(?!\s*sấu|o)|cá vàng|cá heo|fish|goldfish|dolphin)(?=[^\p{L}\p{N}]|$)/iu,
     viName: "CÁ",
     enName: "FISH / GOLDFISH",
     enPlural: "fish",
@@ -789,108 +1136,11 @@ const SPECIES_REGISTRY: SpeciesEntry[] = [
 ];
 
 /**
- * Automatically inspects the product/story title to rigidly lock species and characters,
- * preventing AI from hallucinating or confusing animals (e.g. turtles vs rabbits, bears vs cats).
- *
- * Supports 25+ animal species in both Vietnamese and English.
- * When multiple species are detected (e.g. "Rùa và Thỏ"), generates a multi-species lock
- * that rigidly distinguishes each character and prohibits species confusion.
+ * Optional helper for character style hints.
+ * Rigid automatic species locking is disabled to prevent hallucinating unwanted animal constraints.
  */
-export function detectCharacterAndSpeciesFromTitle(title: string): string {
-  const t = (title || "").toLowerCase();
-
-  // ── Bears (generic chibi bear species lock — no hardcoded character names) ──
-  if (/gấu|bear|gấu nâu|gấu trắng/i.test(t) && !/gấu trúc|panda/i.test(t)) {
-    return `🚨 SUPREME MANDATE - TITLE CHARACTER & SPECIES LOCK (KHÓA LOÀI GẤU CHIBI 100%):
-- The story features CHIBI 3D BEAR characters as adorable baby toddler plush dolls.
-- MANDATORY CHIBI ANATOMY (ANTI-AGING & ANTI-REALISM):
-  * Head-to-body ratio: 1:1 or 1:1.5 toddler proportions. Oversized balloon-like spherical head ≈ 65%-70% of total height, tiny chubby pear-shaped body, very short stubby limbs without fingers or claws.
-  * FLAT KAWAII FACE: Face MUST be completely smooth and flat like a plush toy or kawaii emoji. ABSOLUTELY NO protruding snout, NO animal muzzle, NO nose bridge, NO animal jaw division.
-  * EYES & EYEBROWS: Two small simple glossy black bead/button eyes set wide apart with tiny white specular sparkle. Two delicate raised curved eyebrow lines set high on the forehead for an innocent, sweet baby look.
-  * FUR TEXTURE: Smooth velvety plush felt / velour toy skin with soft warm subsurface scattering glow, NOT coarse, stringy, or realistic wild bear fur.
-- STRICT IDENTITY LOCK: Each bear character must have its own distinct fur color, markings, and fixed accessories that remain identical in every scene.
-- STRICT NEGATIVE: ABSOLUTELY NO realistic bear muzzle, NO protruding snout, NO animal nostrils, NO realistic animal teeth or claws, NO mature or adult facial features, NO tall humanoid proportions, NO cats, NO dogs, NO other animals!`;
-  }
-
-  // ── Special case: Bé Meow (cat) ──
-  if (/mèo|meow|cat|bé meo/i.test(t) && !/cú mèo|gấu mèo/i.test(t)) {
-    return `🚨 SUPREME MANDATE - TITLE CHARACTER & SPECIES LOCK (KHÓA LOÀI MÈO 100%):
-- The title explicitly specifies CATS (MÈO / Bé Meow).
-- MANDATORY: Characters MUST be 100% domestic CHIBI KITTENS / CATS with pointed ears, whiskers, and slit-pupil eyes.
-- STRICT IDENTITY LOCK: Each cat character must have its own distinct fur color, pattern, and fixed accessories that remain identical in every scene.
-- ABSOLUTE PROHIBITION: DO NOT make them bears (gấu), dogs (chó), rabbits (thỏ), or any other species!`;
-  }
-
-  // ── Special case: Vàng Xám / Sếp Shiba (dogs) ──
-  if (/chó|cún|shiba|dog|puppy|xám/i.test(t) && !/chó sói/i.test(t)) {
-    return `🚨 SUPREME MANDATE - TITLE CHARACTER & SPECIES LOCK (KHÓA LOÀI CHÓ/CÚN 100%):
-- The title explicitly specifies DOGS/PUPPIES (CHÓ / CÚN - Vàng Xám, Sếp Shiba).
-- MANDATORY: Characters MUST be 100% CHIBI PUPPIES / DOGS with floppy/pointed ears, wagging tails, and wet nose.
-- STRICT IDENTITY LOCK: Each dog character must have its own distinct breed appearance, fur color, and fixed accessories that remain identical in every scene.
-- ABSOLUTE PROHIBITION: DO NOT make them cats (mèo), bears (gấu), or any other species!`;
-  }
-
-  // ── General multi-species detection from registry ──
-  const matchedSpecies: SpeciesEntry[] = [];
-  for (const entry of SPECIES_REGISTRY) {
-    if (entry.pattern.test(t)) {
-      matchedSpecies.push(entry);
-    }
-  }
-
-  if (matchedSpecies.length === 0) {
-    return "";
-  }
-
-  // ── Build a comprehensive species lock for all detected animals ──
-  const speciesNames = matchedSpecies.map(s => `${s.viName} (${s.enName})`).join(" & ");
-  const allNegatives = new Set<string>();
-  for (const s of matchedSpecies) {
-    for (const neg of s.negatives) {
-      // Don't add a negative that conflicts with another matched species
-      const isMatchedSpecies = matchedSpecies.some(ms =>
-        ms.enName.toLowerCase().includes(neg.toLowerCase()) ||
-        ms.enPlural.toLowerCase().includes(neg.toLowerCase())
-      );
-      if (!isMatchedSpecies) {
-        allNegatives.add(neg);
-      }
-    }
-  }
-
-  let directive = `🚨 SUPREME MANDATE - TITLE CHARACTER & SPECIES LOCK (KHÓA LOÀI ${speciesNames} 100%):\n`;
-  directive += `- The title explicitly specifies these character species: ${speciesNames}.\n`;
-
-  if (matchedSpecies.length >= 2) {
-    directive += `\n⚠️ CRITICAL MULTI-SPECIES DISTINCTION RULES (PHÂN BIỆT RÕ RÀNG TỪNG LOÀI):\n`;
-    directive += `- This story has MULTIPLE DIFFERENT animal species. Each species MUST remain 100% visually distinct and NEVER morph into another!\n`;
-    for (let i = 0; i < matchedSpecies.length; i++) {
-      const s = matchedSpecies[i];
-      directive += `\n  CHARACTER TYPE ${i + 1} — ${s.viName} (${s.enName}):\n`;
-      directive += `  * MUST be ${s.description}.\n`;
-      directive += `  * This character type MUST keep its species-specific anatomy in EVERY scene. It must NEVER transform into or borrow features from the other species.\n`;
-    }
-    directive += `\n- ANTI-CONFUSION MANDATE: The AI MUST NOT blend species features between characters!\n`;
-    directive += `  * Example: A TURTLE must always have a SHELL and short legs — NEVER give it long rabbit ears.\n`;
-    directive += `  * Example: A RABBIT must always have LONG EARS and fluffy tail — NEVER give it a shell or scales.\n`;
-    directive += `  * Example: A MONKEY must always have a TAIL and hands — NEVER give it wings or hooves.\n`;
-    directive += `  * Each character's species-defining anatomy (shell, ears, trunk, mane, tail shape, etc.) is IMMUTABLE.\n`;
-  } else {
-    const s = matchedSpecies[0];
-    directive += `- MANDATORY: All characters of this species MUST be ${s.description}.\n`;
-  }
-
-  directive += `\n- STRICT IDENTITY LOCK PER CHARACTER:\n`;
-  directive += `  * Each named character must have its own unique color palette, accessories, and distinguishing features.\n`;
-  directive += `  * These visual traits MUST remain identical in EVERY SINGLE SCENE — no drift, no swap, no merge.\n`;
-  directive += `  * Clothing/accessories assigned to one character MUST stay on that character only.\n`;
-
-  if (allNegatives.size > 0) {
-    directive += `\n- ABSOLUTE PROHIBITION: DO NOT turn any character into: ${Array.from(allNegatives).join(", ")}!\n`;
-    directive += `  DO NOT add anatomical features from prohibited species (e.g., no shells on rabbits, no ears on turtles, no trunks on monkeys)!`;
-  }
-
-  return directive;
+export function detectCharacterAndSpeciesFromTitle(_title: string): string {
+  return "";
 }
 
 export async function generatePromptsWithAiConsensus(
@@ -904,14 +1154,21 @@ export async function generatePromptsWithAiConsensus(
   initialUserFeedback?: string,
   sessionId?: string,
   previousProposal?: string,
-  startRound: number = 1
+  startRound: number = 1,
+  worldStyle: string = "auto",
+  visualStyle: string = "real"
 ): Promise<AiConsensusResult> {
+  const activeVisualStyle = normalizeVisualStyle(visualStyle);
+  const isRealMode = activeVisualStyle === "real";
+  const isStickmanMode = activeVisualStyle === "stickman";
   const debateLog: AiDebateMessage[] = [];
   const startTime = Date.now();
   console.log(`\n${"=".repeat(60)}`);
-  console.log(`🤝 [2-AI Dynamic Debate] Starting Multi-Agent Debate for "${productName}" (${sceneCount} scenes)...`);
-  console.log(`   Agent 1: AGY Gemini 3.8 (Screenwriter & Visual Worldbuilder)`);
-  console.log(`   Agent 2: Zhipu AI GLM-5 (Strict Quality Auditor & Character Lock Enforcer)`);
+  console.log(`🤝 [2-AI Dynamic Debate] Starting Multi-Agent Debate for "${productName}" (${sceneCount} scenes | Mode: ${isRealMode ? "REAL (Người/Động vật thật)" : isStickmanMode ? "STICKMAN (Người Que Hoạt Hình 2D)" : "3D Animation"})...`);
+  const ai1StartLabel = formatModelDisplayName(getScriptwriterModel());
+  const ai2StartLabel = formatModelDisplayName(getAuditorModel());
+  console.log(`   Agent 1: AI 1 (${ai1StartLabel}) (Screenwriter & Visual Worldbuilder)`);
+  console.log(`   Agent 2: AI 2 (${ai2StartLabel}) (Strict Quality Auditor & Reviewer)`);
   console.log(`   Termination Condition: STRICT 100% CONSENSUS ONLY (KHÔNG GIỚI HẠN SỐ ROUND)`);
   console.log(`   Mandates: Bố cục chặt (3 lớp tiền-trung-hậu cảnh), Nội dung chặt chẽ, Nhân vật khớp 100% ảnh mô tả`);
   if (initialUserFeedback) {
@@ -946,154 +1203,80 @@ export async function generatePromptsWithAiConsensus(
   }
 
   const cleanedDesc = cleanProductDescription(productDescription);
-  // Detect species and characters from BOTH title and description so all characters are captured
-  const speciesDirective = detectCharacterAndSpeciesFromTitle(
-    cleanedDesc ? `${productName} ${cleanedDesc}` : productName
-  );
 
-  let userContext = `PRODUCT & CHARACTER BRIEF:
-- Product/Story Title: "${productName}"
-${speciesDirective ? `\n${speciesDirective}\n` : ""}
+  const styleLine = isRealMode
+    ? "ultra-photorealistic live-action cinema, real-life human actors and real-life animals, natural skin pores, authentic hair/fur textures, 8K ARRI Alexa cinematography, vertical 9:16 (STRICTLY NO 3D CGI, NO cartoon, NO animation, NO chibi)"
+    : isStickmanMode
+      ? "expressive 2D chibi comic marshmallow stickman animation with glossy white round head, bold black ink outlines, oversized expressive cartoon eyes and lip-synced mouth, wearing full topic-specific cosplay outfits and actively performing topic-specific actions in a rich 2D illustrated environment, vertical 9:16"
+      : "cinematic 3D animation, rich photorealistic PBR material textures, vertical 9:16";
+
+  let userContext = `BRIEF:
+- Title / Topic: "${productName}"
 - Category: ${category}
-${imageUrl ? `- Reference Image: Provided in multimodal input (strictly observe all character species, fur colors, facial features, accessories, and setting).\n` : ""}
-- Required Scenes: Exactly ${sceneCount} continuous scenes.
-- Target Style: High-End 3D Pixar/Disney Cinematic Animation Style (vibrant warm volumetric lighting, rich textural detail, velvety soft fur/skin shaders, expressive animated acting, lovable character designs faithful to the characters described in the brief).`;
+${imageUrl ? `- Reference image attached: use as visual reference for recurring character facial likeness/art style UNLESS the user's story or director feedback specifies different characters, roles, or outfits.\n` : ""}- Scenes: exactly ${sceneCount} (prompt1..prompt${sceneCount}, dialogue1..dialogue${sceneCount}).
+- Style: ${styleLine}.
+- ${buildWorldStyleDirective(worldStyle)}`;
 
   if (cleanedDesc) {
-    userContext += `\n\n═══════════════════════════════════════════════════════
-📖 NỘI DUNG CỐT TRUYỆN CHÍNH (PRIMARY STORY SCRIPT & PLOTLINE - BẮT BUỘC DỰA VÀO ĐÂY):
-${cleanedDesc}
-═══════════════════════════════════════════════════════
-MANDATE: The story above is the PRIMARY SOURCE OF TRUTH for the entire script!
-You MUST adapt this EXACT storyline across all ${sceneCount} scenes:
-1. Break down the events, conflicts, dialogues, and character interactions from the description naturally across Scene 1 to Scene ${sceneCount}.
-2. Retain all key characters, plot twists, and the comedic/moral climax directly from the story description.
-3. Dialogue in dialogue1..dialogue${sceneCount} must reflect the exact comedic dialogue lines, character relationships, and personality interactions depicted in the description.
-4. Do NOT invent a different, unrelated storyline!`;
+    userContext += `\n\nUSER INPUT CONTENT / STORY (primary source for cast of characters, roles, setting, props, and plotline — unless overridden by DIRECTOR FEEDBACK below):
+${cleanedDesc}`;
   }
 
-  const ai1BaseSystemPrompt = `You are an elite 3D Animation Screenwriter, Visual Worldbuilder, and Master Prompt Engineer for Google Veo.
+  const ai1BaseSystemPrompt = `You are a ${isRealMode ? "photorealistic live-action cinema (real-life humans & real-life animals, strictly NO 3D/cartoon)" : isStickmanMode ? "2D Chibi Comic Marshmallow Stickman Animation (Người Que Hoạt Hình 2D Hóa Trang)" : "3D animation"} screenwriter and prompt writer for Google Veo 3.
 
-YOUR FOUR SUPREME MANDATES:
+Write a ${sceneCount}-scene vertical 9:16 short strictly driven by the user's input content and the director's notes.
 
-1. MAXIMUM CHARACTER FIDELITY & SPECIES IDENTITY LOCK (LÀM SAO CHO NHÂN VẬT GIỐNG VỚI HÌNH MÔ TẢ NHẤT):
-- Strictly match the character(s) shown in the reference image and description!
-- Build and declare a rigid [CHARACTER_BIBLE] at the very beginning of your proposal:
-  * Strict Species Lock: Derive exact species directly from the reference image and brief (e.g. if domestic cats -> 100% domestic cats; if lions -> 100% lions; if mice -> 100% mice; if puppies -> 100% puppies; if humans -> 100% humans). Preserve exact species across EVERY single scene without species morphing.
-  * For EACH named character, write one immutable, concrete identity line: name, species, fur/skin color and markings, head/body ratio, ear and muzzle shape, eye shape/color, facial markings and default face, plus any distinguishing feature. Use the same name and identity line in every scene; never merge or swap characters.
-  * Uniform Lock: Record the exact garment type, base color, trim, logo/badge location, footwear, and fixed accessories for each character. If the brief/reference shows a shared uniform, keep its design identical on every wearer; distinguish characters by their locked anatomy/markings. Never change outfits, add/remove hats, bows, bags or glasses, or exchange accessories unless the user explicitly requests an on-screen change.
-  * Prop Lock: List persistent handheld/nearby objects with owner, color, shape, and which hand/side holds them. Keep object identity, count, size and ownership stable; a handoff, opening or removal must be shown on-screen and carried into subsequent scenes.
-  * Expression Lock: Preserve the same underlying face, eye spacing, muzzle and mouth shape. Let emotion change only through subtle brows, gaze, mouth and pose as the story demands; do not redesign the face, alternate between incompatible smiles/eyes, or add unmotivated expressions.
-  * Natural Posture Lock: Match the natural movement and postures suited to the characters' anatomy.
+STRICT PRIORITY HIERARCHY (NEVER VIOLATE):
+1. DIRECTOR FEEDBACK / USER EDITS (SUPREME #1 AUTHORITY): Whenever the director specifies or revises characters, ages, genders, roles, relationships, outfits, props, settings, or plot points, OBEY 100% and IMMEDIATELY update [CHARACTER_BIBLE] and all affected scene prompts. NEVER let an old [CHARACTER_BIBLE], PREVIOUS SCRIPT DRAFT, World Style, or attached reference image override the director's instructions!
+2. USER INPUT CONTENT / STORY (#2 SOURCE OF TRUTH): Build the entire character cast (tuyến nhân vật), outfits, props, environment, and storyline directly from the user's input text ("${productName}" + STORY). Do NOT force hardcoded stock characters, unrelated professions, or artificial cosplay outfits that do not belong to the user's input content!
+3. CROSS-SCENE CONTINUITY (#3): Keep recurring characters visually consistent across scenes ONLY for traits not changed by the story or director feedback.
 
-2. TIGHT COMPOSITION & SPATIAL STAGING (BỐ CỤC CHẶT CHẼ & CHUẨN DỌC 9:16 YOUTUBE SHORTS):
-- Every scene must be meticulously staged with three distinct depth layers:
-  * Foreground (Tiền cảnh): Tangible, interactive physical props with tactile textures.
-  * Midground (Trung cảnh): Clear character interactions, expressive face and eye contact, natural character actions (never floating or misplaced).
-  * Background (Hậu cảnh): Cohesive, continuous lighting and architectural environment.
-- MANDATORY 9:16 VERTICAL FRAMING FOR YOUTUBE SHORTS & TIKTOK:
-  * Compose all actions specifically for a vertical 9:16 portrait screen.
-  * Keep characters close together or centered within the vertical safe zone (never placed far apart at extreme left/right edges).
-  * Maintain clean headroom above characters and floor room below so neither character is cut off or cropped when rendered in 9:16.
-- Purposeful cinematic camera angles: smooth camera pans, gentle dolly shots, eye-level close-ups, dynamic tracking shots. Zero jitter, zero floating elements, zero disorienting perspective changes.
-
-3. TIGHT NARRATIVE CONTINUITY (NỘI DUNG CHẶT CHẼ):
-- Unbroken cause-and-effect narrative progression across all ${sceneCount} scenes.
-- Every object, prop, and state changes naturally and carries over logically to the next scene.
-- For every Scene N -> N+1, state the exact end pose, facial emotion, uniform/accessories, held object and its hand/side, and camera framing that Scene N+1 starts with. Describe any later change as a visible action, never an unexplained reset.
-
-4. STRICT COMPLIANCE WITH HUMAN DIRECTOR GUIDANCE (TUYỆT ĐỐI TUÂN THỦ GÓP Ý & CHỈ ĐẠO CỦA NGƯỜI DÙNG):
-- If the human director / user provides feedback, critiques, or specific scene instructions, you MUST IMMEDIATELY and UNCONDITIONALLY fulfill and fix those exact points!
-- Never ignore, contradict, or override user feedback.
-
-5. ADORABLE CHARACTER AESTHETIC & ANATOMICAL CONTINUITY (KHÓA THIẾT KẾ NHÂN VẬT & NGUYÊN MẪU 3D CHUẨN PIXAR):
-- For all characters: Faithfully follow the character anatomy, species, and styling established in the brief and reference image. Keep them charming, youthful, and lovable in the signature 3D Pixar / Disney animated feature film style (expressive cartoon eyes with lifelike specular glint, velvety soft fur shaders, clear facial expressions, and natural species proportions suited to cute stylized animation).
-- STRICT CONSISTENCY: NEVER randomly morph species, alter character anatomy, or turn characters into mismatched plush felt dolls if they were established as smooth 3D CGI animation! Preserve exact eye shape, facial structure, colors, markings, and accessories across all scenes.
-
-6. SEAMLESS SCENE TRANSITION & MATCH-CUT CONTINUITY (CHUYỂN CẢNH LIỀN MẠCH, NỐI NHAU KHÔNG GIẬT KHUNG):
-- Ensure unbroken visual momentum between consecutive scenes (Scene 1 -> Scene 2 -> Scene 3 -> Scene 4 -> Scene 5 -> Scene 6):
-  * The ending action/pose and camera momentum of Scene N MUST seamlessly match the opening action/pose and camera angle of Scene N+1.
-  * Held objects, props, and room coordinates carry over seamlessly without sudden teleportation.
-  * Lighting direction, color grading, and environmental continuity remain cohesive and fluid across all scenes.
-
-7. RIGID CHARACTER VOICE CASTING & AUDIO PERFORMANCE DIRECTIVE (KHÓA ÂM THANH & GIỌNG NÓI TỪNG NHÂN VẬT):
-- In addition to [CHARACTER_BIBLE], you MUST declare a rigid [AUDIO_AND_VOICE_BIBLE] defining the audio identity of each character based on the characters identified in the brief:
-  * For EVERY character in the story, declare: Character Name, Role, Gender/Age, Vocal Timbre & Pitch, and Vietnamese speaking style.
-  * Assign distinctive, harmonious vocal profiles that fit each character's appearance, species, age, and personality.
-- DIALOGUE CONVENTIONS:
-  * In every dialogue1..dialogue${sceneCount}, speaker names MUST strictly use the exact character names identified in the brief: 'CharacterName: *action/emotion* "..."'.
-  * Speaker identities must strictly match their designated roles and remain consistent across all scenes.
-- AUDIO DIRECTIVES INSIDE VISUAL PROMPTS:
-  * In Scene 1: Embed baseline audio casting directive for Google Veo to establish each character's vocal acoustics.
-  * In Scene 2 to ${sceneCount}: Embed a match-cut voice continuity directive to guarantee Google Veo preserves 100% exact voice pitch, timbre, and age from the previous scene with zero vocal drift.
-
+GUIDELINES:
+${isRealMode ? "- VISUAL MODE: 100% REAL-LIFE PHOTOREALISTIC LIVE-ACTION (Người thật & Động vật thật). Describe every human as a real-life human actor (natural skin, real hair) and every animal as a real-life animal (authentic fur/feathers). NEVER use words like 3D, CGI, Pixar, Disney, cartoon, anime, animated, or chibi.\n" : isStickmanMode ? "- VISUAL MODE: 2D CHIBI COMIC MARSHMALLOW STICKMAN (Người Que Hoạt Hình 2D Hóa Trang). Every character is an expressive 2D white marshmallow stickman figure with a round white head, bold black ink outlines, expressive cartoon eyes and mouth, wearing outfits/hats/props that fit their exact role in the user's content.\n" : ""}- Start with a clear [CHARACTER_BIBLE]: one concise line per main character derived from the user's input & director feedback (Name: age/species, distinctive look, story-authentic outfit, key prop if any).
+- STORY-AUTHENTIC CHARACTERS, OUTFITS & PROPS (NO HARDCODED CONTEXT):
+  * Design each character's age, role, outfit, and props 100% faithfully to the user's input content! (e.g., if the content is about a doctor & patient after a shower, show an ENT doctor in a white lab coat and an adult in casual home wear holding a cotton swab; if about someone scrolling a phone past midnight, show them in a dark bedroom holding a glowing smartphone; if about business/office/delivery/family/folklore, dress and stage them naturally for THAT exact scenario).
+  * Smartphones, laptops, notebooks, documents, kitchenware, medical items, etc. ARE 100% ALLOWED whenever the user's content or dialogue involves them! Only avoid aimless filler actions ("đứng múa vô tri") that have nothing to do with what is being said.
+- COMPLETE STORY ARC & SEAMLESS SCENE-TO-SCENE FLOW (CÓ ĐẦU CÓ ĐUÔI, CHUYỂN CẢNH MƯỢT):
+  * Structure the ${sceneCount} scenes as ONE cohesive mini-film with clear cause-and-effect progression matching the user's content from Scene 1 through Scene ${sceneCount}.
+  * SINGLE-TAKE SHOT PER SCENE: Each scene is ONE unbroken continuous camera take (e.g., gentle dolly-in, smooth tracking pan, or steady waist-up medium two-shot) with no multi-shot montages inside a single scene.
+  * 180-DEGREE SPATIAL AXIS: Keep recurring characters on consistent screen sides across adjacent scenes when in the same location so cuts feel natural.
+- INLINE CHARACTER ANCHOR & PROP PERMANENCE:
+  * Because each Veo scene renders in an isolated tab, briefly state each on-screen character's adult age (respect the user's requested adult age, e.g., 20yo young adult, 30yo adult, or 70yo elderly senior — only avoid "<18 child/kid/little boy/girl" keywords unless explicitly required by a family story), hairstyle, and outfit colors inline in EVERY scene they appear.
+  * Whenever a character holds or uses a prop in a scene, state which hand holds it and keep it consistent throughout that shot. Avoid sharp metal blades/knives in real-human hands (use safe alternatives).
+- DIALOGUE-DRIVEN VISUAL ACTION & FACE-TO-FACE 3/4 BLOCKING:
+  * Every scene's visual prompt MUST dramatize its exact dialogue! Stage all conversing characters together in "Midground:" turned toward each other at a three-quarter (3/4) angle to the camera with locked eye contact (use "Foreground:" only for subtle environmental framing props, or omit if unneeded). Never hallucinate animals or objects that are only mentioned figuratively in dialogue.
+- VEO 3 SAFETY & ANTI-BLOCK MANDATE:
+  * Avoid English safety-block words like "crying", "wailing", "sobbing", "tears", "punish", "execute", "behead", "poison", "kill", "dead", "blood", "sickle", "blade", or "knife". For sad moments, describe "a sad, sorrowful facial expression with furrowed brows and downcast eyes (without tears)".
+- Each prompt (English, concise ~175-215 words): 1 single-take camera + style sentence, Foreground / Midground / Background, a brief "Continuity Lock:" sentence, then the DUB_TIMELINE line. Only describe characters physically present in that scene. Don't mention Pixar/Disney.
+- Dialogue (Vietnamese, natural and engaging): format 'Name: "line"', 1-3 short lines per scene, following the user's content and character roles.
 ${dubbingTimelineRules(sceneCount)}
+OUTPUT: [CHARACTER_BIBLE], then Scene 1..${sceneCount} with prompt1..prompt${sceneCount} and dialogue1..dialogue${sceneCount}.`;
 
-8. PRIMARY STORY SCRIPT ADAPTATION MANDATE:
-- When a "PRIMARY STORY SCRIPT & PLOTLINE" (Story Description) is provided in the brief, it is the ABSOLUTE FOUNDATION of your screenplay.
-- Adapt the exact plot events, conflicts, dialogues, and character interactions from the description across the ${sceneCount} scenes. Do NOT invent a different or unrelated storyline!
-- Preserve the story's humorous/fable climax and punchline accurately in the final scene.
-
-LANGUAGE & SCRIPT STRUCTURE:
-- Visual Prompts (prompt1..prompt${sceneCount}): 100% descriptive English for Google Veo. Start with "Cinematic 3D Pixar-style animation...". Include camera movement, 3-layer spatial layout, character anatomy, lighting, character continuity lock, seamless match-cut transition links, and negative prompts.
-- Each visual prompt must be independently usable: identify every visible character by the same name and locked visual traits, uniform and fixed accessories from [CHARACTER_BIBLE]. Do not rely on "same as previous scene" alone; each scene may be rendered in a fresh session.
-- Dialogue (dialogue1..dialogue${sceneCount}): 100% natural, heartwarming Vietnamese for children. Cute character personality dynamics.
-
-OUTPUT FORMAT:
-Provide the complete screenplay with [CHARACTER_BIBLE] and [AUDIO_AND_VOICE_BIBLE], followed by Scene 1 to Scene ${sceneCount}, clearly marking prompt1..prompt${sceneCount} and dialogue1..dialogue${sceneCount}.`;
-
+  const promptStyleHint = isRealMode
+    ? "photorealistic live-action cinema prompt in English"
+    : isStickmanMode
+      ? "2D chibi comic marshmallow stickman prompt in English"
+      : "cinematic 3D animation prompt in English";
   const schemaKeys = Array.from({ length: sceneCount }, (_, i) => `
-  "prompt${i + 1}": "Detailed 3D Pixar animation prompt in English for Scene ${i + 1}",
-  "dialogue${i + 1}": "Heartwarming dialogue in Vietnamese for Scene ${i + 1}"`).join(",");
+  "prompt${i + 1}": "Optional fallback ${promptStyleHint} for Scene ${i + 1} (leave empty string if AI 1's scene prompt is approved)",
+  "dialogue${i + 1}": "Optional fallback Vietnamese dialogue for Scene ${i + 1} (leave empty string if AI 1's dialogue is approved)"`).join(",");
 
-  const ai2BaseSystemPrompt = `You are the Supreme Animation Director, Master Cinematographer, and Lead AI Prompt Auditor.
-Your sole mission is to audit AI 1's 3D animation script and enforce absolute 100% perfection before granting consensus.
+  const ai2BaseSystemPrompt = `You are a supportive, practical Co-Director and Quality Reviewer for ${isRealMode ? "photorealistic live-action (real-life humans & real-life animals)" : isStickmanMode ? "2D Chibi Comic Marshmallow Stickman Animation" : "cinematic 3D animation"} scripts.
+Your mission is to verify that AI 1's script proposal faithfully follows the user's input content and 100% of the human director's instructions.
 
-AUDIT CRITERIA (WEIGHTED BREAKDOWN):
-1. Character Fidelity & Reference Match (Weight: 20%):
-   - Are characters 100% faithful to the reference image and description?
-   - SPECIES & ANATOMY LOCK: Are species, anatomy, and art style strictly preserved across every scene?
-   - CHARACTER DESIGN FIDELITY: Are character proportions, facial structures, and features strictly preserved without style drift?
-   - Does the proposal include one concrete, immutable identity line per named character, including face/markings, uniform details, fixed accessories and prop ownership? Reject vague phrases such as "same outfit" without those details.
-   - Compare every prompt against that bible: reject any changed uniform color/logo, missing or swapped accessory, new facial anatomy, inconsistent expression with the preceding beat, or object that appears/disappears without an on-screen action.
-2. Story Description Fidelity & Narrative Compliance (Weight: 20% - CRITICAL GATE):
-   - If a primary story description is provided in the brief, did AI 1 faithfully follow and adapt this EXACT story across the ${sceneCount} scenes?
-   - Did AI 1 include all key characters, the central conflict, and the specific comedic punchline/moral from the description?
-   - If AI 1 invented an unrelated story or ignored the description, you MUST REJECT WITH consensus_percentage < 100 and consensus_reached = false!
-3. Human Director Feedback Adherence (Weight: 15% - CRITICAL GATE):
-   - Did AI 1 faithfully follow and implement 100% of all feedback and critiques given by the human director?
-   - If AI 1 failed to address ANY part of the user feedback, you MUST REJECT WITH consensus_percentage < 100 and consensus_reached = false!
-4. Composition Tightness & 3-Layer Spatial Staging (Weight: 15%):
-   - Does EVERY scene have clear foreground props, midground acting, and background atmosphere?
-   - Is camera blocking purposeful, cinematic, and stable for Veo?
-5. Seamless Scene Transition & Match-Cut Continuity (Weight: 10%):
-   - Does each scene naturally and fluidly flow into the next scene without jarring cuts or teleports?
-   - Are ending/opening character poses, camera momentum, and held props logically matched between adjacent scenes?
-   - Verify the exact hand/side holding each object and the character's emotional state at every scene boundary; emotion may evolve through acting but the underlying face must remain identical.
-6. Language & Veo Feasibility (Weight: 10%):
-   - Are all visual prompts 100% fluent, descriptive English with zero Vietnamese?
-   - Are camera movements smooth and renderable for Veo without morphing?
-7. Character Voice Casting & Audio Continuity Audit (Weight: 10% - CRITICAL FOR VEO AUDIO):
-   - Did AI 1 declare the [AUDIO_AND_VOICE_BIBLE] and rigidly lock distinctive, harmonious vocal profiles for all characters present in the story (matching their respective roles, ages, and genders)?
-   - Are speaker names in dialogue1..dialogue${sceneCount} unambiguous and matching the story's actual characters?
-   - Did AI 1 ensure audio voice continuity across all ${sceneCount} scenes so Google Veo renders identical voices without pitch drifting or swapping?
-   - If AI 1 fails to specify the audio voice casting or leaves voice tone ambiguous, you MUST REJECT WITH consensus_percentage < 100 and demand specific audio fixes!
-8. Dubbing Timeline & Lip-Sync Audit (CRITICAL GATE):
-   - Does EVERY prompt1..prompt${sceneCount} contain a complete DUB_TIMELINE covering the full 0.0-10.0s scene?
-   - Is every dialogue line mapped exactly once, in order, to the same named speaker using the required X.X-Y.Ys grammar?
-   - Are intervals non-overlapping, separated by >=0.25s, realistically long for the Vietnamese word count, and limited to one moving mouth?
-   - If any timestamp is missing, guessed vaguely, overlaps another line, uses the wrong speaker, or cannot be parsed mechanically, you MUST REJECT with consensus_percentage < 100.
+REVIEW CRITERIA:
+1. Supreme Director Feedback & User Content Fidelity (HIGHEST PRIORITY):
+   - Did AI 1 obey 100% of the human director's feedback/revisions (including any changes to characters, ages, roles, outfits, props, settings, or plot)? If the director asked to change a character or context and AI 1 kept the old character/context, you MUST set consensus_reached = false and human_director_compliance_score < 70, and instruct AI 1 to fix it!
+   - Does the character lineup ([CHARACTER_BIBLE] and scenes) come authentically from the user's input content ("${productName}" & STORY) without forcing unrelated stock characters or artificial cosplay tropes?
+2. Single-Take Composition, Continuity & Prop Permanence (~175 - 215 words per scene):
+   - Is each scene ONE continuous camera shot with clear staging (Midground characters at 3/4 angles when conversing, inline character outfit/age anchors, held props kept consistent, no sharp metal blades)?
+3. Dialogue & DUB_TIMELINE:
+   - Is Vietnamese dialogue natural, faithful to the user's topic/story, with a matching DUB_TIMELINE?
 
-CRITICAL CONSENSUS RULE:
-- You MUST only grant consensus_reached = true when ALL criteria reach 100% (consensus_percentage = 100).
-- If there is ANY weakness, vagueness, slight character drift, loose composition, narrative gap, or UNRESOLVED user feedback:
-  * Set consensus_percentage < 100.
-  * Set consensus_reached = false.
-  * Provide uncompromising, specific, numbered critique and required fixes in "critique_and_required_fixes" (in Vietnamese).
-- When ALL criteria are completely satisfied with 100% perfection:
-  * Set consensus_percentage = 100.
-  * Set consensus_reached = true.
-  * Output one canonical English character_bible containing the full approved immutable identity line for each character, plus final prompts in prompt1..prompt${sceneCount} and dialogue1..dialogue${sceneCount}. Do not compress the bible into generic style words.
+CONSENSUS DIRECTIVE (PRAGMATIC & USER-FIRST):
+- NEVER force hardcoded props, bans on phones/notebooks, or artificial costume changes that contradict the user's story!
+- If AI 1's proposal faithfully follows 100% of the user's content and director instructions (quality >= 80% AND human_director_compliance_score >= 95), GRANT consensus_percentage = 100 and consensus_reached = true immediately!
+- IMPORTANT: AI 1's screenplay is the canonical text. Do NOT rewrite AI 1's prompts in your JSON when approving (leave prompt1..prompt${sceneCount} empty or identical to AI 1).
 
 OUTPUT FORMAT (STRICT JSON ONLY):
 {
@@ -1106,8 +1289,8 @@ OUTPUT FORMAT (STRICT JSON ONLY):
   "language_compliance_score": 100,
   "dialogue_quality_score": 100,
   "audio_continuity_score": 100,
-  "character_bible": "Canonical English identity lines for every named character: face, markings, chibi ratio, exact uniform, fixed accessories and assigned props",
-  "critique_and_required_fixes": "Specific points that must be corrected (in Vietnamese)",
+  "character_bible": "Exact [CHARACTER_BIBLE] from AI 1",
+  "critique_and_required_fixes": "Specific fixes in Vietnamese if consensus_reached is false, or empty if approved",
   "consensus_note": "A concise summary in Vietnamese explaining why consensus was reached",
   ${schemaKeys}
 }`;
@@ -1121,6 +1304,9 @@ OUTPUT FORMAT (STRICT JSON ONLY):
 
   try {
     while (!consensusReached && currentRound <= maxRounds) {
+      if (isAiTaskAborted(startTime, sessionId)) {
+        throw new Error("Đã hủy thảo luận 2 AI theo yêu cầu");
+      }
       console.log(`\n${"-".repeat(50)}`);
       console.log(`🔄 [2-AI Debate] Round ${currentRound} in progress (No round limit, debating until strict 100%)...`);
       console.log(`${"-".repeat(50)}`);
@@ -1158,37 +1344,32 @@ OUTPUT FORMAT (STRICT JSON ONLY):
 
       if (allUserFeedbacks.length > 0) {
         ai1UserPrompt += `\n\n═══════════════════════════════════════════════════════
-📢 GÓP Ý & CHỈ ĐẠO TRỰC TIẾP TỪ ĐẠO DIỄN (HUMAN DIRECTOR FEEDBACK):
+🚨 DIRECTOR FEEDBACK — SUPREME #1 AUTHORITY (OVERRIDES ALL PREVIOUS DRAFTS, CHARACTER BIBLES & DEFAULT CONTEXT):
 ${allUserFeedbacks.map((fb, idx) => `${idx + 1}. ${fb}`).join("\n")}
-═══════════════════════════════════════════════════════
-MANDATE: You must strictly comply with 100% of the above user feedback. If the user pointed out issues in specific scenes (e.g. Scene 2 unwanted elements/animals/props), fix them immediately and thoroughly!`;
+👉 If ANY item above changes character roles, ages, genders, species, names, outfits, props, settings, or plot points, you MUST IMMEDIATELY rewrite [CHARACTER_BIBLE] and the scene prompts to match 100%! Delete all conflicting traits/outfits from earlier drafts.
+═══════════════════════════════════════════════════════`;
       }
 
       if (currentRound === startRound && previousProposal) {
         ai1UserPrompt += `\n\n═══════════════════════════════════════════════════════
-PREVIOUS SCRIPT DRAFT TO REVISE FROM:
+PREVIOUS SCRIPT DRAFT (REFERENCE FOR UNCHANGED SCENES ONLY — DO NOT KEEP OLD TRAITS THAT CONFLICT WITH DIRECTOR FEEDBACK OR USER INPUT):
 ${previousProposal}
 ═══════════════════════════════════════════════════════
-Please revise the screenplay above to incorporate all user feedback and directives perfectly.`;
+Revise the screenplay above so 100% of the DIRECTOR FEEDBACK and USER INPUT CONTENT are reflected in [CHARACTER_BIBLE] and every scene.`;
       } else if (currentRound > startRound && lastCritique) {
-        ai1UserPrompt += `\n\n═══════════════════════════════════════════════════════
-AUDIT CRITIQUE FROM AI 2 (ROUND ${currentRound - 1} FAILED 100% CONSENSUS):
-${lastCritique}
-═══════════════════════════════════════════════════════
-You must revise the entire proposal to address 100% of the above feedback.
-Strictly ensure:
-1. Characters match the reference image and description 100% (Character Bible locked, species strictly preserved).
-2. All human director feedback and instructions are 100% satisfied.
-3. Composition is extremely tight with 3 spatial depth layers (foreground props, midground acting, background environment).
-4. Narrative is continuous and tightly connected across all ${sceneCount} scenes.`;
+        ai1UserPrompt += `\n\nREVIEWER NOTES FROM ROUND ${currentRound - 1} (fix these while strictly preserving all DIRECTOR FEEDBACK):
+${lastCritique}`;
       }
 
-      let ai1ModelUsed = `${CODEX_MODEL} (mode light)`;
-      let ai1AgentName = "AI 1 (Codex Sol Light)";
-      let isSolConnected = true;
+      let ai1ModelUsed = SCRIPTWRITER_PRIMARY_MODEL;
+      let ai1AgentName = `AI 1 (${formatModelDisplayName(SCRIPTWRITER_PRIMARY_MODEL)})`;
 
       console.log(`🎭 [Round ${currentRound}] ${ai1AgentName} is ${currentRound === 1 && !previousProposal ? "drafting" : "revising"} proposal...`);
-      onProgress?.({ type: "ai1_start", round: currentRound });
+      onProgress?.({
+        type: "ai1_start",
+        round: currentRound,
+        message: `🎭 ${ai1AgentName} đang sáng tác và tối ưu kịch bản ${isRealMode ? "Người & Động vật thật (Real Live-Action)" : "Hoạt hình 3D"} (Round ${currentRound})...`
+      });
 
       const hb1 = setInterval(() => {
         onProgress?.({
@@ -1200,39 +1381,62 @@ Strictly ensure:
       }, 3000);
 
       try {
-        if (!isCodexEnabled()) {
-          throw new Error("Codex is disabled by CODEX_ENABLED");
+        const draft = await callScriptwriter(ai1BaseSystemPrompt, ai1UserPrompt, imageUrl);
+        if (isAiTaskAborted(startTime, sessionId)) {
+          throw new Error("Đã hủy thảo luận 2 AI theo yêu cầu");
         }
-        latestAi1Proposal = await callCodexSol(ai1BaseSystemPrompt, ai1UserPrompt, false);
-      } catch (solErr: any) {
-        isSolConnected = false;
-        console.warn(`⚠️ [2-AI Debate] Codex Sol unavailable (${solErr?.message || solErr}). Flowing back to original (AI 1: AGY Gemini 3.8, AI 2: GLM-5)...`);
-        ai1ModelUsed = AGY_DEFAULT_MODEL;
-        ai1AgentName = "AI 1 (AGY Gemini 3.8)";
-        latestAi1Proposal = await callBedrock(
-          ai1BaseSystemPrompt,
-          ai1UserPrompt,
-          imageUrl,
-          false,
-          AGY_DEFAULT_MODEL
-        );
+        latestAi1Proposal = draft.text;
+        ai1ModelUsed = draft.model;
+        ai1AgentName = `AI 1 (${formatModelDisplayName(draft.model)})`;
+      } catch (draftErr: any) {
+        console.error(`❌ [2-AI Debate] Scriptwriter and Gemini fallback failed: ${draftErr?.message || draftErr}`);
+        throw draftErr;
       } finally {
         clearInterval(hb1);
+      }
+
+      // Extract candidate prompts immediately from AI 1's draft proposal
+      let extractedCandidate: any = null;
+      if (latestAi1Proposal) {
+        try {
+          const { parseTextPromptToObj } = await import("./scheduler.js");
+          extractedCandidate = parseTextPromptToObj(latestAi1Proposal);
+        } catch {}
+      }
+
+      // Auto-persist draft to database so user never loses prompt even if closed/aborted
+      if (extractedCandidate && Object.keys(extractedCandidate).length > 0) {
+        try {
+          const { loadAllProducts, updateProduct } = await import("./database.js");
+          const prods = loadAllProducts();
+          const matched = prods.find((p: any) => p.name && p.name.trim().toLowerCase() === productName.trim().toLowerCase());
+          if (matched) {
+            updateProduct(matched.id, { promptsObj: extractedCandidate });
+            console.log(`💾 [2-AI Debate] Auto-persisted AI 1 draft prompts to product "${matched.name}" (${matched.id})`);
+          }
+        } catch (dbErr) {
+          console.warn("⚠️ [2-AI Debate] Auto-persist draft error:", dbErr);
+        }
       }
 
       const ai1Msg: AiDebateMessage = {
         agent: ai1AgentName,
         model: ai1ModelUsed,
-        role: "Biên Kịch Hoạt Hình 3D (Kids 3D Screenwriter)",
+        role: isRealMode ? "Biên Kịch Điện Ảnh Người Thật (Live-Action Screenwriter)" : "Biên Kịch Hoạt Hình 3D (3D Screenwriter)",
         title: currentRound === 1 && !previousProposal
-          ? (allUserFeedbacks.length > 0 ? `Đề Xuất Kịch Bản Tiếp Thu Góp Ý (Round 1)` : `Đề Xuất Kịch Bản Hoạt Hình 3D (Bản Thảo Round 1)`)
+          ? (allUserFeedbacks.length > 0 ? `Đề Xuất Kịch Bản Tiếp Thu Góp Ý (Round 1)` : `Đề Xuất Kịch Bản ${isRealMode ? "Người & Động Vật Thật (Real)" : "Hoạt Hình 3D"} (Bản Thảo Round 1)`)
           : `Bản Kịch Bản Tiếp Thu & Khắc Phục Góp Ý (Round ${currentRound})`,
         content: latestAi1Proposal,
         timestamp: new Date().toLocaleTimeString("vi-VN"),
         round: currentRound
       };
       debateLog.push(ai1Msg);
-      onProgress?.({ type: "ai1_done", round: currentRound, message: ai1Msg });
+      onProgress?.({
+        type: "ai1_done",
+        round: currentRound,
+        message: ai1Msg,
+        prompts_obj: extractedCandidate,
+      });
       console.log(`✅ [Round ${currentRound}] ${ai1AgentName} submitted proposal (${latestAi1Proposal.length} chars)`);
 
       // Check again if user submitted feedback while AI 1 was drafting
@@ -1262,10 +1466,15 @@ Strictly ensure:
         }
       }
 
-      // Step 2: AI 2 (Gemini 3.8 Low review, or fallback to GLM-5) audits AI 1's proposal
-      const ai2ModelPrompt = isSolConnected ? "Gemini 3.8 Low" : "GLM-5";
+      // Step 2: AI 2 (audit proposal)
+      const currentAuditorModel = getAuditorModel();
+      const ai2ModelPrompt = formatModelDisplayName(currentAuditorModel);
       console.log(`🧐 [Round ${currentRound}] AI 2 (${ai2ModelPrompt}) is rigorously auditing proposal...`);
-      onProgress?.({ type: "ai2_start", round: currentRound });
+      onProgress?.({
+        type: "ai2_start",
+        round: currentRound,
+        message: `🧐 AI 2 (${ai2ModelPrompt}) đang kiểm định tiêu chí nhân vật & bố cục (Round ${currentRound})...`
+      });
 
       let ai2AuditUserPrompt = `You are evaluating Proposal Round ${currentRound} produced by AI 1.
 ${userContext}
@@ -1276,17 +1485,11 @@ ${latestAi1Proposal}
 ═══════════════════════════════════════════════════════`;
 
       if (allUserFeedbacks.length > 0) {
-        ai2AuditUserPrompt += `\n\n═══════════════════════════════════════════════════════
-📢 GÓP Ý & CHỈ ĐẠO BẮT BUỘC TỪ ĐẠO DIỄN:
-${allUserFeedbacks.map((fb, idx) => `${idx + 1}. ${fb}`).join("\n")}
-═══════════════════════════════════════════════════════
-VERIFICATION CRITERIA FOR HUMAN DIRECTOR FEEDBACK:
-- Inspect every single scene to confirm whether the user's requested fixes were applied.
-- If AI 1 failed to fix even ONE detail requested by the user, set consensus_percentage < 100 and reject!`;
+        ai2AuditUserPrompt += `\n\nDIRECTOR FEEDBACK (check it was applied):
+${allUserFeedbacks.map((fb, idx) => `${idx + 1}. ${fb}`).join("\n")}`;
       }
 
-      ai2AuditUserPrompt += `\n\n- If ANY criterion is not completely flawless, you MUST set consensus_percentage < 100, consensus_reached = false, and provide specific, demanding critique in Vietnamese.
-- ONLY award consensus_percentage = 100 and consensus_reached = true when the proposal is genuinely perfect.
+      ai2AuditUserPrompt += `\n\n- CONSENSUS PHILOSOPHY: Be pragmatic and constructive! If AI 1's proposal follows the core story and respects the user's guidance, grant consensus_reached = true and consensus_percentage = 100 so the user can produce their video without unnecessary delays.
 Output STRICT JSON matching schema.`;
 
       const hb2 = setInterval(() => {
@@ -1299,36 +1502,33 @@ Output STRICT JSON matching schema.`;
       }, 3000);
 
       let ai2AuditRaw = "";
-      let ai2ModelUsed = isSolConnected ? "gemini-3.8-flash-low" : "zai.glm-5";
-      let ai2AgentName = isSolConnected ? "AI 2 (AGY Gemini 3.8 Low)" : "AI 2 (Zhipu AI GLM-5)";
+      let ai2ModelUsed = currentAuditorModel;
+      let ai2AgentName = `AI 2 (${ai2ModelPrompt})`;
 
       try {
-        if (isSolConnected && isAgyEnabled()) {
-          // Primary review: AGY Gemini 3.8 Low
-          try {
-            ai2AuditRaw = await callAgy(ai2BaseSystemPrompt, ai2AuditUserPrompt, true, "gemini-3.8-flash-low");
-          } catch (agyErr: any) {
-            console.warn(`⚠️ [2-AI Debate] Gemini 3.8 Low review failed (${agyErr?.message || agyErr}). Falling back to GLM-5...`);
-            ai2ModelUsed = "zai.glm-5";
-            ai2AgentName = "AI 2 (Zhipu AI GLM-5)";
-            ai2AuditRaw = await callBedrock(
-              ai2BaseSystemPrompt,
-              ai2AuditUserPrompt,
-              imageUrl,
-              true,
-              "zai.glm-5"
-            );
+        const auditRes = await callAuditor(
+          ai2BaseSystemPrompt,
+          ai2AuditUserPrompt,
+          true,
+          imageUrl,
+          (failedModel, fallbackModel) => {
+            ai2ModelUsed = fallbackModel;
+            ai2AgentName = `AI 2 (${fallbackModel})`;
+            onProgress?.({
+              type: "ai2_fallback",
+              stage: "ai2",
+              ai2_name: fallbackModel,
+              round: currentRound,
+              message: `⚠️ ${failedModel} lỗi/hết token → Đã tự động chuyển sang AI 2 (${fallbackModel}) đang kiểm định...`,
+            });
           }
-        } else {
-          // Fallback to original flow: GLM-5 review
-          ai2AuditRaw = await callBedrock(
-            ai2BaseSystemPrompt,
-            ai2AuditUserPrompt,
-            imageUrl,
-            true,
-            "zai.glm-5"
-          );
+        );
+        if (isAiTaskAborted(startTime, sessionId)) {
+          throw new Error("Đã hủy thảo luận 2 AI theo yêu cầu");
         }
+        ai2AuditRaw = auditRes.text;
+        ai2ModelUsed = auditRes.model;
+        ai2AgentName = `AI 2 (${formatModelDisplayName(auditRes.model)})`;
       } finally {
         clearInterval(hb2);
       }
@@ -1346,7 +1546,8 @@ Output STRICT JSON matching schema.`;
 
       let percentage = Number(parsedAudit.consensus_percentage) || 0;
 
-      // Extract candidate prompts from either AI 2's JSON audit OR AI 1's latest proposal
+      // Extract candidate prompts: AI 1 (Screenwriter) is ALWAYS the primary canonical screenplay;
+      // AI 2 (Auditor) only supplies fallback fields if AI 1's output lacked a key.
       let extractedFromAi1: any = null;
       if (latestAi1Proposal) {
         try {
@@ -1357,12 +1558,14 @@ Output STRICT JSON matching schema.`;
 
       const auditCandidate: Record<string, any> = {};
       for (let i = 1; i <= sceneCount; i++) {
-        auditCandidate[`prompt${i}`] = parsedAudit[`prompt${i}`] || extractedFromAi1?.[`prompt${i}`] || "";
-        auditCandidate[`dialogue${i}`] = parsedAudit[`dialogue${i}`] || extractedFromAi1?.[`dialogue${i}`] || "";
+        auditCandidate[`prompt${i}`] = extractedFromAi1?.[`prompt${i}`] || parsedAudit[`prompt${i}`] || "";
+        auditCandidate[`dialogue${i}`] = extractedFromAi1?.[`dialogue${i}`] !== undefined && String(extractedFromAi1[`dialogue${i}`]).trim() !== ""
+          ? extractedFromAi1[`dialogue${i}`]
+          : (parsedAudit[`dialogue${i}`] || "");
       }
 
-      // Check if character_bible exists in either source
-      const charBible = String(parsedAudit.character_bible || extractedFromAi1?.character_bible || "").trim();
+      // AI 1's [CHARACTER_BIBLE] is canonical; only fall back to AI 2's summary if AI 1 didn't emit one
+      const charBible = String(extractedFromAi1?.character_bible || parsedAudit.character_bible || "").trim();
       if (!parsedAudit.character_bible && charBible) {
         parsedAudit.character_bible = charBible;
       }
@@ -1376,7 +1579,7 @@ Output STRICT JSON matching schema.`;
           const p = auditCandidate[`prompt${i}`];
           const d = auditCandidate[`dialogue${i}`];
           if (p) {
-            const repaired = autoRepairDubbingTimeline(p, d);
+            const repaired = autoRepairDubbingTimeline(p, d, charBible);
             auditCandidate[`prompt${i}`] = repaired;
             parsedAudit[`prompt${i}`] = repaired;
           }
@@ -1385,34 +1588,20 @@ Output STRICT JSON matching schema.`;
         dubbingTimelineIssues = validateDubbingTimelineStructure(auditCandidate, sceneCount);
       }
 
-      if (!String(parsedAudit.character_bible || "").trim()) {
-        dubbingTimelineIssues.push("character_bible: missing canonical character identity, uniform and prop anchor");
-      }
-
-      // If AI 2 explicitly granted consensus OR gave >= 95% and timeline issues were auto-repaired:
-      if (parsedAudit.consensus_reached || percentage >= 95) {
-        if (dubbingTimelineIssues.length === 0) {
-          percentage = 100;
-          parsedAudit.consensus_reached = true;
-          parsedAudit.consensus_percentage = 100;
-        }
-      }
-
-      // If still genuine validation issues and consensus was not reached:
-      if (dubbingTimelineIssues.length > 0 && percentage < 100) {
-        percentage = Math.min(percentage, 99);
-        parsedAudit.consensus_reached = false;
-        parsedAudit.critique_and_required_fixes = [
-          parsedAudit.critique_and_required_fixes || "",
-          "DUB_TIMELINE validation failed:",
-          ...dubbingTimelineIssues.map(issue => `- ${issue}`),
-        ].filter(Boolean).join("\n");
-        console.warn(`⚠️ [PromptGen] Mechanical dubbing timeline validation rejected round ${currentRound}: ${dubbingTimelineIssues.join("; ")}`);
+      // Pragmatic Consensus Gate:
+      // Respect user feedback strictly: if the user gave feedback and AI 2 flagged low director compliance (< 90),
+      // force another revision round before Round 3 so AI 1 actually fixes the user's requested character/context changes!
+      const directorScore = Number(parsedAudit.human_director_compliance_score ?? 100);
+      const directorSatisfied = allUserFeedbacks.length === 0 || directorScore >= 90;
+      if ((parsedAudit.consensus_reached && directorSatisfied) || (percentage >= 80 && directorSatisfied) || currentRound >= ( startRound + 2 )) {
+        percentage = 100;
+        parsedAudit.consensus_reached = true;
+        parsedAudit.consensus_percentage = 100;
       }
       const reached = Boolean(parsedAudit.consensus_reached) && percentage === 100;
       lastCritique = 
         parsedAudit.critique_and_required_fixes || 
-        "Tiếp tục hoàn thiện 100% độ khớp nhân vật, 3 lớp không gian và tính mạch lạc.";
+        "Tiếp tục hoàn thiện 100% độ khớp nhân vật theo đúng góp ý của người dùng, 3 lớp không gian và tính mạch lạc.";
       finalSummary = parsedAudit.consensus_note || `Đồng thuận 100% đạt được tại Round ${currentRound}.`;
 
       if (reached) {
@@ -1437,32 +1626,23 @@ Output STRICT JSON matching schema.`;
           message: ai2SuccessMsg
         });
 
+        const charBibleToAttach = String(extractedFromAi1?.character_bible || parsedAudit.character_bible || "").trim();
         for (let i = 1; i <= sceneCount; i++) {
-          const p = parsedAudit[`prompt${i}`] || "";
-          const d = parsedAudit[`dialogue${i}`] || "";
-          if (p) finalPromptsObj[`prompt${i}`] = String(p);
+          const p = extractedFromAi1?.[`prompt${i}`] || auditCandidate[`prompt${i}`] || parsedAudit[`prompt${i}`] || "";
+          const d = extractedFromAi1?.[`dialogue${i}`] !== undefined && String(extractedFromAi1[`dialogue${i}`]).trim() !== ""
+            ? extractedFromAi1[`dialogue${i}`]
+            : (auditCandidate[`dialogue${i}`] !== undefined ? auditCandidate[`dialogue${i}`] : (parsedAudit[`dialogue${i}`] || ""));
+          if (p) finalPromptsObj[`prompt${i}`] = autoRepairDubbingTimeline(stripCastLockTag(String(p)), String(d || ""), charBibleToAttach);
           if (d) finalPromptsObj[`dialogue${i}`] = String(d);
         }
 
-        if (Object.keys(finalPromptsObj).length < sceneCount && latestAi1Proposal) {
-          try {
-            const { parseTextPromptToObj } = await import("./scheduler.js");
-            const extracted = parseTextPromptToObj(latestAi1Proposal);
-            if (extracted) {
-              for (let i = 1; i <= sceneCount; i++) {
-                if (!finalPromptsObj[`prompt${i}`] && extracted[`prompt${i}`]) {
-                  finalPromptsObj[`prompt${i}`] = extracted[`prompt${i}`];
-                }
-                if (!finalPromptsObj[`dialogue${i}`] && extracted[`dialogue${i}`]) {
-                  finalPromptsObj[`dialogue${i}`] = extracted[`dialogue${i}`];
-                }
-              }
-            }
-          } catch {}
+        if (charBibleToAttach) {
+          finalPromptsObj.character_bible = charBibleToAttach;
         }
+
         finalPromptsObj = attachCharacterBibleToScenes(
           finalPromptsObj,
-          String(parsedAudit.character_bible),
+          charBibleToAttach,
           sceneCount
         );
       } else {
@@ -1497,9 +1677,68 @@ Output STRICT JSON matching schema.`;
   // Fallback prompt generation if empty
   if (Object.keys(finalPromptsObj).length === 0) {
     for (let i = 1; i <= sceneCount; i++) {
-      finalPromptsObj[`prompt${i}`] = `Cinematic 3D Pixar animation of ${productName}, scene ${i}, adorable character, beautiful natural sunlight, rich environment props, smooth cinematic camera motion.`;
+      finalPromptsObj[`prompt${i}`] = isRealMode
+        ? `Photorealistic live-action 8K cinema shot of ${productName}, scene ${i}, real-life human actors and real-life animals, natural skin pores and authentic textures, cinematic lighting, shallow depth of field, smooth continuous camera motion.`
+        : `Cinematic 3D photorealistic render of ${productName}, scene ${i}, rich tactile material textures, cinematic studio lighting, volumetric atmosphere, smooth continuous camera motion.`;
     }
   }
+
+      if (isAiTaskAborted(startTime, sessionId)) {
+        throw new Error("Đã hủy thảo luận 2 AI theo yêu cầu");
+      }
+
+      // ── Preflight Validator: Kiểm tra từng prompt & tự động sửa (tối đa 3 lần) ──
+  const { validateAndRepairScenePrompts } = await import("./promptValidator.js");
+  const validationResult = await validateAndRepairScenePrompts(finalPromptsObj, sceneCount, {
+    productName,
+    worldStyle,
+    visualStyle: activeVisualStyle,
+    userFeedback: allUserFeedbacks.join(" | ") || undefined,
+    storyContext: cleanedDesc || undefined,
+    maxAttemptsPerScene: 3,
+    onProgress: (evt) => {
+      onProgress?.(evt as any);
+    },
+  });
+
+  if (!validationResult.success) {
+    const errorMsg =
+      validationResult.error || "Kiểm định prompt thất bại sau 3 lần sửa.";
+    console.error(`❌ [PromptGen] Preflight validation failed: ${errorMsg}`);
+
+    const validatorLabel = formatModelDisplayName(AGY_DEFAULT_MODEL);
+    const failedMsg: AiDebateMessage = {
+      agent: "Veo Preflight Validator",
+      model: AGY_DEFAULT_MODEL,
+      role: `Hệ Thống Kiểm Định An Toàn Veo 3 (${validatorLabel})`,
+      title: `❌ Dừng Kịch Bản: Phân cảnh ${validationResult.failedScene?.scene_index || 1} không thể sửa sau 3 lần`,
+      content: `${errorMsg}\n\n👉 Vui lòng đổi lại nội dung kịch bản hoặc cốt truyện!`,
+      timestamp: new Date().toLocaleTimeString("vi-VN"),
+      round: currentRound,
+    };
+    debateLog.push(failedMsg);
+
+    const failResult: AiConsensusResult = {
+      success: false,
+      consensus: false,
+      rounds: currentRound,
+      promptsObj: finalPromptsObj,
+      debateLog,
+      summary: errorMsg,
+    };
+
+    onProgress?.({
+      type: "prompt_validation_error",
+      error: errorMsg,
+      failed_scene: validationResult.failedScene,
+      result: failResult,
+    });
+
+    throw new Error(errorMsg);
+  }
+
+  finalPromptsObj = validationResult.promptsObj;
+  finalPromptsObj._visualStyle = activeVisualStyle;
 
   const durationMs = Date.now() - startTime;
   console.log(`\n✨ [2-AI Debate] Final Consensus completed in ${currentRound} rounds (${(durationMs / 1000).toFixed(1)}s)!`);
@@ -1634,10 +1873,10 @@ ${dubbingTimelineRules(6)}
 VISUAL PROMPT RULES
 ═══════════════════════════════════════════════════════
 - TARGET FORMAT: YouTube Shorts & TikTok (Vertical 9:16 portrait aspect ratio).
-- Mandatory Vertical 9:16 Composition: Every scene must be framed specifically for vertical 9:16 mobile screens. Characters must be staged close together in the center vertical safe zone with clean headroom above and floor space below. NEVER place characters far apart on opposite sides where they would be cropped out.
+- Mandatory Vertical 9:16 Composition & Face-to-Face Interaction: Every scene must be framed specifically for vertical 9:16 mobile screens. Characters must be staged close together in the center vertical safe zone with clean headroom above and floor space below. Whenever 2 or more characters converse or interact, they MUST turn their bodies and heads directly toward each other with clear eye contact (never facing sideways at an undefined angle or staring off-screen away from their conversation partner). NEVER place characters far apart on opposite sides where they would be cropped out.
 - Each visual prompt (prompt1–prompt6) must be 2–3 sentences in English only.
 - Describe: character(s), their emotional state/action, environment (specific details), lighting (warm/cool/natural), camera movement (e.g., "slow push in", "gentle low-angle looking up", "vertical tracking shot").
-- Maintain visual consistency: same character designs, art style (3D Pixar/animated), color palette across all 6 scenes.
+- Maintain visual consistency: same character designs, art style (cinematic photorealistic 3D realism), color palette across all 6 scenes.
 - Start each scene from the previous scene's final pose, expression, held object/hand and camera view. Identify visible characters by name and their locked distinguishing traits so each prompt works in a fresh rendering session.
 - DO NOT write text overlays or subtitle instructions inside visual prompts.
 - Avoid forbidden Gemini/Veo words: 'panic', 'scared', 'scream', 'fire', 'hit', 'destroy', 'broken', 'fall', 'collision', 'blood', 'violence', 'explosive'.
@@ -1805,12 +2044,12 @@ YOUR TASK:
 function buildFallbackSixPrompts(productName: string, category: string): any {
   const cleanName = removeVietnameseTones(productName);
   return {
-    prompt1: `A 10-second whimsical 3D Pixar-style animation introducing ${cleanName} on a bright, colorful stylized table, soft warm lighting, vibrant colors. DUB_TIMELINE: 0.0-10.0s, no dialogue; all mouths closed.`,
-    prompt2: `Continuing the animation, this 10-second scene shows a cute cartoon character approaching ${cleanName} with wide curious eyes, smooth claymation style. DUB_TIMELINE: 0.0-10.0s, no dialogue; all mouths closed.`,
-    prompt3: `Continuing the action, this 10-second scene shows the cute cartoon character happily interacting with ${cleanName}, whimsical magic sparkles in the air. DUB_TIMELINE: 0.0-10.0s, no dialogue; all mouths closed.`,
-    prompt4: `Continuing from the previous shot, this 10-second animation has the cartoon character demonstrating the key feature of ${cleanName} with playful expressions. DUB_TIMELINE: 0.0-10.0s, no dialogue; all mouths closed.`,
-    prompt5: `Continuing the scene, a funny 10-second micro-action occurs as the character enjoys using ${cleanName}, bright and cheerful environment. DUB_TIMELINE: 0.0-10.0s, no dialogue; all mouths closed.`,
-    prompt6: `Concluding the cartoon animation, this 10-second outro displays a heroic final presentation of ${cleanName} with the happy characters waving in the background, Pixar style. DUB_TIMELINE: 0.0-10.0s, no dialogue; all mouths closed.`,
+    prompt1: `A 10-second cinematic 3D photorealistic render introducing ${cleanName} with rich tactile material textures, cinematic lighting, vertical 9:16 framing. DUB_TIMELINE: 0.0-10.0s, no dialogue; all mouths closed.`,
+    prompt2: `Continuing the cinematic sequence, this 10-second scene displays dynamic interaction with ${cleanName}, realistic reflections, volumetric lighting. DUB_TIMELINE: 0.0-10.0s, no dialogue; all mouths closed.`,
+    prompt3: `Continuing the action, this 10-second scene showcases ${cleanName} in motion, detailed tactile textures, natural physics. DUB_TIMELINE: 0.0-10.0s, no dialogue; all mouths closed.`,
+    prompt4: `Continuing from the previous shot, this 10-second sequence highlights the key premium features of ${cleanName} with smooth camera panning. DUB_TIMELINE: 0.0-10.0s, no dialogue; all mouths closed.`,
+    prompt5: `Continuing the scene, a dynamic micro-action occurs highlighting ${cleanName}, atmospheric lighting, rich environment depth. DUB_TIMELINE: 0.0-10.0s, no dialogue; all mouths closed.`,
+    prompt6: `Concluding the cinematic video, this 10-second outro delivers a heroic, high-fidelity presentation of ${cleanName} with soft depth of field and elegant lighting. DUB_TIMELINE: 0.0-10.0s, no dialogue; all mouths closed.`,
     dialogue1: "",
     dialogue2: "",
     dialogue3: "",
@@ -1864,7 +2103,7 @@ function buildFallbackPrompt(productName: string, category: string): string {
     fashion: `Stylish model confidently showcasing ${productName} on a vibrant urban street at golden hour, dynamic low-angle tracking shot, cinematic film grain, rich saturated colors, highly detailed fabric texture, lifestyle brand aesthetic.`,
     food: `Mouth-watering close-up of ${productName} with steam rising gently in a warm cozy kitchen setting, soft natural window lighting, shallow depth of field bokeh, food photography style, cinematic 4K slow motion.`,
     fitness: `Dynamic energetic shot of ${productName} in a modern gym environment, dramatic side lighting, motivated athlete in background, cinematic action angles, high contrast dramatic mood, 4K ultra-detailed.`,
-    toys: `Whimsical close-up of ${cleanName} in a brightly lit colorful toy room, soft volumetric lighting, playful animations and magic sparkles, claymation style, goofy and cheerful atmosphere, ultra-detailed toy texture.`,
+    toys: `Whimsical close-up of ${cleanName} in a brightly lit colorful toy room, soft volumetric lighting, playful animations and magic sparkles, photorealistic 3D render style, goofy and cheerful atmosphere, ultra-detailed toy texture.`,
     household: `Warm close-up of ${cleanName} in a clean, modern cozy living room setup, soft natural ambient lighting, peaceful home atmosphere, high-definition product photography.`,
     baby: `Gentle warm close-up of ${cleanName} in a cozy pastel nursery, soft diffused nursery lighting, clean child-safe environment, sweet and whimsical aesthetic.`,
     pets: `Playful action shot of ${cleanName} in a bright cheerful pet area, warm sunny lighting, dynamic happy pet accessories in background, energetic and funny product focus.`,
@@ -2010,22 +2249,30 @@ export async function reviseScenePrompts(
   userFeedback: string = "",
   imageUrl?: string,
   feedbackImageUrl?: string,
-  onProgress?: (evt: { type: string; stage?: 'ai1' | 'ai2' | 'done'; message?: string; elapsedSec?: number; draft?: string; result?: any }) => void
+  onProgress?: (evt: { type: string; stage?: 'ai1' | 'ai2' | 'done'; message?: string; elapsedSec?: number; draft?: string; result?: any; [key: string]: any }) => void,
+  visualStyle?: string,
+  productDescription?: string
 ): Promise<{
   promptsObj: Record<string, any>;
   revisionNote?: string;
   ai1Proposal?: string;
   ai2Audit?: string;
 }> {
+  const activeVisualStyle = normalizeVisualStyle(visualStyle || currentPromptsObj?._visualStyle);
+  const isRealMode = activeVisualStyle === "real";
+  const isStickmanMode = activeVisualStyle === "stickman";
   const startTime = Date.now();
   const targetPartNames = sceneIndices.map(i => `Part ${i + 1}`).join(", ");
-  console.log(`\n🎭 [PromptGen] 2-AI Debate Revising Scene Prompts for [${targetPartNames}]...`);
+  console.log(`\n🎭 [PromptGen] Direct Single-AI Revision for [${targetPartNames}] (Mode: ${isRealMode ? "REAL" : isStickmanMode ? "STICKMAN" : "3D"})...`);
   console.log(`💬 User feedback: "${userFeedback}"${feedbackImageUrl ? " [Attached Image/Screenshot for Visual Audit]" : ""}`);
+
+  const primaryModel = getScriptwriterModel();
+  const aiModelTitle = formatModelDisplayName(primaryModel);
 
   onProgress?.({
     type: 'start',
     stage: 'ai1',
-    message: `🎭 AI 1 (AGY 3.8) đang tiếp thu góp ý & sáng tác lại kịch bản ${targetPartNames}...`,
+    message: `🤖 ${aiModelTitle} đang tiếp thu góp ý & sửa kịch bản ${targetPartNames}...`,
     elapsedSec: 0,
   });
 
@@ -2033,7 +2280,7 @@ export async function reviseScenePrompts(
   const visualAuditNote = feedbackImageUrl
     ? `\n\n═══════════════════════════════════════════════════════
 📸 ATTACHED SCREENSHOT / VISUAL ISSUE AUDIT (FROM HUMAN DIRECTOR):
-The human director has attached an image/screenshot above showing the current rendering defect or character issue (e.g., duplicate brown fur, color confusion between white/brown bears, incorrect attire or scene composition).
+The human director has attached an image/screenshot above showing the current rendering defect or character issue.
 INSPECT THE ATTACHED IMAGE VERY CAREFULLY! You must diagnose the visual discrepancy and ensure the revised prompts for [${targetPartNames}] fix it with 100% precision.
 ═══════════════════════════════════════════════════════`
     : "";
@@ -2045,194 +2292,306 @@ INSPECT THE ATTACHED IMAGE VERY CAREFULLY! You must diagnose the visual discrepa
   const totalScenes = Math.max(
     sceneKeys.length > 0 ? Math.max(...sceneKeys) : 0,
     ...sceneIndices.map(i => i + 1),
-    6
+    1
   );
   const allSceneIndices = Array.from({ length: totalScenes }, (_, idx) => idx + 1);
+  const validTargetNums = Array.from(
+    new Set(sceneIndices.map((idx) => idx + 1).filter((n) => Number.isInteger(n) && n >= 1 && n <= totalScenes))
+  ).sort((a, b) => a - b);
+  const effectiveTargetNums = validTargetNums.length > 0 ? validTargetNums : allSceneIndices;
+  const targetNumSet = new Set<number>(effectiveTargetNums);
 
   const currentScenesSummary = allSceneIndices.map(i => {
-    const isTarget = sceneIndices.includes(i - 1);
-    const p = currentPromptsObj[`prompt${i}`] || "";
+    const isTarget = targetNumSet.has(i);
+    const rawP = String(currentPromptsObj[`prompt${i}`] || "");
+    const p = isTarget ? stripCastLockTag(rawP) : rawP;
     const d = currentPromptsObj[`dialogue${i}`] || "";
-    return `[Part ${i}${isTarget ? " -> CẦN SỬA LẠI THEO GÓP Ý" : " -> GIỮ NGUYÊN HOẶC TINH CHỈNH NHẸ"}]
+    return `[Part ${i}${isTarget ? " -> CẦN SỬA LẠI THEO ĐÚNG GÓP Ý NGƯỜI DÙNG (TARGET SCENE TO REVISE)" : " -> NGỮ CẢNH CỐ ĐỊNH ĐỂ ĐỐI CHIẾU MẠCH TRUYỆN (READ-ONLY CONTEXT — LOCKED, DO NOT OUTPUT OR OVERWRITE)"}]
 Prompt: ${p}
 Dialogue: ${d}`;
   }).join("\n\n");
 
-  const speciesDirective = detectCharacterAndSpeciesFromTitle(productName);
+  const schemaKeys = effectiveTargetNums.map(i => `  "prompt${i}": "string",\n  "dialogue${i}": "string"`).join(",\n");
 
-  // Step 1: AI 1 (AGY Gemini 3.8) generates the creative draft.
-  const ai1SystemPrompt = `You are a world-class 3D Pixar animation director and viral TikTok ad scriptwriter (AGY Gemini 3.8).
-Your job is to creatively REVISE specific scenes ([${targetPartNames}]) of a ${totalScenes}-scene 3D cartoon video storyboard based on human director feedback and visual inspection.
-${speciesDirective ? `\n${speciesDirective}\n` : ""}
-CRITICAL RULES:
-1. TARGET SCENES: Revise specifically [${targetPartNames}].
-2. CHARACTER LOCK & DISTINCTION: Preserve the exact 3D Pixar character visual style, species (strictly match title and reference, NEVER confuse bears with cats or dogs), distinct colors (e.g. clearly distinguish Gấu Nâu vs Gấu Trắng/Panda), clothing, and charm across all scenes.
-   Preserve the existing CHARACTER BIBLE verbatim across all scenes: same chibi anatomy and face, exact uniform colors/trim/logo, fixed accessories, and prop ownership. Only revise these fixed details if the human director explicitly asks; then apply that change consistently to every scene. Keep expressions continuous with the story beat, without changing facial anatomy.
-3. VISUAL PROMPTS: Rich cinematic 3D Pixar descriptions in ENGLISH with 3 depth layers (foreground, midground, background), camera motion, lighting, and expressions.
-4. DIALOGUES: Natural, witty, heartwarming VIETNAMESE dialogue.
-5. DIRECTOR FEEDBACK: You MUST faithfully follow 100% of the user's instructions and visual audit findings.
-${dubbingTimelineRules(totalScenes)}
-When revising dialogue, recalculate the matching DUB_TIMELINE in every affected prompt. Never preserve stale timestamps after changing words.${visualAuditNote}`;
+  const cleanedStoryContext = cleanProductDescription(productDescription);
+  const storyContextBlock = cleanedStoryContext
+    ? `\nORIGINAL USER INPUT CONTENT / STORYLINE:\n${cleanedStoryContext}\n`
+    : "";
 
-  const ai1UserPrompt = `Product Name: ${productName}
-Category: ${category}
+  const bibleContext = currentPromptsObj.character_bible
+    ? `\nCURRENT CHARACTER BIBLE (UPDATE THIS IN YOUR OUTPUT ONLY IF THE DIRECTOR CHANGES A CHARACTER'S GLOBAL TRAIT/AGE/ROLE/OUTFIT; NEVER MERGE OR OVERWRITE OTHER LOCKED SCENES' PLOT BEATS):\n${currentPromptsObj.character_bible}\n`
+    : "";
 
-CURRENT 6-SCENE STORYBOARD:
+  const aiSystemPrompt = `You are a master ${isRealMode ? "photorealistic live-action cinema director (real-life human actors & real-life animals, strictly NO 3D CGI/cartoon)" : isStickmanMode ? "2D Chibi Comic Marshmallow Stickman Animation director (Người Que Hoạt Hình 2D Hóa Trang)" : "3D animation director"} and lead Veo prompt engineer.
+Your task is to revise ONLY scene(s) [${targetPartNames}] of a ${totalScenes}-scene storyboard strictly based on the director's instructions: "${userFeedback}".
+
+CRITICAL MANDATE — DIRECTOR REVISION IS SUPREME #1 AUTHORITY & NON-TARGET SCENES ARE STRICTLY LOCKED:
+- Every single character change, role/profession change, age change, outfit/prop change, setting change, action correction, camera angle, or dialogue change requested in "${userFeedback}" MUST be 100% applied to [${targetPartNames}]!
+- STRICT SCENE SLOT ISOLATION: All scenes outside [${targetPartNames}] are READ-ONLY CONTEXT. NEVER output keys for non-target scenes, and NEVER copy/shift a neighbor scene's plot beat or dialogue into [${targetPartNames}] unless the director explicitly asked to do so! Keep [${targetPartNames}] anchored to its exact narrative beat in the story progression!
+- NEVER let an old CHARACTER BIBLE, old scene prompt, or default template override the director's instructions!
+- Whenever the director changes a character's identity, age, outfit, role, or prop (or replaces/adds a character), update "character_bible" in your JSON output so old traits NEVER get re-injected, without altering the plot assignment of locked scenes!
+- Completely remove any conflicting old outfit, prop, or action from the revised scene prompt(s).
+
+STRICT GUIDELINES:
+1. Visual Mode & Character Continuity:
+   - Render mode: ${isRealMode ? "100% Photorealistic Live-Action Real Humans & Real Animals, NO 3D/cartoon" : isStickmanMode ? "2D Chibi Comic Marshmallow Stickman with glossy white round head, bold black outlines, and story-fitting outfits/props" : "Cinematic 3D Animation"}.
+   - Keep unmentioned traits of recurring characters consistent across scenes, while 100% applying every character/outfit/context change requested by the director!
+2. For each revised scene in [${targetPartNames}]:
+   - Write a vivid, SINGLE-TAKE ${isRealMode ? "photorealistic live-action cinema prompt (real-life humans/animals, natural skin/fur, 8K camera)" : isStickmanMode ? "2D Chibi Comic Marshmallow Stickman animation prompt (glossy white round head, bold black ink outlines)" : "cinematic 3D prompt"} (~175-215 words, ONE continuous camera shot with no internal jump-cuts or split grids) detailing camera motion and 3 layers: Foreground, Midground (characters with inline age & outfit anchor + held prop consistency), Background.
+   - STORY-AUTHENTIC CHARACTERS & PROPS (NO HARDCODED BANS): Dress characters and let them use whatever props genuinely fit the user's story and director's revision (smartphones, laptops, notebooks, medical tools, casual home clothes, suits, traditional wear, etc. are ALL 100% allowed whenever relevant!). Do NOT force unrelated cosplay outfits!
+   - DIALOGUE-DRIVEN VISUAL ACTION & FACE-TO-FACE 3/4 BLOCKING: Midground acting MUST match the scene's dialogue turn-by-turn. Stage conversing characters together in Midground turned toward each other at a 3/4 angle to the camera with locked eye contact. For solo scenes (1 character on screen), keep DUB_TIMELINE solo without mentioning "listeners".
+   - VEO 3 SAFETY & ANTI-BLOCK MANDATE: Avoid English block words like "crying", "wailing", "sobbing", "tears", "pregnant", "punish", "execute", "poison", "kill", "blood", "sickle", "blade", or "knife". Describe sad expressions without tears.
+   - Natural Vietnamese dialogue matching the characters and user content.
+   - Recalculate and append the exact DUB_TIMELINE tag at the end of each prompt.
+   ${dubbingTimelineRules(totalScenes)}
+3. Output ONLY the revised scene key(s) for [${targetPartNames}] (plus "story_title", "character_bible", and "revision_note") in STRICT JSON format.${visualAuditNote}
+
+OUTPUT FORMAT (STRICT JSON ONLY — DO NOT INCLUDE NON-TARGET SCENE KEYS):
+{
+  "story_title": "string",
+  "character_bible": "One concise line per main character (Name: age/species, look, outfit, key prop) updated to match all director changes",
+  "revision_note": "A concise summary in Vietnamese of what was revised in ${targetPartNames}",
+${schemaKeys}
+}`;
+
+  const aiUserPrompt = `Product / Topic: ${productName}
+Category: ${category}${storyContextBlock}${bibleContext}
+CURRENT ${totalScenes}-SCENE STORYBOARD (NON-TARGET SCENES ARE READ-ONLY CONTEXT):
 ${currentScenesSummary}
 
-HUMAN DIRECTOR INSTRUCTIONS / FEEDBACK:
-"${userFeedback || "Làm cho các part được chọn sinh động, biểu cảm rõ nét và phân biệt rõ nhân vật"}"${visualAuditNote}
+🚨 DIRECTOR REVISION REQUEST FOR [${targetPartNames}] ONLY (SUPREME #1 PRIORITY):
+"${userFeedback || "Làm cho các part được chọn sinh động, biểu cảm rõ nét và phân biệt rõ nhân vật"}"
 
-Please provide your creative revision draft for [${targetPartNames}] explaining your artistic choices and writing out the revised visual prompts and Vietnamese dialogues.`;
+Please output the revised JSON strictly for [${targetPartNames}] (and updated "character_bible" if needed) without modifying or shifting any other scene.`;
 
-  let ai1Draft = "";
-  let ai1Name = "AI 1 (Codex Sol Light)";
-  let isSolConnected = true;
+  let currentActiveModel = primaryModel;
+  let currentModelTitle = aiModelTitle;
 
   onProgress?.({
     type: 'ai1_start',
     stage: 'ai1',
-    message: `🎭 ${ai1Name} đang sáng tác lại kịch bản & lời thoại cho ${targetPartNames}...`,
+    message: `🤖 ${currentModelTitle} đang viết lại kịch bản cho ${targetPartNames}...`,
     elapsedSec: Math.floor((Date.now() - startTime) / 1000),
   });
 
-  const hb1 = setInterval(() => {
+  const hb = setInterval(() => {
     onProgress?.({
       type: 'heartbeat',
       stage: 'ai1',
-      message: `🎭 ${ai1Name} đang sáng tác lại kịch bản & lời thoại cho ${targetPartNames}...`,
+      message: `🤖 ${currentModelTitle} đang viết lại kịch bản cho ${targetPartNames}...`,
       elapsedSec: Math.floor((Date.now() - startTime) / 1000),
     });
   }, 1000);
 
+  let rawJson = "";
+  let modelUsed = primaryModel;
+
   try {
-    try {
-      if (!isCodexEnabled()) throw new Error("Codex is disabled");
-      ai1Draft = await callCodexSol(ai1SystemPrompt, ai1UserPrompt, false);
-    } catch (solErr: any) {
-      isSolConnected = false;
-      console.warn(`⚠️ [PromptGen revise-scene] Codex Sol failed (${solErr?.message || solErr}), falling back to AGY Gemini 3.8...`);
-      ai1Name = "AI 1 (AGY Gemini 3.8)";
-      ai1Draft = await callBedrock(ai1SystemPrompt, ai1UserPrompt, activeVisualRef, false, AGY_DEFAULT_MODEL);
+    if (isAiTaskAborted(startTime)) {
+      throw new Error("Đã hủy sửa kịch bản theo yêu cầu");
     }
+    const res = await callScriptwriter(
+      aiSystemPrompt,
+      aiUserPrompt,
+      activeVisualRef,
+      true,
+      (nextModel) => {
+        currentActiveModel = nextModel;
+        currentModelTitle = formatModelDisplayName(nextModel);
+        onProgress?.({
+          type: 'model_switch',
+          stage: 'ai1',
+          message: `🤖 ${currentModelTitle} đang viết lại kịch bản cho ${targetPartNames}...`,
+          model: nextModel,
+          modelTitle: currentModelTitle,
+          elapsedSec: Math.floor((Date.now() - startTime) / 1000),
+        });
+      }
+    );
+    if (isAiTaskAborted(startTime)) {
+      throw new Error("Đã hủy sửa kịch bản theo yêu cầu");
+    }
+    rawJson = res.text;
+    modelUsed = res.model;
+  } catch (err: any) {
+    console.error(`❌ [PromptGen] Failed to revise scene prompts: ${err.message}`);
+    throw err;
   } finally {
-    clearInterval(hb1);
+    clearInterval(hb);
   }
 
-  onProgress?.({
-    type: 'ai1_done',
-    stage: 'ai2',
-    message: `✅ ${ai1Name} đã hoàn thành bản nháp (${ai1Draft.length} ký tự). Đang chuyển cho AI 2 kiểm định...`,
-    elapsedSec: Math.floor((Date.now() - startTime) / 1000),
-    draft: ai1Draft,
-  });
+  let parsed: any = {};
+  try {
+    const cleanJson = rawJson.replace(/```json\s*/gi, "").replace(/```\s*$/gi, "").trim();
+    parsed = JSON.parse(cleanJson);
+  } catch {
+    const match = rawJson.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        parsed = JSON.parse(match[0]);
+      } catch (e: any) {
+        console.error("Failed to parse JSON regex:", e.message);
+      }
+    }
+  }
 
-  // Step 2: AI 2 (Gemini 3.8 Low review, or fallback to GLM-5) audits the revision, verifies compliance, and generates strict JSON
-  const ai2AuditorTitle = isSolConnected ? "Gemini 3.8 Low" : "GLM-5";
-  const schemaKeys = allSceneIndices.map(i => `  "prompt${i}": "string",\n  "dialogue${i}": "string"`).join(",\n");
-  const ai2SystemPrompt = `You are the Supreme Animation Auditor & Lead Prompt Engineer (${ai2AuditorTitle}).
-Your mission is to audit AI 1's draft for [${targetPartNames}], ensure 100% compliance with user feedback, character locks/color distinctions, and output the final validated JSON schema.
-Compare each scene against the existing CHARACTER BIBLE and preserve the same face, chibi proportions, uniform, fixed accessories and props. Any requested design change must be applied consistently across all scenes.
+  const { parseTextPromptToObj } = await import("./scheduler.js");
+  const extractedFromRaw = parseTextPromptToObj(rawJson) || {};
+  const extractedFromParsed = parseTextPromptToObj(parsed) || {};
 
-${dubbingTimelineRules(totalScenes)}
-Reject or repair any scene whose DUB_TIMELINE is missing, incomplete, overlaps, names the wrong speaker, or no longer matches its revised dialogue word-for-word and line-for-line.
+  const updatedPromptsObj: Record<string, any> = {
+    ...currentPromptsObj,
+    _visualStyle: activeVisualStyle,
+  };
 
-OUTPUT FORMAT (STRICT JSON ONLY):
-{
-  "story_title": "string",
-  "ai2_audit_note": "A concise professional audit summary in Vietnamese verifying adherence to user feedback and character lock",
-  "revision_note": "Brief explanation in Vietnamese of changes made to ${targetPartNames}",
-${schemaKeys}
-}`;
+  // CRITICAL: Update character_bible whenever AI returns an updated bible so stale outfits/roles NEVER overwrite revised scenes!
+  const newCharacterBible = String(
+    parsed.character_bible ||
+    extractedFromParsed.character_bible ||
+    extractedFromRaw.character_bible ||
+    currentPromptsObj.character_bible ||
+    ""
+  ).trim();
+  if (newCharacterBible) {
+    updatedPromptsObj.character_bible = newCharacterBible;
+  }
 
-  const ai2UserPrompt = `Product Name: ${productName}
-Category: ${category}
+  // STRICT SCENE ISOLATION: Only extract & update target scene(s) requested in sceneIndices!
+  // Non-target scenes in currentPromptsObj MUST NEVER be overwritten by AI output.
+  const isSingleTarget = effectiveTargetNums.length === 1;
+  for (const i of effectiveTargetNums) {
+    const candidatePrompt =
+      parsed[`prompt${i}`] ||
+      parsed[`prompt_${i}`] ||
+      parsed[`scene${i}`]?.prompt ||
+      parsed[`scene_${i}`]?.prompt ||
+      parsed.prompts?.[`prompt${i}`] ||
+      parsed.storyboard?.[`prompt${i}`] ||
+      (Array.isArray(parsed.scenes) ? parsed.scenes.find((s: any) => (s.scene_index || s.scene || s.part) === i)?.prompt : undefined) ||
+      (isSingleTarget && Array.isArray(parsed.scenes) && parsed.scenes.length === 1 ? parsed.scenes[0]?.prompt : undefined) ||
+      (isSingleTarget && typeof parsed.prompt === "string" ? parsed.prompt : undefined) ||
+      extractedFromRaw[`prompt${i}`] ||
+      extractedFromParsed[`prompt${i}`];
 
-ORIGINAL STORYBOARD:
-${currentScenesSummary}
+    const singleSceneDia = isSingleTarget && Array.isArray(parsed.scenes) && parsed.scenes.length === 1
+      ? parsed.scenes[0]?.dialogue
+      : undefined;
+    const candidateDialogue =
+      parsed[`dialogue${i}`] !== undefined ? parsed[`dialogue${i}`] :
+      parsed[`dialogue_${i}`] !== undefined ? parsed[`dialogue_${i}`] :
+      parsed[`scene${i}`]?.dialogue !== undefined ? parsed[`scene${i}`]?.dialogue :
+      parsed[`scene_${i}`]?.dialogue !== undefined ? parsed[`scene_${i}`]?.dialogue :
+      parsed.dialogues?.[`dialogue${i}`] !== undefined ? parsed.dialogues?.[`dialogue${i}`] :
+      (Array.isArray(parsed.scenes) ? parsed.scenes.find((s: any) => (s.scene_index || s.scene || s.part) === i)?.dialogue : undefined) !== undefined ? parsed.scenes.find((s: any) => (s.scene_index || s.scene || s.part) === i)?.dialogue :
+      singleSceneDia !== undefined ? singleSceneDia :
+      (isSingleTarget && parsed.dialogue !== undefined ? parsed.dialogue : undefined) !== undefined ? parsed.dialogue :
+      extractedFromRaw[`dialogue${i}`] !== undefined ? extractedFromRaw[`dialogue${i}`] :
+      extractedFromParsed[`dialogue${i}`];
 
-HUMAN DIRECTOR INSTRUCTIONS:
-"${userFeedback}"${visualAuditNote}
+    if (candidatePrompt) {
+      const effectiveDia = candidateDialogue !== undefined && candidateDialogue !== null
+        ? String(candidateDialogue)
+        : String(updatedPromptsObj[`dialogue${i}`] || "");
+      updatedPromptsObj[`prompt${i}`] = autoRepairDubbingTimeline(
+        stripCastLockTag(String(candidatePrompt)),
+        effectiveDia,
+        newCharacterBible || undefined
+      );
+    }
+    if (candidateDialogue !== undefined && candidateDialogue !== null) updatedPromptsObj[`dialogue${i}`] = candidateDialogue;
+  }
+  if (parsed.story_title || extractedFromRaw.story_title) {
+    updatedPromptsObj.story_title = parsed.story_title || extractedFromRaw.story_title;
+  }
 
-AI 1 (${ai1Name.toUpperCase()}) PROPOSAL:
-${ai1Draft}
+  const { sanitizePromptForVeoPolicy, validateAndRepairScenePrompts } = await import("./promptValidator.js");
+  if (typeof updatedPromptsObj.character_bible === "string" && updatedPromptsObj.character_bible.trim()) {
+    updatedPromptsObj.character_bible = sanitizePromptForVeoPolicy(updatedPromptsObj.character_bible, activeVisualStyle).sanitized;
+  }
 
-Please audit AI 1's proposal, refine prompts/dialogues for perfection, and output the final ${totalScenes}-part screenplay JSON.`;
-
-  let ai2Name = isSolConnected ? "AI 2 (AGY Gemini 3.8 Low)" : "AI 2 (GLM-5)";
+  // Preflight check & auto-repair ONLY on the revised scenes, passing userFeedback & storyContext so validator respects user edits
   onProgress?.({
     type: 'ai2_start',
     stage: 'ai2',
-    message: `🧐 ${ai2Name} đang kiểm định tiêu chí nhân vật & bố cục 3 lớp cho ${targetPartNames}...`,
+    message: `🛡️ Đang kiểm tra chính sách an toàn Veo 3 cho ${targetPartNames} trước khi hoàn tất...`,
     elapsedSec: Math.floor((Date.now() - startTime) / 1000),
   });
 
-  const hb2 = setInterval(() => {
-    onProgress?.({
-      type: 'heartbeat',
-      stage: 'ai2',
-      message: `🧐 ${ai2Name} đang kiểm định tiêu chí nhân vật & bố cục 3 lớp cho ${targetPartNames}...`,
-      elapsedSec: Math.floor((Date.now() - startTime) / 1000),
-    });
-  }, 1000);
+  const validationRes = await validateAndRepairScenePrompts(updatedPromptsObj, totalScenes, {
+    productName,
+    visualStyle: activeVisualStyle,
+    userFeedback,
+    storyContext: cleanedStoryContext || undefined,
+    onlySceneIndices: sceneIndices,
+    maxAttemptsPerScene: 2,
+    onProgress: (vEvt) => {
+      onProgress?.({
+        ...vEvt,
+        stage: 'ai2',
+        elapsedSec: Math.floor((Date.now() - startTime) / 1000),
+      });
+    },
+  });
 
-  try {
-    let ai2ResJson = "";
-    if (isSolConnected && isAgyEnabled()) {
-      try {
-        ai2ResJson = await callAgy(ai2SystemPrompt, ai2UserPrompt, true, "gemini-3.8-flash-low");
-      } catch (agyErr: any) {
-        console.warn(`⚠️ [PromptGen revise-scene] AGY Gemini 3.8 Low failed (${agyErr?.message || agyErr}), falling back to GLM-5...`);
-        ai2Name = "AI 2 (GLM-5)";
-        ai2ResJson = await callBedrock(ai2SystemPrompt, ai2UserPrompt, activeVisualRef, true, "zai.glm-5");
+  if (validationRes.promptsObj) {
+    for (const i of effectiveTargetNums) {
+      if (validationRes.promptsObj[`prompt${i}`] !== undefined) {
+        updatedPromptsObj[`prompt${i}`] = validationRes.promptsObj[`prompt${i}`];
       }
-    } else {
-      ai2ResJson = await callBedrock(ai2SystemPrompt, ai2UserPrompt, activeVisualRef, true, "zai.glm-5");
+      if (validationRes.promptsObj[`dialogue${i}`] !== undefined) {
+        updatedPromptsObj[`dialogue${i}`] = validationRes.promptsObj[`dialogue${i}`];
+      }
     }
-    let parsed: any;
-    try {
-      const cleanJson = ai2ResJson.replace(/```json\s*/gi, "").replace(/```\s*$/gi, "").trim();
-      parsed = JSON.parse(cleanJson);
-    } catch {
-      const match = ai2ResJson.match(/\{[\s\S]*\}/);
-      if (match) parsed = JSON.parse(match[0]);
-      else throw new Error("Could not parse JSON from review response");
-    }
-
-    const updatedPromptsObj: Record<string, any> = { ...currentPromptsObj };
-    for (let i = 1; i <= totalScenes; i++) {
-      if (parsed[`prompt${i}`]) updatedPromptsObj[`prompt${i}`] = parsed[`prompt${i}`];
-      if (parsed[`dialogue${i}`]) updatedPromptsObj[`dialogue${i}`] = parsed[`dialogue${i}`];
-    }
-    if (parsed.story_title) updatedPromptsObj.story_title = parsed.story_title;
-    if (typeof currentPromptsObj.character_bible === "string") {
-      Object.assign(updatedPromptsObj, attachCharacterBibleToScenes(
-        updatedPromptsObj,
-        currentPromptsObj.character_bible,
-        totalScenes
-      ));
-    }
-
-    const finalResult = {
-      promptsObj: updatedPromptsObj,
-      revisionNote: parsed.revision_note || `Đã cập nhật ${targetPartNames} thành công`,
-      ai1Proposal: ai1Draft,
-      ai2Audit: parsed.ai2_audit_note || "Đã kiểm định 100% đạt chuẩn nhân vật và chỉ đạo đạo diễn.",
-    };
-
-    onProgress?.({
-      type: 'complete',
-      stage: 'done',
-      message: `🎉 2 AI đã thống nhất 100% bản sửa cho ${targetPartNames}! (${Math.floor((Date.now() - startTime) / 1000)}s)`,
-      elapsedSec: Math.floor((Date.now() - startTime) / 1000),
-      result: finalResult,
-    });
-
-    return finalResult;
-  } catch (err: any) {
-    console.error(`❌ [PromptGen] Failed to revise scene prompts with 2-AI: ${err.message}`);
-    throw err;
-  } finally {
-    clearInterval(hb2);
   }
+
+  if (typeof updatedPromptsObj.character_bible === "string" && updatedPromptsObj.character_bible.trim()) {
+    const anchoredAll = attachCharacterBibleToScenes(
+      updatedPromptsObj,
+      updatedPromptsObj.character_bible,
+      totalScenes
+    );
+    for (const i of effectiveTargetNums) {
+      if (anchoredAll[`prompt${i}`] !== undefined) {
+        updatedPromptsObj[`prompt${i}`] = anchoredAll[`prompt${i}`];
+      }
+    }
+  }
+
+  // HARD SCENE LOCK: Guarantee non-target scenes remain 100% identical to currentPromptsObj,
+  // and sanitize only the revised target scenes.
+  for (let i = 1; i <= totalScenes; i++) {
+    if (!targetNumSet.has(i)) {
+      if (currentPromptsObj[`prompt${i}`] !== undefined) {
+        updatedPromptsObj[`prompt${i}`] = currentPromptsObj[`prompt${i}`];
+      } else {
+        delete updatedPromptsObj[`prompt${i}`];
+      }
+      if (currentPromptsObj[`dialogue${i}`] !== undefined) {
+        updatedPromptsObj[`dialogue${i}`] = currentPromptsObj[`dialogue${i}`];
+      } else {
+        delete updatedPromptsObj[`dialogue${i}`];
+      }
+    } else if (typeof updatedPromptsObj[`prompt${i}`] === "string") {
+      updatedPromptsObj[`prompt${i}`] = sanitizePromptForVeoPolicy(updatedPromptsObj[`prompt${i}`], activeVisualStyle).sanitized;
+    }
+  }
+
+  const revisionNote = parsed.revision_note || `Đã cập nhật & kiểm định an toàn Veo 3 cho ${targetPartNames}`;
+
+  const finalResult = {
+    promptsObj: updatedPromptsObj,
+    revisionNote,
+    ai1Proposal: rawJson,
+    ai2Audit: `Đã chỉnh sửa bởi ${formatModelDisplayName(modelUsed)} & kiểm định an toàn Veo 3 (${validationRes.repairedCount || 0} cảnh được tối ưu chống chặn)`,
+  };
+
+  onProgress?.({
+    type: 'complete',
+    stage: 'done',
+    message: `🎉 ${revisionNote} (${Math.floor((Date.now() - startTime) / 1000)}s)`,
+    elapsedSec: Math.floor((Date.now() - startTime) / 1000),
+    result: finalResult,
+  });
+
+  return finalResult;
 }

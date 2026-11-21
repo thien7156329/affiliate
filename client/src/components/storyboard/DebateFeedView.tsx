@@ -15,8 +15,9 @@ interface DebateFeedViewProps {
   messages: AiDebateMessage[];
   currentRound: number;
   isDebating: boolean;
-  onOpenPartEditor?: (partNum: number) => void;
+  onOpenPartEditor?: (partNum: number, initialPrompt?: string, initialDialogue?: string) => void;
   onSavePartPrompt?: (partNum: number, newPrompt: string, newDialogue: string) => void;
+  onApplyFullScript?: (parts: ParsedScenePart[], bibles: ScriptBibles) => void;
 }
 
 interface ParsedScenePart {
@@ -150,6 +151,7 @@ export const DebateFeedView: React.FC<DebateFeedViewProps> = memo(({
   isDebating,
   onOpenPartEditor,
   onSavePartPrompt,
+  onApplyFullScript,
 }) => {
   // Group messages by Round
   const roundGroups = useMemo<RoundGroup[]>(() => {
@@ -444,25 +446,52 @@ export const DebateFeedView: React.FC<DebateFeedViewProps> = memo(({
                               })}
                             </div>
 
-                            <button
-                              type="button"
-                              onClick={() => setRawViewToggles((prev) => ({ ...prev, [msgKey]: true }))}
-                              style={{
-                                background: 'var(--bg3)',
-                                border: '1px solid var(--border)',
-                                color: 'var(--muted)',
-                                padding: '4px 9px',
-                                borderRadius: '6px',
-                                fontSize: '10.5px',
-                                cursor: 'pointer',
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: '4px',
-                              }}
-                            >
-                              <FileText size={12} />
-                              <span>Toàn văn kịch bản</span>
-                            </button>
+                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                              {onApplyFullScript && (
+                                <button
+                                  type="button"
+                                  onClick={() => onApplyFullScript(parsedParts, bibles)}
+                                  style={{
+                                    background: 'rgba(16, 185, 129, 0.15)',
+                                    border: '1px solid rgba(16, 185, 129, 0.4)',
+                                    color: '#34d399',
+                                    padding: '4px 9px',
+                                    borderRadius: '6px',
+                                    fontSize: '10.5px',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    transition: 'all 0.15s',
+                                  }}
+                                  title="Đồng bộ toàn bộ kịch bản và các Part từ bản thảo này vào kịch bản dự án"
+                                >
+                                  <CheckCircle size={12} />
+                                  <span>📌 Dùng bản thảo này</span>
+                                </button>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() => setRawViewToggles((prev) => ({ ...prev, [msgKey]: true }))}
+                                style={{
+                                  background: 'var(--bg3)',
+                                  border: '1px solid var(--border)',
+                                  color: 'var(--muted)',
+                                  padding: '4px 9px',
+                                  borderRadius: '6px',
+                                  fontSize: '10.5px',
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                }}
+                              >
+                                <FileText size={12} />
+                                <span>Toàn văn kịch bản</span>
+                              </button>
+                            </div>
                           </div>
 
                           {/* 🐻 Character & Voice Bible Display */}
@@ -529,7 +558,7 @@ export const DebateFeedView: React.FC<DebateFeedViewProps> = memo(({
                                   {onOpenPartEditor && (
                                     <button
                                       type="button"
-                                      onClick={() => onOpenPartEditor(currentPartData.partNum)}
+                                      onClick={() => onOpenPartEditor(currentPartData.partNum, currentPartData.prompt, currentPartData.dialogue)}
                                       style={{
                                         background: 'linear-gradient(135deg, #7c3aed 0%, #a855f7 100%)',
                                         color: '#fff',

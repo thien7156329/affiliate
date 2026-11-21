@@ -22,6 +22,9 @@ import {
   updateProduct as dbUpdateProduct,
   type Product,
 } from "./database.js";
+import { buildWorldStyleDirective, normalizeWorldStyle, withWorldStyle } from "./worldStyles.js";
+import { checkContentSafety } from "./contentSafety.js";
+import { formatModelDisplayName, getScriptwriterModel, getAuditorModel } from "./aiModelConfig.js";
 
 export type { Product };
 
@@ -382,9 +385,72 @@ export function parseTextPromptToObj(input: any): any {
   if (typeof input === "string") {
     const textToParse = input.trim();
     if (textToParse) {
-      const sceneBlocks = textToParse.split(/(?:CẢNH|SCENE)\s*(\d+)/i);
       const obj: any = {};
+      const bibleMatch = textToParse.match(/(?:\[CHARACTER_BIBLE\]|CHARACTER_BIBLE:?|CHARACTER BIBLE:?)([\s\S]*?)(?=(?:(?:\r?\n)+(?:##|\*\*|---|Scene\s*1|prompt1|Part\s*1|Phân cảnh\s*1))|$)/i);
+      if (bibleMatch && bibleMatch[1].trim()) {
+        obj.character_bible = bibleMatch[1].replace(/^[#*\s=:-]+/, "").trim();
+      }
 
+      const audioBibleMatch = textToParse.match(/(?:\[AUDIO_AND_VOICE_BIBLE\]|AUDIO_AND_VOICE_BIBLE:?|AUDIO BIBLE:?)([\s\S]*?)(?=(?:(?:\r?\n)+(?:##|\*\*|---|Scene\s*1|prompt1|Part\s*1|Phân cảnh\s*1))|$)/i);
+      if (audioBibleMatch && audioBibleMatch[1].trim()) {
+        obj.audio_bible = audioBibleMatch[1].replace(/^[#*\s=:-]+/, "").trim();
+      }
+
+      // 1. Intelligent multi-part parser (scans Part/Scene 1..20)
+      for (let i = 1; i <= 20; i++) {
+        const sceneRegex = new RegExp(
+          `(?:###?\\s*|\\*\\*|\\b)(?:Scene|Part|Cảnh|Phân cảnh)\\s*${i}[:\\*\\s\\-]+([\\s\\S]*?)(?=(?:###?\\s*|\\*\\*|\\b)(?:Scene|Part|Cảnh|Phân cảnh)\\s*\\d+[:\\*\\s\\-]|$)`,
+          "i"
+        );
+        const sMatch = textToParse.match(sceneRegex);
+        const sceneBlock = sMatch ? sMatch[1].trim() : "";
+
+        let promptText = "";
+        let dialogueText = "";
+
+        if (sceneBlock) {
+          const pInnerMatch = sceneBlock.match(/(?:\*{0,2}(?:prompt|visual prompt)\s*\d*\*{0,2}[:\s\-]+)([\s\S]*?)(?=(?:(?:\r?\n)+\s*[#*\-]*\s*(?:lời thoại|thoại|dialogue|vietnamese dialogue)\s*\d*\*{0,2}[:\s\-]|$))/i);
+          if (pInnerMatch) {
+            promptText = pInnerMatch[1].trim();
+          }
+
+          const diaMatch = sceneBlock.match(/(?:^|\r?\n)\s*[#*\-]*\s*(?:\*{0,2}(?:lời thoại(?:\s*&\s*lồng tiếng)?(?:\s*\(vietnamese dialogue\))?|thoại tiếng việt|thoại|dialogue|vietnamese dialogue)\s*\d*\*{0,2}[:\s\-]+)([\s\S]*)$/i);
+          if (diaMatch) {
+            dialogueText = diaMatch[1].trim();
+            if (!promptText) {
+              promptText = sceneBlock.substring(0, diaMatch.index).trim();
+            }
+          } else if (!promptText) {
+            promptText = sceneBlock;
+          }
+        } else {
+          const pMatch = textToParse.match(new RegExp(`(?:^|\\r?\\n)[#*\`\\s-]*(?:prompt|visual prompt)\\s*${i}[:\\*\\s\\-]+([\\s\\S]*?)(?=(?:(?:\\r?\\n)+[#*\`\\s-]*(?:dialogue|thoại|lời thoại|prompt|scene|part|cảnh|---))|$)`, "i"));
+          const dMatch = textToParse.match(new RegExp(`(?:^|\\r?\\n)[#*\`\\s-]*(?:dialogue|thoại|lời thoại)\\s*${i}[:\\*\\s\\-]+([\\s\\S]*?)(?=(?:(?:\\r?\\n)+[#*\`\\s-]*(?:prompt|dialogue|scene|part|cảnh|---))|$)`, "i"));
+          if (pMatch) promptText = pMatch[1].trim();
+          if (dMatch) dialogueText = dMatch[1].trim();
+        }
+
+        promptText = promptText
+          .replace(/^[\s\S]*?\b(?:prompt\d*|visual prompt)[:\s\-]*/i, "")
+          .replace(/^[\-_#\s*]+/, "")
+          .replace(/[\-_#\s*]+$/, "")
+          .trim();
+
+        dialogueText = dialogueText
+          .replace(/^[\-_#\s*]+/, "")
+          .replace(/[\-_#\s*]+$/, "")
+          .trim();
+
+        if (promptText) obj[`prompt${i}`] = promptText;
+        if (dialogueText) obj[`dialogue${i}`] = dialogueText;
+      }
+
+      if (Object.keys(obj).some((k) => /^prompt\d+$/i.test(k))) {
+        return obj;
+      }
+
+      // 2. Legacy CẢNH / SCENE block parser
+      const sceneBlocks = textToParse.split(/(?:CẢNH|SCENE)\s*(\d+)/i);
       if (sceneBlocks.length > 1) {
         for (let i = 1; i < sceneBlocks.length; i += 2) {
           const sceneNum = sceneBlocks[i];
@@ -398,8 +464,8 @@ export function parseTextPromptToObj(input: any): any {
             promptText = parts[0].replace(/PROMPT VEO:/i, "").replace(/^[\s=:-]+/, "").trim();
             dialogueText = (parts[1] || "").trim();
           } else if (/PROMPT VEO:/i.test(blockContent)) {
-            const pMatch = blockContent.match(/PROMPT VEO:\s*([\s\S]*?)$/i);
-            if (pMatch) promptText = pMatch[1].trim();
+            const pM = blockContent.match(/PROMPT VEO:\s*([\s\S]*?)$/i);
+            if (pM) promptText = pM[1].trim();
           } else {
             promptText = blockContent.replace(/^[\s=:-]+/, "").trim();
           }
@@ -435,8 +501,12 @@ export async function runPipelineForProduct(
     sceneImagePaths?: string[];
     autoGenerateSceneImages?: boolean;
     sceneCount?: number;
+    worldStyle?: string;
   } = {}
 ): Promise<PipelineResult> {
+  const requestedSceneCount = Number.isInteger(options.sceneCount) && Number(options.sceneCount) > 0
+    ? Number(options.sceneCount)
+    : undefined;
   const {
     dryRun = false,
     uploadToS3 = true,
@@ -446,8 +516,10 @@ export async function runPipelineForProduct(
     userFeedback,
     sceneImagePaths = [],
     autoGenerateSceneImages = true,
-    sceneCount = 8,
+    sceneCount = requestedSceneCount || 8,
+    worldStyle = product.world_style || "auto",
   } = options;
+  const activeWorldStyle = normalizeWorldStyle(worldStyle);
   isRunning = true;
   isCancelled = false;
   const startedAt = new Date().toISOString();
@@ -458,13 +530,19 @@ export async function runPipelineForProduct(
 
   console.log(`\n${"─".repeat(60)}`);
   console.log(`🚀 [Pipeline] Starting (Multi-Segment): ${product.name} (${product.id})`);
-  console.log(`   DryRun: ${dryRun} | S3: ${uploadToS3} | TikTok: ${publishTikTok} | 2-AI Consensus: ${useAiConsensus} | Auto Scene Images: ${autoGenerateSceneImages} | Target Scenes: ${sceneCount}`);
+  console.log(`   DryRun: ${dryRun} | S3: ${uploadToS3} | TikTok: ${publishTikTok} | 2-AI Consensus: ${useAiConsensus} | Auto Scene Images: ${autoGenerateSceneImages} | Target Scenes: ${sceneCount} | World Style: ${activeWorldStyle}`);
   if (userFeedback) {
     console.log(`   User Director Feedback: "${userFeedback}"`);
   }
   console.log(`${"─".repeat(60)}`);
 
   try {
+    const inputSafety = checkContentSafety(product.description, userFeedback, JSON.stringify(customPromptsObj || product.promptsObj || {}));
+    if (!inputSafety.safe) {
+      const labels = inputSafety.issues.map((issue) => `${issue.label}: ${issue.guidance}`).join(" | ");
+      throw new Error(`GEMINI_SAFETY_POLICY_BLOCK — ${labels}`);
+    }
+
     // Step 1: Resolve prompts (Use passed customPromptsObj OR saved product.promptsObj OR generate new via Gemini)
     let promptsObj = parseTextPromptToObj(customPromptsObj) || parseTextPromptToObj(product.promptsObj);
     const { generateSixVideoPrompts, generatePromptsWithAiConsensus, generateVideoDescriptionVi } = await import("./promptGenerator.js");
@@ -476,7 +554,9 @@ export async function runPipelineForProduct(
     if (hasValidPrompts) {
       console.log(`📌 [Pipeline 1/4] Using PRESET/CUSTOM prompts for "${product.name}" (${Object.keys(promptsObj).length} keys parsed, skipping AI re-generation)...`);
     } else if (useAiConsensus) {
-      console.log(`\n🤝 [Pipeline 1/4] Generating ${sceneCount} Veo prompts via 2-AI validation (AGY Gemini 3.8 + Zhipu AI GLM-5)...`);
+      const ai1Name = formatModelDisplayName(getScriptwriterModel());
+      const ai2Name = formatModelDisplayName(getAuditorModel());
+      console.log(`\n🤝 [Pipeline 1/4] Generating ${sceneCount} Veo prompts via 2-AI validation (${ai1Name} + ${ai2Name})...`);
       const consensusRes = await generatePromptsWithAiConsensus(
         product.name,
         product.category,
@@ -485,12 +565,27 @@ export async function runPipelineForProduct(
         sceneCount,
         30,
         undefined,
-        userFeedback
+        userFeedback,
+        undefined,
+        undefined,
+        1,
+        activeWorldStyle
       );
       promptsObj = consensusRes.promptsObj;
     } else {
       console.log(`\n📝 [Pipeline 1/4] Generating ${sceneCount} consistent Veo prompts & Vietnamese caption via AI...`);
-      promptsObj = await generateSixVideoPrompts(product.name, product.category, product.image_url, product.description);
+      promptsObj = await generateSixVideoPrompts(product.name, product.category, product.image_url, `${product.description || ""}\n\n${buildWorldStyleDirective(activeWorldStyle)}`);
+    }
+
+    for (const key of Object.keys(promptsObj || {})) {
+      if (/^prompt\d+$/i.test(key) || key === "prompt") {
+        promptsObj[key] = withWorldStyle(String(promptsObj[key] || ""), activeWorldStyle);
+      }
+    }
+    const generatedSafety = checkContentSafety(JSON.stringify(promptsObj || {}));
+    if (!generatedSafety.safe) {
+      const labels = generatedSafety.issues.map((issue) => `${issue.label}: ${issue.guidance}`).join(" | ");
+      throw new Error(`GEMINI_SAFETY_POLICY_BLOCK — ${labels}`);
     }
 
     // Persist promptsObj back to product in SQLite
@@ -530,12 +625,22 @@ export async function runPipelineForProduct(
       }
     }
     const maxScene = sceneNumbers.length > 0 ? Math.max(...sceneNumbers) : 0;
-    const dynamicCount = maxScene > 0 ? maxScene : (promptsObj?.prompt ? 1 : sceneCount);
-    const prompts = Array.from({ length: dynamicCount }, (_, idx) => {
+    // An explicit UI/API selection is authoritative: five requested scenes means
+    // prompt1..prompt5 only, even if a saved object still contains stale prompt6+.
+    const dynamicCount = requestedSceneCount || (maxScene > 0 ? maxScene : (promptsObj?.prompt ? 1 : sceneCount));
+    const promptSlots = Array.from({ length: dynamicCount }, (_, idx) => {
       const i = idx + 1;
       const p = promptsObj[`prompt${i}`] || (i === 1 ? promptsObj.prompt : "");
       return p ? p.trim() : "";
-    }).filter(Boolean);
+    });
+    const missingScenes = promptSlots
+      .map((value, idx) => value ? null : idx + 1)
+      .filter((value): value is number => value !== null);
+    if (missingScenes.length > 0) {
+      throw new Error(`Thiếu prompt cho phân cảnh ${missingScenes.join(", ")}; cần đúng ${dynamicCount} phân cảnh liên tục.`);
+    }
+    const prompts = promptSlots;
+    activeSceneImages = activeSceneImages.slice(0, dynamicCount);
 
     const productSlug = slugify(product.name) || "video";
     // 1 Parent Folder for the product: data/downloads/${productSlug}
@@ -619,14 +724,26 @@ RULES:
       }
     }
 
-    if (activeSceneImages.length === 0 && product.image_url && autoGenerateSceneImages) {
-      console.log(`\n🎨 [Pipeline 2/4] Generating ${prompts.length} detailed 3D Pixar scene images via Gemini before video creation...`);
+    const originalProductImages: string[] = [];
+    if (Array.isArray(product.images)) {
+      for (const img of product.images) {
+        if (typeof img === "string" && img.trim() && !originalProductImages.includes(img.trim())) {
+          originalProductImages.push(img.trim());
+        }
+      }
+    }
+    if (product.image_url && typeof product.image_url === "string" && product.image_url.trim() && !originalProductImages.includes(product.image_url.trim())) {
+      originalProductImages.unshift(product.image_url.trim());
+    }
+
+    if (activeSceneImages.length === 0 && originalProductImages.length > 0 && autoGenerateSceneImages) {
+      console.log(`\n🎨 [Pipeline 2/4] Generating ${prompts.length} detailed 3D Pixar scene images via Gemini before video creation (using ${originalProductImages.length} original images)...`);
       try {
         const { generateAllSceneImages } = await import("./sceneImageGenerator.js");
         console.log(`📁 [Pipeline] Scene images will be saved in: ${scenesDir}`);
         const sceneGenRes = await generateAllSceneImages(
           prompts,
-          product.image_url,
+          originalProductImages,
           productSlug,
           scenesDir,
           dialogues
@@ -651,7 +768,8 @@ RULES:
       productSlug,
       downloadsDir,
       activeSceneImages,
-      dialogues
+      dialogues,
+      originalProductImages
     );
     segmentFiles = parallelRes.localPaths;
 
@@ -1037,8 +1155,15 @@ export async function mergeJobVideoSegments(
   // 1. Find all video segment files in downloadsDir
   const allFiles = await fs.readdir(downloadsDir);
   const partMap: Map<number, { filename: string; fullPath: string; mtimeMs: number }> = new Map();
-
   const voicedPartMap: Map<number, { filename: string; fullPath: string; mtimeMs: number }> = new Map();
+
+  let activeVersions: Record<string, string> = {};
+  const activeVersionsFile = path.join(downloadsDir, "active_versions.json");
+  if (existsSync(activeVersionsFile)) {
+    try {
+      activeVersions = JSON.parse(await fs.readFile(activeVersionsFile, "utf-8"));
+    } catch {}
+  }
 
   for (const file of allFiles) {
     if (!file.endsWith(".mp4") || file.includes("_merged") || file.includes(".orig") || file.includes(".bak")) continue;
@@ -1054,9 +1179,15 @@ export async function mergeJobVideoSegments(
         voicedPartMap.set(partNum, { filename: file, fullPath, mtimeMs: stat.mtimeMs });
       }
     } else {
-      const existing = partMap.get(partNum);
-      if (!existing || stat.mtimeMs > existing.mtimeMs) {
-        partMap.set(partNum, { filename: file, fullPath, mtimeMs: stat.mtimeMs });
+      const explicitFile = activeVersions[`part${partNum}`];
+      if (explicitFile && explicitFile === file) {
+        // Chosen explicitly by user: highest priority
+        partMap.set(partNum, { filename: file, fullPath, mtimeMs: Infinity });
+      } else {
+        const existing = partMap.get(partNum);
+        if (!existing || (existing.mtimeMs !== Infinity && stat.mtimeMs > existing.mtimeMs)) {
+          partMap.set(partNum, { filename: file, fullPath, mtimeMs: stat.mtimeMs });
+        }
       }
     }
   }

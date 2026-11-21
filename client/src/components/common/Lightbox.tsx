@@ -31,38 +31,49 @@ export const Lightbox: React.FC<LightboxProps> = memo(({
   const rawImg = allImages[activeIdx] || imageUrl;
   const currentImg = getDisplayImageUrl(rawImg);
   const currentDialogue = dialogues[activeIdx] || '';
+  const validCount = allImages.filter(Boolean).length;
 
+  // Find nearest index with a real image in the given direction (skip empty slots)
+  const findIdx = (from: number, dir: 1 | -1): number => {
+    let i = from + dir;
+    while (i >= 0 && i < allImages.length) {
+      if (allImages[i]) return i;
+      i += dir;
+    }
+    return -1;
+  };
+  const prevIdx = findIdx(activeIdx, -1);
+  const nextIdx = findIdx(activeIdx, 1);
 
   const handlePrev = useCallback((e?: React.MouseEvent) => {
     e?.stopPropagation();
-    if (activeIdx > 0) {
-      const next = activeIdx - 1;
-      setActiveIdx(next);
-      onChangeIndex?.(next);
+    if (prevIdx >= 0) {
+      setActiveIdx(prevIdx);
+      onChangeIndex?.(prevIdx);
       setZoomLevel(1);
     }
-  }, [activeIdx, onChangeIndex]);
+  }, [prevIdx, onChangeIndex]);
 
   const handleNext = useCallback((e?: React.MouseEvent) => {
     e?.stopPropagation();
-    if (activeIdx < allImages.length - 1) {
-      const next = activeIdx + 1;
-      setActiveIdx(next);
-      onChangeIndex?.(next);
+    if (nextIdx >= 0) {
+      setActiveIdx(nextIdx);
+      onChangeIndex?.(nextIdx);
       setZoomLevel(1);
     }
-  }, [activeIdx, allImages.length, onChangeIndex]);
+  }, [nextIdx, onChangeIndex]);
 
   // Keyboard navigation (◄ / ► / Esc)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (!currentImg) return; // Lightbox closed
       if (e.key === 'Escape') onClose();
       if (e.key === 'ArrowLeft') handlePrev();
       if (e.key === 'ArrowRight') handleNext();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose, handlePrev, handleNext]);
+  }, [onClose, handlePrev, handleNext, currentImg]);
 
   if (!currentImg) return null;
 
@@ -255,12 +266,12 @@ export const Lightbox: React.FC<LightboxProps> = memo(({
         }}
       >
         {/* Navigation Arrows */}
-        {allImages.length > 1 && (
+        {validCount > 1 && (
           <>
             <button
               type="button"
               onClick={handlePrev}
-              disabled={activeIdx <= 0}
+              disabled={prevIdx < 0}
               title="Phân cảnh trước (◄)"
               style={{
                 position: 'absolute',
@@ -275,8 +286,8 @@ export const Lightbox: React.FC<LightboxProps> = memo(({
                 width: '48px',
                 height: '48px',
                 borderRadius: '50%',
-                cursor: activeIdx <= 0 ? 'not-allowed' : 'pointer',
-                opacity: activeIdx <= 0 ? 0.3 : 1,
+                cursor: prevIdx < 0 ? 'not-allowed' : 'pointer',
+                opacity: prevIdx < 0 ? 0.3 : 1,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -291,7 +302,7 @@ export const Lightbox: React.FC<LightboxProps> = memo(({
             <button
               type="button"
               onClick={handleNext}
-              disabled={activeIdx >= allImages.length - 1}
+              disabled={nextIdx < 0}
               title="Phân cảnh kế tiếp (►)"
               style={{
                 position: 'absolute',
@@ -306,8 +317,8 @@ export const Lightbox: React.FC<LightboxProps> = memo(({
                 width: '48px',
                 height: '48px',
                 borderRadius: '50%',
-                cursor: activeIdx >= allImages.length - 1 ? 'not-allowed' : 'pointer',
-                opacity: activeIdx >= allImages.length - 1 ? 0.3 : 1,
+                cursor: nextIdx < 0 ? 'not-allowed' : 'pointer',
+                opacity: nextIdx < 0 ? 0.3 : 1,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -379,7 +390,7 @@ export const Lightbox: React.FC<LightboxProps> = memo(({
           gap: '8px',
         }}
       >
-        {allImages.length > 1 && (
+        {validCount > 1 && (
           <div
             style={{
               display: 'flex',
@@ -390,6 +401,7 @@ export const Lightbox: React.FC<LightboxProps> = memo(({
             }}
           >
             {allImages.map((img, idx) => {
+              if (!img) return null;
               const isActive = idx === activeIdx;
               return (
                 <div

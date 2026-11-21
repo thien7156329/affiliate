@@ -138,7 +138,7 @@ export const CrawlModal: React.FC<CrawlModalProps> = ({
   };
 
   return (
-    <div className="modal-overlay open" id="crawlModalOverlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="modal-overlay open" id="crawlModalOverlay">
       <div className="modal" style={{ width: '640px', maxWidth: '96vw', padding: '28px', display: 'flex', flexDirection: 'column', gap: '18px', maxHeight: '90vh', overflowY: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)', paddingBottom: '14px' }}>
           <div>

@@ -21,6 +21,10 @@ export default defineConfig({
       '/downloads': {
         target: 'http://localhost:3400',
         changeOrigin: true,
+      },
+      '/long-downloads': {
+        target: 'http://localhost:3400',
+        changeOrigin: true,
       }
     }
   },

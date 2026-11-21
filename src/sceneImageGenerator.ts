@@ -12,6 +12,9 @@ import { fileURLToPath } from "url";
 import axios from "axios";
 import { randomUUID } from "crypto";
 import { ensureChromeRunning, createBackgroundPage, getFrontmostApp, restoreUserFocus, toHostPath } from "./veoAutomation.js";
+import { optimizeImageBuffer } from "./imageOptimizer.js";
+import { normalizeVisualStyle, sanitizePromptForVisualStyle } from "./worldStyles.js";
+import { sanitizePromptForVeoPolicy } from "./promptValidator.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DOWNLOADS_DIR = path.resolve(__dirname, "../data/downloads");
@@ -58,16 +61,49 @@ export async function downloadLocalCopy(imageUrl: string, tempDir: string = DOWN
     }
 
     const response = await axios.get(fetchUrl, { responseType: "arraybuffer", timeout: 15000 });
-    const contentType = String(response.headers["content-type"] ?? "image/jpeg");
-    const ext = contentType.split("/")[1] || "jpg";
-    const tempFilename = `gemini_ref_${randomUUID().split("-")[0]}.${ext}`;
+    const rawContentType = String(response.headers["content-type"] ?? "image/jpeg");
+    const mime = rawContentType.split(";")[0].trim().toLowerCase();
+    const cleanExt = mime.split("/")[1]?.replace(/[^a-z0-9]/gi, "").toLowerCase() || "jpg";
+    const ext = cleanExt === "jpeg" ? "jpg" : cleanExt;
+    const rawBuffer = Buffer.from(response.data);
+    const { buffer, ext: optimizedExt } = await optimizeImageBuffer(rawBuffer, {
+      maxWidth: 1920,
+      maxHeight: 1920,
+      quality: 82,
+    });
+    const tempFilename = `gemini_ref_${randomUUID().split("-")[0]}.${optimizedExt || ext}`;
     const localPath = path.join(tempDir, tempFilename);
-    fs.writeFileSync(localPath, response.data);
+    fs.writeFileSync(localPath, buffer);
     return localPath;
   } catch (err: any) {
     console.warn(`⚠️  [SceneImgGen] Failed to download image: ${err.message}`);
     return null;
   }
+}
+
+/**
+ * Downloads multiple remote image URLs to local temporary files for uploading to Gemini.
+ */
+export async function downloadMultipleLocalCopies(
+  imageUrls: string | string[],
+  tempDir: string = DOWNLOADS_DIR
+): Promise<string[]> {
+  const urls = Array.isArray(imageUrls)
+    ? imageUrls.filter((u) => typeof u === "string" && u.trim().length > 0)
+    : (imageUrls && typeof imageUrls === "string" && imageUrls.trim().length > 0 ? [imageUrls] : []);
+
+  const results: string[] = [];
+  for (const url of urls) {
+    try {
+      const local = await downloadLocalCopy(url.trim(), tempDir);
+      if (local && fs.existsSync(local) && !results.includes(local)) {
+        results.push(local);
+      }
+    } catch (e: any) {
+      console.warn(`⚠️ [SceneImgGen] Failed to prepare reference image ${url}: ${e.message}`);
+    }
+  }
+  return results;
 }
 
 /**
@@ -80,89 +116,64 @@ export function buildDetailedSceneImagePrompt(
   dialogue?: string,
   hasPreviousScene: boolean = false,
   referenceLabel: string = "Scene 1",
-  redrawInstructions?: string
+  redrawInstructions?: string,
+  visualStyle: string = "real",
+  hasAttachedReference: boolean = true
 ): string {
+  const mode = normalizeVisualStyle(visualStyle);
+  const isReal = mode === "real";
+  const isStickman = mode === "stickman";
   const refText = referenceLabel.toLowerCase().includes("reference") || referenceLabel.toLowerCase().includes("image")
     ? referenceLabel
     : `${referenceLabel} reference image`;
 
-  let prompt = `Create a premium 3D Pixar/Disney animation style storyboard sheet featuring 6 sequential action steps arranged in a clean 2x3 grid for Scene ${sceneIndex + 1}, strictly matching the 3D character design and art style from the attached ${refText}:
-${scenePrompt}`;
-
-  prompt += `\n\nREFERENCE PRIORITY: The written CHARACTER BIBLE fixes the cast. If the original reference visibly depicts those characters, it also fixes their face, species, proportions, uniform and accessories; if it only depicts the product, use it to lock the product's appearance instead. A generated Scene 1 image guides shared 3D render style and setting, but must not override the bible or an original character reference. A preceding scene may guide pose and prop state only; never copy accidental design drift from it.`;
-
-  // ── Universal 3D Character Design & Visual Continuity Lock ──
-  prompt += `\n\n═══════════════════════════════════════════════════════
-🎯 CRITICAL CHARACTER & VISUAL CONTINUITY DIRECTIVE:
-Reference Source: Attached ${refText}.
-- 100% VISUAL CLONE FROM ATTACHED REFERENCE: Clone and strictly preserve the EXACT same character models, species, facial anatomy, fur/skin texture, eye design, color palette, and rendering style established in the attached ${refText}!
-- PRESERVE 3D CGI ANIMATION STYLE:
-  * If the reference image depicts organic, expressive 3D Pixar/Disney CGI characters, KEEP all 6 panels in that EXACT SAME 3D cinematic CGI animation style!
-  * DO NOT morph characters into felt puppets, stuffed fabric dolls, or clay figures unless the reference image itself explicitly depicts a stuffed doll!
-  * DO NOT add stitched seams, felt patches, or replace expressive cartoon eyes with button dots unless shown in the reference!
-- IDENTITY LOCK ACROSS ALL PANELS: Reuse the identical 3D model per named character in every panel. Preserve head-to-body ratio, eye design, muzzle/mouth shape, and markings. White characters stay white, golden characters stay golden. No species swapping, no sudden design shifts!
-═══════════════════════════════════════════════════════`;
-
-  // ── Species Anti-Confusion Lock (dynamically extracted from scene prompt) ──
-  const speciesKeywords: Array<{name: string; key: string; anatomy: string; forbidden: string}> = [
-    { name: "Turtle/Tortoise", key: "turtle|tortoise|rùa", anatomy: "hard shell on back, short stubby legs, small rounded head", forbidden: "long ears, fluffy tail, fur" },
-    { name: "Rabbit/Bunny", key: "rabbit|bunny|hare|thỏ", anatomy: "long upright ears, fluffy cotton-ball tail, soft fur, NO shell", forbidden: "shell, scales, short reptile legs" },
-    { name: "Monkey", key: "monkey|ape|khỉ", anatomy: "curly tail, agile hands with fingers, round face", forbidden: "shell, long ears, hooves, wings" },
-    { name: "Elephant", key: "elephant|voi", anatomy: "long trunk, large floppy ears, thick legs, grey skin", forbidden: "fur, shell, horns, wings" },
-    { name: "Bear", key: "bear|gấu", anatomy: "round ears, thick fur, stocky build", forbidden: "shell, long rabbit ears, trunk" },
-    { name: "Fox", key: "fox|cáo", anatomy: "bushy tail with white tip, pointed ears, orange fur", forbidden: "shell, trunk, mane" },
-    { name: "Lion", key: "lion|sư tử", anatomy: "majestic mane, golden fur, powerful paws", forbidden: "stripes, shell, trunk" },
-    { name: "Tiger", key: "tiger|hổ|cọp", anatomy: "black stripes on orange fur, powerful build", forbidden: "mane, shell, trunk" },
-    { name: "Pig", key: "pig|piglet|heo|lợn", anatomy: "round pink body, curly tail, flat snout", forbidden: "shell, long ears, mane" },
-    { name: "Frog", key: "frog|toad|ếch|cóc", anatomy: "smooth green skin, large protruding eyes, webbed feet", forbidden: "fur, shell on back, long ears" },
-    { name: "Penguin", key: "penguin|chim cánh cụt", anatomy: "black and white plumage, orange beak, flippers", forbidden: "fur, shell, long ears" },
-  ];
-
-  const promptLower = scenePrompt.toLowerCase();
-  const detectedSpecies = speciesKeywords.filter(s => new RegExp(s.key, 'i').test(promptLower));
-  if (detectedSpecies.length >= 2) {
-    prompt += `\n\n═══════════════════════════════════════════════════════
-⚠️ MULTI-SPECIES ANTI-CONFUSION LOCK (CRITICAL — DO NOT BLEND SPECIES):
-This scene features MULTIPLE DIFFERENT animal species. Each MUST remain 100% anatomically distinct:`;
-    for (const sp of detectedSpecies) {
-      prompt += `\n• ${sp.name}: MUST always show ${sp.anatomy}. NEVER give it: ${sp.forbidden}.`;
-    }
-    prompt += `\n- Each character's species-defining features (shell, ears, trunk, mane, tail type, skin texture) are IMMUTABLE.
-- NEVER blend features from one species onto another character!
-═══════════════════════════════════════════════════════`;
+  // 1. Clean out any Vietnamese dialogue leakage, DUB_TIMELINE, and legacy boilerplate from the visual prompt
+  let cleanPrompt = scenePrompt;
+  if (/THOẠI TIẾNG VIỆT:/i.test(cleanPrompt)) {
+    cleanPrompt = cleanPrompt.split(/THOẠI TIẾNG VIỆT:/i)[0].trim();
   }
+  // Strip DUB_TIMELINE (video timeline codes have no place in a static storyboard image)
+  cleanPrompt = cleanPrompt.replace(/DUB_TIMELINE:[\s\S]*?(?=\n\n|$)/gi, '').trim();
+
+  // 2. Sanitize prompt according to visualStyle ("real" vs "3d" vs "stickman") and Veo 3 / Imagen 3 safety policies
+  cleanPrompt = sanitizePromptForVisualStyle(cleanPrompt, mode);
+  cleanPrompt = sanitizePromptForVeoPolicy(cleanPrompt, mode).sanitized;
+
+  const refAnchorClause = hasAttachedReference
+    ? `keeping recurring character facial likeness and art style consistent with the attached ${refText} while strictly following the Scene Prompt & Director Note below for WHICH characters appear in THIS scene, their outfits, props, setting, and actions`
+    : `strictly following the Scene Prompt & Director Note below for character identities, outfits, props, setting, and actions`;
+
+  // 3. Build prompt template according to visualStyle (2x3 SEQUENTIAL STORYBOARD SHEET MAPPING THE SCENE'S TIMELINE BEATS 1->6)
+  let prompt = isReal
+    ? `Create ONE ultra-photorealistic live-action cinema storyboard sheet with 6 chronological action steps in a clean 2x3 vertical grid (reading top-left Panel 1 = opening 0s beat through bottom-right Panel 6 = final settled beat) for Scene ${sceneIndex + 1}, featuring REAL-LIFE HUMAN ACTORS and REAL-LIFE ANIMALS, ${refAnchorClause}:\n\n${cleanPrompt}`
+    : isStickman
+      ? `Create ONE expressive 2D Chibi Comic Marshmallow Stickman storyboard sheet with 6 chronological action steps in a clean 2x3 vertical grid (reading top-left Panel 1 = opening 0s beat through bottom-right Panel 6 = final settled beat) for Scene ${sceneIndex + 1}, featuring glossy white round-headed 2D marshmallow stickman characters with bold black ink outlines and oversized expressive cartoon eyes/mouths, ${refAnchorClause}:\n\n${cleanPrompt}`
+      : `Create ONE premium cinematic 3D storyboard sheet with 6 chronological action steps in a clean 2x3 vertical grid (reading top-left Panel 1 = opening 0s beat through bottom-right Panel 6 = final settled beat) for Scene ${sceneIndex + 1}, ${refAnchorClause}:\n\n${cleanPrompt}`;
 
   if (redrawInstructions && redrawInstructions.trim()) {
-    prompt += `\n\n═══════════════════════════════════════════════════════
-🎯 DIRECTOR FEEDBACK / REDRAW INSTRUCTIONS:
-Director Notes: ${redrawInstructions.trim()}
-═══════════════════════════════════════════════════════
-- Faithfully apply the director's instructions while executing the scene prompt above.`;
+    prompt += `\n\nCRITICAL DIRECTOR REVISION NOTE (HIGHEST PRIORITY — OVERRIDES ANY CONFLICTING DETAIL IN ATTACHED REFERENCE IMAGES): ${redrawInstructions.trim()}`;
   }
 
-  prompt += `\n\nMandatory Visual & Composition Requirements:
-- 6 SEQUENTIAL ACTION STEPS (2x3 GRID): Present 6 sequential progression panels arranged in a clean 2x3 grid layout, depicting step-by-step character actions, movements, and key story beats for this scene.
-- CONSISTENT CHARACTER PROPORTIONS IN ALL SIX PANELS: Every character must maintain their exact proportional scale, facial anatomy, and styling consistently across all 6 panels.
-- IDENTITY IN ALL SIX PANELS: Reuse one identical 3D model per named character in every panel. Preserve head-to-body ratio, eye spacing/color, ear/muzzle shape, fur/skin markings, and fixed accessories. No duplicate or swapped characters.
-- EXPRESSION CONTINUITY: Keep the underlying face identical. Change gaze, brows, mouth and pose only when the scripted action/emotion calls for it; progress emotions gradually across panels. Never change the character's core design or facial markings.
-- PROP CONTINUITY: Keep each object the same color, shape, size, count and owner in every panel. Show each pickup, handoff, opening or placement as a visible step, retaining the same hand/side until that action occurs.
-- Narrative Progression: Show clear, dynamic step-by-step action progression, character interactions, and expressive animation poses throughout the 6 panels.
-- Cinematic Lighting & Environment: Beautiful volumetric lighting, rich cozy atmosphere, soft warm shadows, depth of field, and vibrant colors.
-- VERTICAL 9:16 FRAMING FOR YOUTUBE SHORTS: Frame all character actions and staging strictly within the vertical 9:16 portrait safety zone. All visible characters must stay close together in the center, completely visible from head to toe or waist-up with ample headroom and floor room. NEVER stage characters far apart on opposite sides where they would be cropped in vertical 9:16 video.`;
-
-  if (dialogue && dialogue.trim()) {
-    prompt += `\n\n═══════════════════════════════════════════════════════
-VIETNAMESE DIALOGUE / THOẠI TIẾNG VIỆT (SINGLE FRAME ONLY):
-"${dialogue.trim()}"
-═══════════════════════════════════════════════════════
-- SUBTITLE / DIALOGUE LAYOUT (SINGLE FRAME):
-  Place the Vietnamese dialogue text inside EXACTLY ONE single neat, stylish horizontal subtitle banner box along the bottom of the entire storyboard image canvas.
-- TEXT REPETITION PREVENTION (CRITICAL):
-  * Place this subtitle banner ONLY ONCE along the bottom edge.
-  * Do NOT repeat, stamp, or duplicate this text inside each of the 6 individual action panels.
-  * The 6 action panels must remain clean 3D art without text clutter or duplicate captions. Only ONE single dialogue box for the whole scene.`;
+  // 4. Universal strict visual quality, 6-panel timeline progression, 180° axis & prop permanence rules
+  if (isReal) {
+    prompt += `\n\nSTRICT 6-PANEL TIMELINE PROGRESSION & CONTINUITY (100% REAL-LIFE LIVE-ACTION MODE):
+- Smooth 6-Step Motion Continuity (Panel 1 → Panel 6): The 6 panels in the 2x3 grid MUST depict 6 smooth, consecutive micro-moments of ONE continuous single-take camera shot in the SAME environment and SAME 180-degree camera axis (e.g. if Character A is on the left and Character B on the right in Panel 1, keep them on the exact same sides across Panels 2–6 so motion flows seamlessly without jump-cuts!).
+- Prop & Costume Permanence Across All 6 Panels: Every prop, container, or item held or used in the scene MUST remain 100% consistent in shape, material, and hand placement from Panel 1 through Panel 6 (never vanishing in middle panels). Avoid sharp metal blades/sickles/knives in hands (use bare hands or safe bamboo/wooden props).
+- Visual Fidelity & Adult Likeness: Ultra-realistic live-action photography shot on 8K ARRI Alexa cinema camera, authentic adult human skin pores (strictly adult actors, never minor/child-looking faces unless specified), natural hair strands, realistic fabric weave, and cohesive lighting matching the attached reference image(s).
+- Face-to-Face 3/4 Blocking: Conversing characters MUST turn their bodies, shoulders, and heads toward each other at a clear 3/4 inward angle with locked eye contact across the panels (never staring sideways into empty space or straight into the lens).
+- Zero Text / Zero Numbers on Panels: Pure photographic frames only — ABSOLUTELY NO text, NO panel numbers ("1, 2, 3"), NO timestamps ("0-2s"), NO captions, NO speech bubbles, NO 3D CGI/cartoon, and NO watermarks.`;
+  } else if (isStickman) {
+    prompt += `\n\nSTRICT 6-PANEL TIMELINE PROGRESSION & CONTINUITY (2D CHIBI COMIC MARSHMALLOW STICKMAN MODE):
+- Smooth 6-Step Motion Continuity (Panel 1 → Panel 6): Depict 6 consecutive timeline beats of ONE continuous scene in a clean 2x3 grid, keeping character left/right positions and background consistent across all 6 panels.
+- Character & Prop Permanence: Plump glossy-white 2D marshmallow stickman figures with round white heads, bold black ink outlines, wearing full topic-accurate cosplay outfits and keeping all scene props intact across Panels 1–6.
+- Character Interaction: Conversing characters turn toward each other at a 3/4 inward angle with direct eye contact.
+- Zero Text / Zero Numbers on Panels: Rich 2D cel-shaded artwork only. Absolutely NO text, NO panel numbers, NO timestamps, NO captions, NO speech bubbles, and NO watermarks.`;
   } else {
-    prompt += `\n- STRICT NEGATIVE INSTRUCTION: Do NOT add any text, subtitles, captions, speech bubbles, letters, or watermarks anywhere on the image. Clean 3D CGI artwork only.`;
+    prompt += `\n\nSTRICT 6-PANEL TIMELINE PROGRESSION & CONTINUITY (CINEMATIC 3D MODE):
+- Smooth 6-Step Motion Continuity (Panel 1 → Panel 6): The 6 panels in the 2x3 grid MUST depict 6 smooth, consecutive micro-moments of ONE continuous single-take camera shot in the SAME environment and SAME 180-degree camera axis (keep left/right character positions locked across Panels 1–6).
+- Prop & Character Permanence: High-fidelity Unreal Engine 5 / Octane PBR textures. Strictly preserve 100% character anatomy, facial features, costumes, and held props intact across all 6 panels from start to finish without vanishing or morphing.
+- Face-to-Face 3/4 Blocking: Conversing characters turn 3/4 inward toward each other with locked eye contact.
+- Zero Text / Zero Numbers on Panels: Avoid cartoonish "3D lỏ" plastic surfaces. Strictly NO text, NO panel numbers, NO timestamps, NO captions, NO speech bubbles, and NO watermarks.`;
   }
 
   return prompt;
@@ -180,7 +191,8 @@ export async function generateSingleSceneImage(
   outputDir: string,
   dialogue?: string,
   referenceLabel: string = "Scene 1",
-  redrawInstructions?: string
+  redrawInstructions?: string,
+  visualStyle: string = "real"
 ): Promise<SceneImageResult> {
   const startTime = Date.now();
   let page: any = null;
@@ -258,42 +270,29 @@ export async function generateSingleSceneImage(
         restoreUserFocus(prevApp);
         await new Promise((r) => setTimeout(r, 1200));
 
-        // Click "Tải lên từ máy tính" / "Upload from computer"
-        await page.evaluate(() => {
-          const container = document.querySelector(".cdk-overlay-container") || document;
-          const items = Array.from(container.querySelectorAll("button, [role='menuitem'], .mat-mdc-menu-item, span, div"));
-          const uploadItem = items.find((el) => {
-            const text = el.textContent?.trim() || "";
-            return (
-              text === "Tải lên từ máy tính" ||
-              text === "Upload from computer" ||
-              text === "Tải lên từ thiết bị" ||
-              text === "Upload from device" ||
-              text === "Tải lên" ||
-              text.includes("máy tính") ||
-              text.includes("computer")
-            );
-          }) as HTMLElement;
-          if (uploadItem) {
-            uploadItem.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-          }
-        });
-        restoreUserFocus(prevApp);
-        await new Promise((r) => setTimeout(r, 1200));
+        // Note: In Gemini, clicking the (+) button ALREADY mounts the <input type="file"> elements in DOM.
+        // DO NOT click 'Tải lên từ máy tính' / 'Tệp' because that triggers input.click(),
+        // which opens the OS-level native Finder / File Dialog modal that cannot be closed by script!
+        await new Promise((r) => setTimeout(r, 600));
 
-        // Wait for file input and upload all reference files
-        const fileInput = await page.waitForSelector('input[type="file"]', { timeout: 10000 });
+        // Wait for file input (specifically image input that supports multiple files)
+        const fileInput = await page.waitForSelector('input[type="file"][accept*="image"], input[type="file"]', { timeout: 10000 });
         if (fileInput) {
           const hostPaths = pathsToUpload.map(toHostPath);
           await (fileInput as any).uploadFile(...hostPaths);
           restoreUserFocus(prevApp);
           console.log(`✅ [SceneImgGen-Scene ${sceneIndex + 1}] Attached ${pathsToUpload.length} image(s). Waiting 4.5s for thumbnail preview...`);
           await new Promise((r) => setTimeout(r, 4500));
+
+          // Close any open menu overlay
+          await page.keyboard.press("Escape").catch(() => {});
+          await new Promise((r) => setTimeout(r, 400));
         }
       } catch (uploadErr: any) {
         console.warn(`⚠️  [SceneImgGen-Scene ${sceneIndex + 1}] Upload failed: ${uploadErr.message}`);
       } finally {
         restoreUserFocus(prevApp);
+        await page.keyboard.press("Escape").catch(() => {});
       }
     }
 
@@ -315,7 +314,9 @@ export async function generateSingleSceneImage(
       dialogueToUse,
       hasPreviousScene,
       referenceLabel,
-      redrawInstructions
+      redrawInstructions,
+      visualStyle,
+      pathsToUpload.length > 0
     );
     const prevAppTyping = getFrontmostApp();
     console.log(`✏️  [SceneImgGen-Scene ${sceneIndex + 1}] Typing detailed scene prompt (Ref: ${referenceLabel || "Auto"}${redrawInstructions ? ` | Note: "${redrawInstructions.slice(0, 50)}..."` : ""})...`);
@@ -451,8 +452,35 @@ export async function generateSingleSceneImage(
           };
         }
 
-        return { found: false, src: null, count: valid.length };
+        // Check for Gemini refusal / policy block messages in text
+        const responseEls = Array.from(document.querySelectorAll("message-content, .model-response, model-response, .response-container, [data-test-id*='response']"));
+        for (const el of responseEls) {
+          if (el.closest("user-query, .user-query, rich-textarea, input-area-v2, .input-area, .file-preview")) continue;
+          const txt = (el.textContent || "").trim();
+          if (
+            txt.includes("Tôi không thể tạo hoặc chỉnh sửa hình ảnh") ||
+            txt.includes("Tôi không thể tạo hình ảnh") ||
+            txt.includes("I cannot generate or edit images") ||
+            txt.includes("I can't generate or edit images") ||
+            txt.includes("I cannot generate images") ||
+            txt.includes("I can't generate images") ||
+            txt.includes("không thể tạo hình ảnh này") ||
+            txt.includes("safety guidelines") ||
+            txt.includes("vi phạm chính sách") ||
+            txt.includes("third-party content") ||
+            txt.includes("interests of third-party")
+          ) {
+            return { found: false, src: null, count: valid.length, refusal: txt.slice(0, 300) };
+          }
+        }
+
+        return { found: false, src: null, count: valid.length, refusal: null };
       }, initialGeneratedCount);
+
+      if (check.refusal) {
+        console.error(`❌ [SceneImgGen-Scene ${sceneIndex + 1}] Gemini refusal detected: ${check.refusal}`);
+        throw new Error(`Gemini từ chối tạo ảnh: "${check.refusal}"`);
+      }
 
       if (check.found && check.src) {
         targetImageSrc = check.src;
@@ -575,27 +603,32 @@ export async function generateSingleSceneImage(
  */
 export async function generateAllSceneImages(
   prompts: string[],
-  originalImageUrl: string,
+  originalImageUrl: string | string[],
   productSlug: string = "video",
   customOutputDir?: string,
-  dialogues?: string[]
+  dialogues?: string[],
+  visualStyle: string = "real"
 ): Promise<AllSceneImagesResult> {
   const startTime = Date.now();
   const outputDir = customOutputDir || DOWNLOADS_DIR;
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
+  const rawUrls: string[] = Array.isArray(originalImageUrl)
+    ? originalImageUrl.filter((u) => typeof u === "string" && u.trim().length > 0)
+    : (originalImageUrl && typeof originalImageUrl === "string" && originalImageUrl.trim().length > 0 ? [originalImageUrl] : []);
+
   console.log(`\n${"═".repeat(60)}`);
   console.log(`🎨 [SceneImgGen] Starting Generation of ${prompts.length} Scene Images via Gemini Web Browser...`);
-  console.log(`   Reference Image: ${originalImageUrl}`);
+  console.log(`   Original Reference Images: ${rawUrls.length} file(s)`);
   console.log(`   Target Directory: ${outputDir}`);
   console.log(`${"═".repeat(60)}\n`);
 
-  // Download reference image to local path
-  let localRefImage = await downloadLocalCopy(originalImageUrl, outputDir);
-  if (!localRefImage || !fs.existsSync(localRefImage)) {
-    if (originalImageUrl) {
-      console.warn(`⚠️  [SceneImgGen] Could not download reference image: ${originalImageUrl}`);
-    }
+  // Download all original reference images to local path (Ground Truth identity)
+  const localRefImages = await downloadMultipleLocalCopies(rawUrls, outputDir);
+  if (localRefImages.length > 0) {
+    console.log(`✅ [SceneImgGen] Successfully prepared ${localRefImages.length} original ground-truth reference image(s).`);
+  } else if (rawUrls.length > 0) {
+    console.warn(`⚠️  [SceneImgGen] Could not download reference images from:`, rawUrls);
   }
 
   let browser: any = null;
@@ -625,38 +658,43 @@ export async function generateAllSceneImages(
     const results: SceneImageResult[] = [];
     const sceneImagePaths: string[] = [];
     const errors: string[] = [];
-    let sceneOneImagePath: string | undefined;
+    let previousSceneImagePath: string | undefined;
 
     for (let i = 0; i < prompts.length; i++) {
       console.log(`\n🖼️  [SceneImgGen] Generating Scene ${i + 1}/${prompts.length}...`);
       const dialogueText = dialogues && dialogues[i] ? dialogues[i] : undefined;
 
-      // Keep the original as the immutable identity reference. Scene 1 adds
-      // rendering style, but must not replace the original character design.
-      const refImages: string[] = [];
-      if (localRefImage && fs.existsSync(localRefImage)) {
-        refImages.push(localRefImage);
-      }
-      if (i > 0 && sceneOneImagePath && fs.existsSync(sceneOneImagePath)) {
-        refImages.push(sceneOneImagePath);
-        console.log(`🎯 [SceneImgGen] Scene ${i + 1}: original identity + Scene 1 style reference`);
+      // Formula: [All Original Product Images (Identity)] + [Immediately Preceding Scene Keyframe (Continuity)]
+      const refImages: string[] = [...localRefImages];
+      let referenceLabel = localRefImages.length > 1
+        ? `Original Product References (${localRefImages.length} angles)`
+        : "Original Reference";
+
+      if (i > 0 && previousSceneImagePath && fs.existsSync(previousSceneImagePath)) {
+        refImages.push(previousSceneImagePath);
+        referenceLabel = `${localRefImages.length} Original Product Reference(s) and Previous Scene ${i} Keyframe`;
+        console.log(`🎯 [SceneImgGen] Scene ${i + 1}: ${localRefImages.length} original identity image(s) + Scene ${i} current-state reference`);
+      } else {
+        console.log(`🎯 [SceneImgGen] Scene 1: ${localRefImages.length} original identity image(s)`);
       }
 
       const res = await generateSingleSceneImage(
         browser,
         prompts[i],
-        refImages.length > 0 ? refImages : (localRefImage || originalImageUrl),
+        refImages.length > 0 ? refImages : (rawUrls[0] || ""),
         i,
         productSlug,
         outputDir,
         dialogueText,
-        refImages.length > 1 ? "Original Reference and Scene 1" : "Original Reference"
+        referenceLabel,
+        undefined,
+        visualStyle
       );
 
       results.push(res);
       if (res.success && res.imagePath) {
         sceneImagePaths.push(res.imagePath);
-        if (i === 0) sceneOneImagePath = res.imagePath;
+        previousSceneImagePath = res.imagePath;
       } else {
         errors.push(`Scene ${i + 1}: ${res.error || "Failed to generate"}`);
       }
@@ -694,7 +732,7 @@ export async function generateAllSceneImages(
  */
 export async function generateSingleSceneImageStandalone(
   scenePrompt: string,
-  originalImageUrl: string,
+  originalImageUrl: string | string[],
   sceneIndex: number,
   productSlug: string = "scene",
   customOutputDir?: string,
@@ -702,12 +740,17 @@ export async function generateSingleSceneImageStandalone(
   scene1ImagePath?: string,
   customReferencePath?: string,
   referenceLabel?: string,
-  redrawInstructions?: string
+  redrawInstructions?: string,
+  visualStyle: string = "real"
 ): Promise<SceneImageResult> {
   const outputDir = customOutputDir || DOWNLOADS_DIR;
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
-  const localRefImage = await downloadLocalCopy(originalImageUrl, outputDir);
+  const rawUrls: string[] = Array.isArray(originalImageUrl)
+    ? originalImageUrl.filter((u) => typeof u === "string" && u.trim().length > 0)
+    : (originalImageUrl && typeof originalImageUrl === "string" && originalImageUrl.trim().length > 0 ? [originalImageUrl] : []);
+
+  const localRefImages = await downloadMultipleLocalCopies(rawUrls, outputDir);
 
   let browser: any = null;
   try {
@@ -728,37 +771,60 @@ export async function generateSingleSceneImageStandalone(
     let activeRefLabel = referenceLabel || `Scene 1`;
 
     if (customReferencePath && fs.existsSync(customReferencePath)) {
+      if (localRefImages.length > 0) {
+        refImages.push(...localRefImages);
+      }
       refImages.push(customReferencePath);
-      activeRefLabel = referenceLabel || `Reference Image`;
-      console.log(`🎯 [SceneImgGen-Scene ${sceneIndex + 1}] Dùng ảnh tham khảo chỉ định: ${path.basename(customReferencePath)} (${activeRefLabel})`);
+      activeRefLabel = referenceLabel || `Original Reference and Custom Reference (${path.basename(customReferencePath)})`;
+      console.log(`🎯 [SceneImgGen-Scene ${sceneIndex + 1}] Dùng ${localRefImages.length} ảnh gốc + ảnh tham khảo chỉ định: ${path.basename(customReferencePath)}`);
     } else if (sceneIndex === 0) {
-      if (localRefImage && fs.existsSync(localRefImage)) {
-        refImages.push(localRefImage);
-      } else if (originalImageUrl) {
-        refImages.push(originalImageUrl);
+      if (localRefImages.length > 0) {
+        refImages.push(...localRefImages);
+      } else if (rawUrls[0]) {
+        refImages.push(rawUrls[0]);
       }
-      activeRefLabel = referenceLabel || "Original Reference";
+      activeRefLabel = referenceLabel || (localRefImages.length > 1 ? `Original Product References (${localRefImages.length} angles)` : "Original Reference");
     } else {
-      if (localRefImage && fs.existsSync(localRefImage)) {
-        refImages.push(localRefImage);
+      let prevScenePath: string | null = null;
+      for (let prev = sceneIndex; prev >= 1; prev--) {
+        const cPng = path.join(outputDir, `scene_${prev}.png`);
+        const cJpg = path.join(outputDir, `scene_${prev}.jpg`);
+        if (fs.existsSync(cPng)) {
+          prevScenePath = cPng;
+          break;
+        }
+        if (fs.existsSync(cJpg)) {
+          prevScenePath = cJpg;
+          break;
+        }
       }
-      if (scene1ImagePath && fs.existsSync(scene1ImagePath)) {
-        refImages.push(scene1ImagePath);
-        activeRefLabel = referenceLabel || "Original Reference and Scene 1";
-        console.log(`🎯 [SceneImgGen-Scene ${sceneIndex + 1}] Upload ảnh gốc và Phân cảnh 1 làm mẫu: ${path.basename(scene1ImagePath)}`);
+
+      // Always include ALL original product images for character identity
+      if (localRefImages.length > 0) {
+        refImages.push(...localRefImages);
+      }
+
+      // Plus the immediately preceding scene keyframe for continuity
+      if (prevScenePath) {
+        refImages.push(prevScenePath);
+        activeRefLabel = referenceLabel || `${localRefImages.length} Original Product Reference(s) and Previous Scene Keyframe (${path.basename(prevScenePath)})`;
+        console.log(`🎯 [SceneImgGen-Scene ${sceneIndex + 1}] Dùng ${localRefImages.length} ảnh gốc + ảnh cảnh liền trước: ${path.basename(prevScenePath)}`);
+      } else {
+        activeRefLabel = referenceLabel || "Original Reference";
       }
     }
 
     return await generateSingleSceneImage(
       browser,
       scenePrompt,
-      refImages.length > 0 ? refImages : (localRefImage || originalImageUrl),
+      refImages.length > 0 ? refImages : (rawUrls[0] || ""),
       sceneIndex,
       productSlug,
       outputDir,
       dialogue,
       activeRefLabel,
-      redrawInstructions
+      redrawInstructions,
+      visualStyle
     );
   } finally {
     if (browser) {
