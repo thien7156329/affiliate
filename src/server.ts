@@ -108,6 +108,7 @@ import {
   getFacebookConfig,
 } from "./facebookService.js";
 import { registerShortsStudioRoutes, isStudioVideo } from "./shortsStudioRoutes.js";
+import { registerStoryAssetRoutes } from "./storyAssetRoutes.js";
 
 // ─── Process Error Handlers (Prevents nodemon crashes on network ECONNRESET) ──
 process.on("uncaughtException", (err: any) => {
@@ -1151,6 +1152,8 @@ app.use(
 
 app.use(express.json({ limit: "500mb" }));
 app.use(express.urlencoded({ limit: "500mb", extended: true }));
+
+registerStoryAssetRoutes(app);
 
 // ── Shorts Studio (9:16) & Video Dài (16:9) API ──────────────────────────────
 registerShortsStudioRoutes(app, {

@@ -190,6 +190,17 @@ export function registerShortsStudioRoutes(app: any, deps: ShortsStudioDeps) {
     return readdirSync(dir).filter((n) => !SKIP_DIRS.has(n) && ID_RE.test(n) && existsSync(path.join(dir, n, "narration.json")));
   };
 
+  /** Video type for the list filter: brief "**Style:**" line first, then the files the style leaves behind. */
+  const styleOf = (id: string): string => {
+    const m = readText(path.join(KIT, "briefs", `${id}.md`)).match(/\*\*Style:\*\*\s*([a-z-]+)/i);
+    if (m) return m[1].toLowerCase();
+    const vdir = path.join(KIT, "src", "videos", id);
+    if (existsSync(path.join(vdir, "story.json"))) return "story";
+    if (existsSync(path.join(vdir, "explainer.json"))) return "stickman-explainer";
+    if (readText(path.join(vdir, "World.tsx")).includes("StickmanStage")) return "stickman";
+    return "other";
+  };
+
   const buildEntry = (id: string, dbList: any[], runningIds: Set<string>) => {
     const nar = readNarration(id) || {};
     const aspect = aspectOf(id, nar);
@@ -210,6 +221,7 @@ export function registerShortsStudioRoutes(app: any, deps: ShortsStudioDeps) {
     return {
       id,
       flow: nar.flow || "H",
+      style: styleOf(id),
       aspectRatio: aspect,
       state: runningIds.has(id) ? "progress" : f.abs.upload ? "ready" : "attention",
       progress: { done, total: steps.length, nextStep: next },
@@ -382,7 +394,8 @@ export function registerShortsStudioRoutes(app: any, deps: ShortsStudioDeps) {
         mode: b.mode === "manual" ? "manual" : "ai",
         duration: b.duration,
         aspectRatio: b.aspectRatio,
-        model: process.env.SCRIPTWRITER_MODEL || "claude-opus-5-5-medium",
+        // UI may pick Opus / Opus low / Sonnet; the preview server validates it against its allowlist.
+        model: b.model || process.env.SCRIPTWRITER_MODEL || "claude-opus-5-5-medium",
         voiceId,
       });
       const j = data.job;
@@ -393,6 +406,7 @@ export function registerShortsStudioRoutes(app: any, deps: ShortsStudioDeps) {
         duration: b.duration,
         aspectRatio: b.aspectRatio,
         voiceId,
+        model: b.model,
       });
       res.json({ ok: true, job: { jobId: j.id, videoId: j.id, topic: j.prompt, style: j.style, aspectRatio: j.aspectRatio, status: j.status, step: j.step, progress: j.progress, logs: j.logs } });
     } catch (err: any) {
@@ -427,7 +441,7 @@ export function registerShortsStudioRoutes(app: any, deps: ShortsStudioDeps) {
       const data = await preview("post", "/api/studio/create", {
         ...saved,
         id,
-        model: process.env.SCRIPTWRITER_MODEL || "claude-opus-5-5-medium",
+        model: saved.model || process.env.SCRIPTWRITER_MODEL || "claude-opus-5-5-medium",
       });
       saveRequest(data.job.id, saved);
       res.json({ ok: true, resumedFrom: "script", job: toJob(data.job) });
@@ -566,6 +580,11 @@ export function registerShortsStudioRoutes(app: any, deps: ShortsStudioDeps) {
       { name: "VnExpress", url: "https://vnexpress.net/rss/suc-khoe.rss" },
       { name: "Dân Trí", url: "https://dantri.com.vn/rss/suc-khoe.rss" },
     ],
+    // Truyện ma có thật (member stories): the create step fetches every chapter from the link.
+    spirit: [
+      { name: "Truyện Ma Có Thật", url: "https://truyenmacothat.net/truyen/feed/" },
+      { name: "Truyện Ma Có Thật", url: "https://truyenmacothat.net/feed/" },
+    ],
   };
   const slug = (s: string) =>
     s
@@ -582,6 +601,7 @@ export function registerShortsStudioRoutes(app: any, deps: ShortsStudioDeps) {
     s
       .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
       .replace(/<[^>]+>/g, "")
+      .replace(/&#(\d+);/g, (_m, n) => String.fromCharCode(Number(n)))
       .replace(/&amp;/g, "&")
       .replace(/&quot;/g, '"')
       .replace(/&#39;|&apos;/g, "'")

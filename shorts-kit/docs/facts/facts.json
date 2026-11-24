@@ -1,0 +1,1731 @@
+[
+  {
+    "id": "f-0001",
+    "claim": "Sunlight looks white, but it is made up of all the colours of the rainbow",
+    "value": "white light = all colours",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-05",
+    "usedIn": [
+      {
+        "video": "example",
+        "scenes": [
+          "hook",
+          "problem"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-0002",
+    "claim": "Blue light travels in shorter waves than red light",
+    "value": "blue wavelength < red wavelength",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-05",
+    "usedIn": [
+      {
+        "video": "example",
+        "scenes": [
+          "layer1"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-0003",
+    "claim": "The gas molecules in the air scatter blue light in all directions more than the other colours, which is why the sky looks blue most of the time",
+    "value": "blue is scattered most",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-05",
+    "usedIn": [
+      {
+        "video": "example",
+        "scenes": [
+          "layer2",
+          "hardest"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-0004",
+    "claim": "Near the horizon the sky looks lighter blue or white, because that light has passed through more air and its blue has been scattered many times in many directions",
+    "value": "horizon sky paler than overhead",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-05",
+    "usedIn": [
+      {
+        "video": "example",
+        "scenes": [
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-0005",
+    "claim": "Đường bờ biển Việt Nam dài khoảng 3.260 km uốn cong hình chữ S dọc theo rìa phía Đông bán đảo Đông Dương",
+    "value": "coastline 3,260 km S-shape",
+    "status": "verified",
+    "sources": [
+      "s-0003"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "vietnam-shape",
+        "scenes": [
+          "hook"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-0006",
+    "claim": "Chiều dài đất liền Việt Nam theo đường chim bay từ cực Bắc xuống cực Nam dài khoảng 1.650 km",
+    "value": "north-to-south length 1,650 km",
+    "status": "verified",
+    "sources": [
+      "s-0003"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "vietnam-shape",
+        "scenes": [
+          "problem"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-0007",
+    "claim": "Dãy núi Trường Sơn chạy dọc phía Tây ép dải đất miền Trung hẹp lại sát bờ biển Đông",
+    "value": "Truong Son range shapes central coast",
+    "status": "verified",
+    "sources": [
+      "s-0003"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "vietnam-shape",
+        "scenes": [
+          "layer1"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-0008",
+    "claim": "Nơi hẹp nhất theo chiều Đông Tây của Việt Nam nằm ở tỉnh Quảng Bình (khu vực Đồng Hới) với bề ngang chưa đầy 50 km",
+    "value": "narrowest width < 50 km at Quang Binh",
+    "status": "verified",
+    "sources": [
+      "s-0003"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "vietnam-shape",
+        "scenes": [
+          "layer2"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-0009",
+    "claim": "Hai đồng bằng châu thổ sông Hồng ở phía Bắc và sông Cửu Long ở phía Nam được phù sa bồi đắp mở rộng ra biển tạo thành hai đầu phình to của chữ S",
+    "value": "Red River and Mekong deltas form the wide ends",
+    "status": "verified",
+    "sources": [
+      "s-0003"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "vietnam-shape",
+        "scenes": [
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-vi-sao-ngan-han",
+    "claim": "Vì sao ngân hàng trung ương in thêm tiền lại làm tô phở tăng giá tạo bằng người que",
+    "value": "vi-sao-ngan-hang-trung-uong",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "vi-sao-ngan-hang-trung-uong",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-vi-sao-viet-nam",
+    "claim": "Vì sao việt nam tăng trưởng mạnh nhưng tỉ lệ thất nghiệp lại tăng cao",
+    "value": "vi-sao-viet-nam-tang-truong",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "vi-sao-viet-nam-tang-truong",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-2-nguoi-di-du-l",
+    "claim": "2 người đi du lịch vũng tàu bằng oto vinfast 6 chi phí tối thiểu bao nhiêu ?",
+    "value": "2-nguoi-di-du-lich-vung-tau",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "2-nguoi-di-du-lich-vung-tau",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-su-that-ve-ngan",
+    "claim": "Sự thật về ngành IT hiện tại",
+    "value": "su-that-ve-nganh-it-hien-tai",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "su-that-ve-nganh-it-hien-tai",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-hut-chet-vi-qua",
+    "claim": "Hụt chết vì quả đào\n\nQuỳnh cậy tài, đùa cả với chúa, không từ ai. Một hôm, lúc túc trực trong cung, có người đem dâng vua một mâm đào, gọi l",
+    "value": "hut-chet-vi-qua-dao",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "hut-chet-vi-qua-dao",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-review-cong-ty-",
+    "claim": "review công ty pivot vietnam",
+    "value": "review-cong-ty-pivot-vietnam",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "review-cong-ty-pivot-vietnam",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-gia-vang-con-ta",
+    "claim": "Giá vàng còn tăng nữa không ?",
+    "value": "gia-vang-con-tang-nua-khong",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "gia-vang-con-tang-nua-khong",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-tap-xay-kenh-ti",
+    "claim": "Tập xây kênh tiktok",
+    "value": "tap-xay-kenh-tiktok",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "tap-xay-kenh-tiktok",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-tu-do-tai-chinh",
+    "claim": "Tự do tài chính",
+    "value": "tu-do-tai-chinh",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "tu-do-tai-chinh",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-follow-cheo-tik",
+    "claim": "Follow chéo tiktok",
+    "value": "follow-cheo-tiktok",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "follow-cheo-tiktok",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-luat-ngam-ban-h",
+    "claim": "Luật ngầm bán hàng rong",
+    "value": "luat-ngam-ban-hang-rong",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "luat-ngam-ban-hang-rong",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-bat-dong-san-na",
+    "claim": "Bất động sản năm 2026",
+    "value": "bat-dong-san-nam-2026",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "bat-dong-san-nam-2026",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-te-nan-dua-xe-d",
+    "claim": "Tệ nạn đua xe đánh võng",
+    "value": "te-nan-dua-xe-danh-vong",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "te-nan-dua-xe-danh-vong",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-gia-xang-tang-d",
+    "claim": "Giá xăng tăng đổ xang chờ rất lâu",
+    "value": "gia-xang-tang-do-xang-cho-ra",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "gia-xang-tang-do-xang-cho-ra",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-bau-cu-tong-tho",
+    "claim": "Bầu cử tông thống Mỹ",
+    "value": "bau-cu-tong-thong-my",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "bau-cu-tong-thong-my-2026",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-du-doan-gia-van",
+    "claim": "Dự đoán giá vàng tương lai",
+    "value": "du-doan-gia-vang-tuong-lai",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-06",
+    "usedIn": [
+      {
+        "video": "du-doan-gia-vang-tuong-lai",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-goc-khuat-cua-n",
+    "claim": "Góc khuất của nghề cho vay nặng lãi",
+    "value": "goc-khuat-cua-nghe-cho-vay-n",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-07",
+    "usedIn": [
+      {
+        "video": "goc-khuat-cua-nghe-cho-vay-n",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-dung-xem-thuong",
+    "claim": "Đừng xem thường xe hủ tiếu lề đường",
+    "value": "dung-xem-thuong-xe-hu-tieu-l",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-07",
+    "usedIn": [
+      {
+        "video": "dung-xem-thuong-xe-hu-tieu-l",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-cac-nganh-nghe-",
+    "claim": "Các ngành nghề hot trend trong năm 2027",
+    "value": "cac-nganh-nghe-hot-trend-tro",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-07",
+    "usedIn": [
+      {
+        "video": "cac-nganh-nghe-hot-trend-tro",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-vuot-den-vang-h",
+    "claim": "Vượt đèn vàng hay rẽ phải khi đèn đỏ: Mức phạt mới khiến bay cả tháng lương!",
+    "value": "vuot-den-vang-hay-re-phai-kh",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-08",
+    "usedIn": [
+      {
+        "video": "vuot-den-vang-hay-re-phai-kh",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-vuot-den-vang-v",
+    "claim": "Vượt đèn vàng và rẽ phải khi đèn đỏ bị phạt bao nhiêu?",
+    "value": "vuot-den-vang-va-re-phai-khi",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-08",
+    "usedIn": [
+      {
+        "video": "vuot-den-vang-va-re-phai-khi",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-5-loi-phat-nguo",
+    "claim": "5 lỗi phạt nguội tài xế Việt hay dính nhất mà không hề biết",
+    "value": "5-loi-phat-nguoi-tai-xe-viet",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-08",
+    "usedIn": [
+      {
+        "video": "5-loi-phat-nguoi-tai-xe-viet",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-bay-tra-gop-0-t",
+    "claim": "Bẫy trả góp 0%: Tưởng rẻ nhưng thực chất bạn đang trả lãi bao nhiêu?",
+    "value": "bay-tra-gop-0-tuong-re-nhung",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-08",
+    "usedIn": [
+      {
+        "video": "bay-tra-gop-0-tuong-re-nhung",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-nhin-an-sang-de",
+    "claim": "Nhịn ăn sáng để giảm cân: Cơ thể bạn thực sự phản ứng thế nào?",
+    "value": "nhin-an-sang-de-giam-can-co",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-08",
+    "usedIn": [
+      {
+        "video": "nhin-an-sang-de-giam-can-co",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-rut-bhxh-1-lan-",
+    "claim": "Rút BHXH 1 lần hay chờ lương hưu?",
+    "value": "rut-bhxh-1-lan-hay-cho-luong",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-08",
+    "usedIn": [
+      {
+        "video": "rut-bhxh-1-lan-hay-cho-luong",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-muc-phat-nong-d",
+    "claim": "Mức phạt nồng độ cồn & trừ điểm bằng lái 2026",
+    "value": "muc-phat-nong-do-con-tru-die",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-08",
+    "usedIn": [
+      {
+        "video": "muc-phat-nong-do-con-tru-die",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-tac-hai-that-su",
+    "claim": "Tác hại thật sự của việc thức khuya bấm điện thoại",
+    "value": "tac-hai-that-su-cua-viec-thu",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-08",
+    "usedIn": [
+      {
+        "video": "tac-hai-that-su-cua-viec-thu",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-quy-dinh-moi-ca",
+    "claim": "Quy định mới Cấm dạy thêm thu tiền (Thông tư 29) – Phụ huynh & Giáo viên !",
+    "value": "quy-dinh-moi-cam-day-them-th",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-09",
+    "usedIn": [
+      {
+        "video": "quy-dinh-moi-cam-day-them-th",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-truy-thu-thue-b",
+    "claim": "Truy thu thuế Bán hàng Online, Livestream & Hộ kinh doanh qua tài khoản ngân hàng",
+    "value": "truy-thu-thue-ban-hang-onlin",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-09",
+    "usedIn": [
+      {
+        "video": "truy-thu-thue-ban-hang-onlin",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-thue-quan-thuon",
+    "claim": "Thuế quan Thương mại Mỹ - Trung mới & Tác động tới túi tiền người Việt",
+    "value": "thue-quan-thuong-mai-my-trun",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-09",
+    "usedIn": [
+      {
+        "video": "thue-quan-thuong-mai-my-trun",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-lan-song-sa-tha",
+    "claim": "Làn sóng sa thải ngầm tuổi 35 & Nghịch lý \"Thừa thầy thiếu thợ\" thời AI",
+    "value": "lan-song-sa-thai-ngam-tuoi-3",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-09",
+    "usedIn": [
+      {
+        "video": "lan-song-sa-thai-ngam-tuoi-3",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-my-trung-giam-t",
+    "claim": "Mỹ Trung giảm thuế nhưng vì sao người Việt nên lo?",
+    "value": "my-trung-giam-thue-nhung-vi",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-09",
+    "usedIn": [
+      {
+        "video": "my-trung-giam-thue-nhung-vi",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-bay-viec-nhe-lu",
+    "claim": "Bẫy \"Việc nhẹ lương cao\" làm nhiệm vụ hoàn tiền: Vì sao biết là lừa mà người có học thức vẫn sập bẫy",
+    "value": "bay-viec-nhe-luong-cao-lam-n",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-09",
+    "usedIn": [
+      {
+        "video": "bay-viec-nhe-luong-cao-lam-n",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-vi-sao-quan-an-",
+    "claim": "Vì sao quán ăn, mặt bằng phố lớn đồng loạt trả mặt bằng dù khách vẫn đông?",
+    "value": "vi-sao-quan-an-mat-bang-pho",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-09",
+    "usedIn": [
+      {
+        "video": "vi-sao-quan-an-mat-bang-pho",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-bay-mua-truoc-t",
+    "claim": "Bẫy \"Mua trước trả sau\" (BNPL) & Ví trả sau: Tiện 1 phút, nợ ngập đầu cả năm",
+    "value": "bay-mua-truoc-tra-sau-bnpl-vi-tra",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-09",
+    "usedIn": [
+      {
+        "video": "bay-mua-truoc-tra-sau-bnpl-vi-tra",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-kiem-khach-gian",
+    "claim": "Kiếm khách giang hồ",
+    "value": "kiem-khach-giang-ho",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-09",
+    "usedIn": [
+      {
+        "video": "kiem-khach-giang-ho",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-hoa-si-sau-chet",
+    "claim": "Họa sĩ sau chết mới nổi tiếng",
+    "value": "hoa-si-sau-chet-moi-noi-tieng",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-09",
+    "usedIn": [
+      {
+        "video": "hoa-si-sau-chet-moi-noi-tieng",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-kungfu-trung-ho",
+    "claim": "Kungfu Trung hoa",
+    "value": "kungfu-trung-hoa",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-09",
+    "usedIn": [
+      {
+        "video": "kungfu-trung-hoa",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-24-11-2026-lan-",
+    "claim": "24/11/2026: Lần đầu tiên người lao động cả nước được nghỉ lễ mới \"Ngày Văn hóa Việt Nam\" hưởng nguyên lương!",
+    "value": "24-11-2026-lan-dau-tien-nguoi-lao",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-10",
+    "usedIn": [
+      {
+        "video": "24-11-2026-lan-dau-tien-nguoi-lao",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-bay-nhuong-quye",
+    "claim": "Bóc tách mô hình nhượng quyền trà sữa, ăn vặt vốn thấp thu hồi vốn nhanh: vì sao chủ thương hiệu không lãi từ phí nhượng quyền ban đầu mà ki",
+    "value": "bay-nhuong-quyen-tra-sua-gia-re",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-10",
+    "usedIn": [
+      {
+        "video": "bay-nhuong-quyen-tra-s-9dq",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-mua-nha-tra-gop",
+    "claim": "Lương 15 đến 20 triệu một tháng ở thành phố lớn thì nên cố vay ngân hàng mua chung cư trả góp hay đi thuê nhà rồi lấy tiền dư đầu tư? Bài to",
+    "value": "mua-nha-tra-gop-hay-thue-nha",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-10",
+    "usedIn": [
+      {
+        "video": "mua-nha-tra-gop-hay-thue-nha",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-chuyen-khoan-ho",
+    "claim": "Nhận tiền chuyển khoản giùm bạn bè, gom tiền quỹ nhóm hoặc đứng tên tài khoản nhận hộ doanh thu có nguy cơ bị cơ quan thuế truy thu hay liên",
+    "value": "chuyen-khoan-ho-co-bi-tinh-thue",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-10",
+    "usedIn": [
+      {
+        "video": "chuyen-khoan-ho-co-bi-tinh-thue",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-nuoc-ngot-khong",
+    "claim": "Uống nước ngọt không đường Zero Calo mỗi ngày có giúp giảm cân như quảng cáo hay chất tạo ngọt nhân tạo vẫn đánh lừa vị giác, làm rối loạn h",
+    "value": "nuoc-ngot-khong-duong-zero-calo",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-11",
+    "usedIn": [
+      {
+        "video": "nuoc-ngot-khong-duong-zero-calo",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-grab-ap-phi-moi",
+    "claim": "Từ ngày 10/11, Grab chính thức áp dụng cơ chế thu phí mới với mức trần tối đa 32%, tạo ra cuộc tranh luận lớn giữa khách hàng và cánh tài xế",
+    "value": "grab-ap-phi-moi-32-phan-tram-ai",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-11",
+    "usedIn": [
+      {
+        "video": "grab-ap-phi-moi-32-pha-xjh",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-di-bo-30-phut-d",
+    "claim": "Nhiều người kiên trì đi bộ đủ 30 phút mỗi ngày nhưng khi đo đường huyết sau bữa ăn vẫn tăng vọt đáng báo động. Các chuyên gia y tế chỉ ra sa",
+    "value": "di-bo-30-phut-duong-huyet-sau-an-van",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-11",
+    "usedIn": [
+      {
+        "video": "di-bo-30-phut-duong-huyet-sau-an-van",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-xoay-cuc-xuat-h",
+    "claim": "Các nhà khí tượng vừa phát cảnh báo khi hiện tượng 'Xoáy cực' (Polar Vortex) xuất hiện ngay từ đầu tháng 11, sớm bất thường so với quy luật ",
+    "value": "xoay-cuc-xuat-hien-som-gay-ret-dam",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-11",
+    "usedIn": [
+      {
+        "video": "xoay-cuc-xuat-hien-som-gay-ret-dam",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-bom-50000-ty-la",
+    "claim": "Ngân hàng Nhà nước vừa tung gần 50.000 tỷ đồng ra thị trường qua nghiệp vụ hoán đổi ngoại tệ để hỗ trợ thanh khoản dịp cuối năm. Giải mã cơ ",
+    "value": "bom-50000-ty-lai-suat-vay-cuoi-nam",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-11",
+    "usedIn": [
+      {
+        "video": "bom-50000-ty-lai-suat-vay-cuoi-nam",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-nvidia-boc-hoi-",
+    "claim": "Chỉ sau 2 phiên giao dịch, vốn hóa đế chế chip AI Nvidia đã bốc hơi hơn 400 tỷ USD và cá nhân CEO Jensen Huang mất 15 tỷ USD chỉ vì bê bối đ",
+    "value": "nvidia-boc-hoi-400-ty-usd-rui-ro-key",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-11",
+    "usedIn": [
+      {
+        "video": "nvidia-boc-hoi-400-ty-usd-rui-ro-key",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-thuoc-ung-thu-t",
+    "claim": "Nhiều thiếu niên đang săn lùng thuốc đặc trị ung thư erdafitinib trên chợ đen theo trào lưu 'heightmaxxing' trên mạng xã hội với hy vọng kéo",
+    "value": "thuoc-ung-thu-thanh-than-duoc-tang",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-11",
+    "usedIn": [
+      {
+        "video": "thuoc-ung-thu-thanh-than-duoc-tang",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-ai-boc-tran-chi",
+    "claim": "Hàng loạt sản phẩm tiêu dùng hiện nay chỉ cần đổi bao bì màu nâu giấy tái chế hoặc in thêm dòng chữ 'thân thiện môi trường', 'hữu cơ tự nhiê",
+    "value": "ai-boc-tran-chieu-tay-xanh-thoi-gia",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-11",
+    "usedIn": [
+      {
+        "video": "ai-boc-tran-chieu-tay-xanh-thoi-gia",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-ai-soi-mac-san-",
+    "claim": "Theo báo Dân Trí hôm nay, làn sóng dùng mác 'thân thiện môi trường' hay 'organic tự nhiên' để bán giá cắt cổ đang bị các thị trường lớn siết",
+    "value": "ai-soi-mac-san-pham-xanh-tay-xanh",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-11",
+    "usedIn": [
+      {
+        "video": "ai-soi-mac-san-pham-xanh-tay-xanh",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-gay-nhung-beo-b",
+    "claim": "Giải mã và phân tích chuyên sâu từ câu chuyện thời sự mới nhất trên VnExpress Sức Khỏe: \"'Gầy nhưng béo bụng' đe dọa sức khỏe dân văn phòng\"",
+    "value": "gay-nhung-beo-bung-de-doa-suc-khoe",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-12",
+    "usedIn": [
+      {
+        "video": "gay-nhung-beo-bung-de-doa-suc-khoe",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-ong-trump-san-s",
+    "claim": "Ông Trump sẵn sàng xem xét bảo đảm an ninh cho Ukraine tương tự Điều 5 NATO. Đặc phái viên Jared Kushner cho biết ông Trump sẵn sàng xem xét",
+    "value": "ong-trump-san-sang-xem-xet-bao",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-20",
+    "usedIn": [
+      {
+        "video": "ong-trump-san-sang-xem-xet-bao",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-an-lau-uong-ruo",
+    "claim": "Ăn lẩu, uống rượu bia trời lạnh có thể gây đột quỵ?. Trời lạnh, tôi thường xuyên ăn lẩu kèm uống rượu bia, vậy việc này có thể gây nguy cơ đ",
+    "value": "an-lau-uong-ruou-bia-troi-lanh",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-20",
+    "usedIn": [
+      {
+        "video": "an-lau-uong-ruou-bia-troi-lanh",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-gia-xang-ve-sat",
+    "claim": "Giá xăng về sát 19.000 đồng một lít. Từ 15h hôm nay, giá xăng dầu các loại cùng giảm 480-1.070 đồng một lít, theo đà diễn biến thị trường nă",
+    "value": "gia-xang-ve-sat-19-000-dong",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-20",
+    "usedIn": [
+      {
+        "video": "gia-xang-ve-sat-19-000-dong",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-gia-xang-giam-v",
+    "claim": "Giá xăng giảm, vì sao hàng hóa vẫn đắt?. Giá xăng dầu giảm liên tiếp nhưng giá hàng hóa, dịch vụ vẫn cao là hiện tượng \"tăng như tên lửa, gi",
+    "value": "gia-xang-giam-vi-sao-hang-hoa",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-20",
+    "usedIn": [
+      {
+        "video": "gia-xang-giam-vi-sao-hang-hoa",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-con-dot-quy-mua",
+    "claim": "Cơn đột quỵ mùa lạnh rình rập người cao huyết áp từ mâm cơm. Dù uống thuốc hạ áp đều đặn mỗi sáng, nhiều người vẫn đối mặt nguy cơ đột quỵ n",
+    "value": "con-dot-quy-mua-lanh-rinh-rap",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-20",
+    "usedIn": [
+      {
+        "video": "con-dot-quy-mua-lanh-rinh-rap",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-tu-mua-khang-si",
+    "claim": "Tự mua kháng sinh khi ho, sốt khiến vi khuẩn ngày càng khó trị. Nhiều người có thói quen ra nhà thuốc mua kháng sinh mỗi khi ho, sốt, dù phầ",
+    "value": "tu-mua-khang-sinh-khi-ho-sot",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-20",
+    "usedIn": [
+      {
+        "video": "tu-mua-khang-sinh-khi-ho-sot",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-thuoc-la-moi-li",
+    "claim": "Thuốc lá mới liên tục biến tướng, làm sao ngăn giới trẻ nghiện nicotine?. (Dân trí) - Các sản phẩm thuốc lá và nicotine mới liên tục thay đổ",
+    "value": "thuoc-la-moi-lien-tuc-bien-tuong",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-20",
+    "usedIn": [
+      {
+        "video": "thuoc-la-moi-lien-tuc-bien-tuong",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-cam-thu-tien-gi",
+    "claim": "Cấm thu tiền giữ chỗ mua nhà hình thành trong tương lai. Theo luật mới vừa thông qua, chủ đầu tư không được thu tiền dưới mọi hình thức để b",
+    "value": "cam-thu-tien-giu-cho-mua-nha",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-21",
+    "usedIn": [
+      {
+        "video": "cam-thu-tien-giu-cho-mua-nha",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-vi-sao-gia-vang",
+    "claim": "Vì sao giá vàng thế giới liên tục giảm?. Việc giá vàng lập đỉnh lịch sử cuối tháng 1, sau đó đảo chiều mất hơn 35% giá trị, khiến nhà đầu tư",
+    "value": "vi-sao-gia-vang-the-gioi-lien",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-21",
+    "usedIn": [
+      {
+        "video": "vi-sao-gia-vang-the-gioi-lien",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-cat-sach-khoi-u",
+    "claim": "Cắt sạch khối u, ung thư có hết hẳn?. Phẫu thuật cắt sạch khối u không đồng nghĩa ung thư biến mất hoàn toàn, bởi các kỹ thuật chẩn đoán hìn",
+    "value": "cat-sach-khoi-u-ung-thu-co-het-han",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-21",
+    "usedIn": [
+      {
+        "video": "cat-sach-khoi-u-ung-thu-co-het-han",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-bitcoin-giam-xu",
+    "claim": "Bitcoin giảm xuống mức thấp nhất trong hơn 2 năm. Trái phiếu chính phủ Mỹ mạnh lên gây áp lực tới các tài sản rủi ro, trong đó có tiền số, r",
+    "value": "bitcoin-giam-xuong-muc-thap-nhat",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-21",
+    "usedIn": [
+      {
+        "video": "bitcoin-giam-xuong-muc-thap-nhat",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-co-phieu-nvidia",
+    "claim": "Cổ phiếu Nvidia, Anthropic bị bán tháo. Nhóm cổ phiếu liên quan AI dẫn đầu đà giảm tại Wall Street, khi các hãng chip mất tới 14%, còn Anthr",
+    "value": "co-phieu-nvidia-anthropic-bi-ban",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-21",
+    "usedIn": [
+      {
+        "video": "co-phieu-nvidia-anthropic-bi-ban",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-chay-dua-mo-qua",
+    "claim": "Chạy đua mở quán cà phê: Ai đang kiếm tiền từ thị trường tỷ USD?. (Dân trí) - Theo các chuyên gia, không phải cứ sở hữu nhiều cửa hàng, doan",
+    "value": "chay-dua-mo-quan-ca-phe-ai",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-23",
+    "usedIn": [
+      {
+        "video": "chay-dua-mo-quan-ca-phe-ai",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-cho-dau-moi-tra",
+    "claim": "Chợ đầu mối trăm tỷ đồng đìu hiu, gần 100 ki-ốt bỏ trống. (Dân trí) - Chợ đầu mối Bình Hương (Hà Tĩnh) được đầu tư 140 tỷ đồng, đưa vào hoạt",
+    "value": "cho-dau-moi-tram-ty-dong-diu",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-23",
+    "usedIn": [
+      {
+        "video": "cho-dau-moi-tram-ty-dong-diu",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-cau-be-ban-ve-s",
+    "claim": "Cậu bé bán vé số và chú mèo mướp nhặt được tờ vé trúng giải giữa cơn mưa Sài Gòn",
+    "value": "cau-be-ban-ve-so-va-chu-meo-muop",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-23",
+    "usedIn": [
+      {
+        "video": "cau-be-ban-ve-so-va-chu-meo-muop",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-manh-dat-2700m2",
+    "claim": "Mảnh đất 2700m² cuối xóm và những chuyện đến giờ nhà em vẫn không lý giải được\n(Nguồn: Truyện Ma Có Thật — https://truyenmacothat.net/truyen",
+    "value": "manh-dat-2700m2-demo",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-23",
+    "usedIn": [
+      {
+        "video": "manh-dat-2700m2-demo6-169",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  }
+]

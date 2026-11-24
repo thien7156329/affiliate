@@ -177,7 +177,24 @@ export interface VeoResult {
  *   1. Try to connect to existing Chrome on CHROME_DEBUG_PORT (fast, keeps login)
  *   2. Fall back to launching Chrome with a full profile copy
  */
-export async function generateVeoVideo(prompt: string, imageUrl?: string): Promise<VeoResult> {
+/** Lower-case fragments of Gemini's "out of today's quota" answers (image or video). */
+export const GEMINI_QUOTA_PHRASES = [
+  "upgrade your subscription",
+  "nâng cấp gói",
+  "reached your limit",
+  "reached the limit",
+  "đã đạt đến giới hạn",
+  "đạt giới hạn",
+  "try again tomorrow",
+  "thử lại vào ngày mai",
+  "hết lượt",
+];
+
+export async function generateVeoVideo(
+  prompt: string,
+  imageUrl?: string,
+  opts?: { rawPrompt?: boolean },
+): Promise<VeoResult> {
   const startTime = Date.now();
   let browser: any = null;
   let page: any = null;
@@ -205,7 +222,8 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
     console.warn(`⚠️  [VeoAuto] Failed to run downloads cleanup: ${err.message}`);
   }
 
-  const finalPrompt = buildVeoScenePrompt(prompt);
+  // rawPrompt: the caller (story style) wrote the whole prompt; skip the live-action/3D wrapper.
+  const finalPrompt = opts?.rawPrompt ? prompt : buildVeoScenePrompt(prompt);
   console.log(`🎬 [VeoAuto] Starting video generation for prompt:\n   "${finalPrompt.slice(0, 80)}..."`);
   if (imageUrl) {
     console.log(`   Product image: ${imageUrl}`);
@@ -228,12 +246,16 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
         fetchUrl = `http://127.0.0.1:${port}${imageUrl}`;
       }
 
-      const response = await axios.get(fetchUrl, { responseType: "arraybuffer", timeout: 15000 });
-      const rawContentType = String(response.headers["content-type"] ?? "image/jpeg");
+      // A file already on this machine (e.g. a story panel) is read directly instead of fetched.
+      const isLocalFile = fs.existsSync(imageUrl);
+      const response = isLocalFile ? null : await axios.get(fetchUrl, { responseType: "arraybuffer", timeout: 15000 });
+      const rawContentType = isLocalFile
+        ? (/\.png$/i.test(imageUrl) ? "image/png" : "image/jpeg")
+        : String(response!.headers["content-type"] ?? "image/jpeg");
       const mime = rawContentType.split(";")[0].trim().toLowerCase();
       const cleanExt = mime.split("/")[1]?.replace(/[^a-z0-9]/gi, "").toLowerCase() || "jpg";
       const ext = cleanExt === "jpeg" ? "jpg" : cleanExt;
-      const rawBuffer = Buffer.from(response.data);
+      const rawBuffer = isLocalFile ? fs.readFileSync(imageUrl) : Buffer.from(response!.data);
       const { buffer, ext: optimizedExt } = await optimizeImageBuffer(rawBuffer, {
         maxWidth: 1920,
         maxHeight: 1920,
@@ -758,6 +780,19 @@ export async function generateVeoVideo(prompt: string, imageUrl?: string): Promi
         console.log(`🎯 [VeoAuto] Video URL captured via network (${elapsed}s)`);
         found = true;
         break;
+      }
+
+      // Out of daily Veo quota → Gemini answers with an upgrade/limit message and never makes a video.
+      if (elapsed >= 10) {
+        const quotaText: string | null = await page.evaluate((phrases: string[]) => {
+          const els = Array.from(document.querySelectorAll("message-content, model-response, .model-response"));
+          for (const el of els) {
+            const t = (el.textContent || "").trim();
+            if (phrases.some((p) => t.toLowerCase().includes(p))) return t.slice(0, 200);
+          }
+          return null;
+        }, GEMINI_QUOTA_PHRASES).catch(() => null);
+        if (quotaText) throw new Error(`QUOTA: Gemini hết lượt tạo video hôm nay — "${quotaText}"`);
       }
 
       // Proactive check: look for video elements directly (even without "ready" text)

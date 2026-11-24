@@ -11,7 +11,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import axios from "axios";
 import { randomUUID } from "crypto";
-import { ensureChromeRunning, createBackgroundPage, getFrontmostApp, restoreUserFocus, toHostPath } from "./veoAutomation.js";
+import { ensureChromeRunning, createBackgroundPage, getFrontmostApp, restoreUserFocus, toHostPath, GEMINI_QUOTA_PHRASES } from "./veoAutomation.js";
 import { optimizeImageBuffer } from "./imageOptimizer.js";
 import { normalizeVisualStyle, sanitizePromptForVisualStyle } from "./worldStyles.js";
 import { sanitizePromptForVeoPolicy } from "./promptValidator.js";
@@ -120,6 +120,10 @@ export function buildDetailedSceneImagePrompt(
   visualStyle: string = "real",
   hasAttachedReference: boolean = true
 ): string {
+  // "raw": the caller (story style) wrote the full single-image prompt itself — no 2x3 storyboard grid.
+  if (visualStyle === "raw") {
+    return redrawInstructions?.trim() ? `${scenePrompt}\n\nREVISION NOTE: ${redrawInstructions.trim()}` : scenePrompt;
+  }
   const mode = normalizeVisualStyle(visualStyle);
   const isReal = mode === "real";
   const isStickman = mode === "stickman";
@@ -403,7 +407,7 @@ export async function generateSingleSceneImage(
       await new Promise((r) => setTimeout(r, 3000));
       const elapsed = Math.round((Date.now() - pollStart) / 1000);
 
-      const check = await page.evaluate((initialCount: number) => {
+      const check = await page.evaluate((initialCount: number, quotaPhrases: string[]) => {
         // STRICTLY find generated images inside model responses
         const allCandidates = Array.from(
           document.querySelectorAll("button.image-button img, single-image img, generated-image img")
@@ -472,10 +476,14 @@ export async function generateSingleSceneImage(
           ) {
             return { found: false, src: null, count: valid.length, refusal: txt.slice(0, 300) };
           }
+          const low = txt.toLowerCase();
+          if (quotaPhrases.some((p) => low.includes(p))) {
+            return { found: false, src: null, count: valid.length, refusal: `QUOTA: ${txt.slice(0, 200)}` };
+          }
         }
 
         return { found: false, src: null, count: valid.length, refusal: null };
-      }, initialGeneratedCount);
+      }, initialGeneratedCount, GEMINI_QUOTA_PHRASES);
 
       if (check.refusal) {
         console.error(`❌ [SceneImgGen-Scene ${sceneIndex + 1}] Gemini refusal detected: ${check.refusal}`);

@@ -29,6 +29,7 @@ interface ShortsJob {
 interface ShortsVideoEntry {
   id: string;
   flow: string;
+  style?: string;
   aspectRatio?: '9:16' | '16:9';
   state: 'ready' | 'attention' | 'progress';
   progress: { done: number; total: number; nextStep: string | null };
@@ -61,6 +62,7 @@ const TOPIC_CATEGORIES = [
   { key: 'decode', label: '🧠 Giải mã & Văn hóa' },
   { key: 'law', label: '⚖️ Luật & Quyền lợi' },
   { key: 'health', label: '🏥 Sức khỏe & Tâm lý' },
+  { key: 'spirit', label: '🕯️ Tâm linh – Truyện ma có thật' },
 ] as const;
 
 type TopicCategoryKey = (typeof TOPIC_CATEGORIES)[number]['key'];
@@ -293,6 +295,22 @@ export const ShortsStudioSection: React.FC<ShortsStudioSectionProps> = ({
   const [style, setStyle] = useState('stickman');
   const [mode, setMode] = useState('auto');
   const [duration, setDuration] = useState(isLongStudio ? 'story' : 'medium');
+  // AI model for script + visual direction; remembered per browser.
+  const [aiModel, setAiModelState] = useState<string>(() => {
+    try {
+      return localStorage.getItem('shortsStudio.aiModel') || 'claude-opus-5-5-medium';
+    } catch {
+      return 'claude-opus-5-5-medium';
+    }
+  });
+  const setAiModel = (m: string) => {
+    setAiModelState(m);
+    try {
+      localStorage.setItem('shortsStudio.aiModel', m);
+    } catch {
+      /* private mode */
+    }
+  };
   const [customId, setCustomId] = useState('');
   const [voice, setVoice] = useState('vieneu:Mai Bé Phương');
   const [sampleText, setSampleText] = useState('Xin chào các bạn! Hôm nay chúng ta cùng khám phá một sự thật cực kỳ thú vị nhé.');
@@ -317,6 +335,7 @@ export const ShortsStudioSection: React.FC<ShortsStudioSectionProps> = ({
     money: `💰 ${playlistTag} Tiền Bạc & Kinh Doanh Thực Chiến`,
     law: `⚖️ ${playlistTag} Luật Pháp & Quyền Lợi Sát Sườn`,
     health: `🧠 ${playlistTag} Tâm Lý Học & Sức Khỏe Đời Sống`,
+    spirit: `🕯️ ${playlistTag} Giải Mã Tâm Linh`,
   };
 
   useEffect(() => {
@@ -351,6 +370,7 @@ export const ShortsStudioSection: React.FC<ShortsStudioSectionProps> = ({
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [filterState, setFilterState] = useState<'all' | 'progress' | 'attention' | 'ready' | 'unpublished' | 'published'>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [styleFilter, setStyleFilter] = useState('all');
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [togglingPublishId, setTogglingPublishId] = useState<string | null>(null);
 
@@ -582,6 +602,7 @@ export const ShortsStudioSection: React.FC<ShortsStudioSectionProps> = ({
           aspectRatio: targetAspectRatio,
           voiceId: voice,
           voice,
+          model: aiModel,
         }),
       });
       const data = await res.json();
@@ -863,6 +884,7 @@ export const ShortsStudioSection: React.FC<ShortsStudioSectionProps> = ({
   );
 
   const filteredVideos = formatScopedVideos.filter((v) => {
+    if (styleFilter !== 'all' && (v.style || 'other') !== styleFilter) return false;
     const pub = getVideoPublishFlags(v.dbVideo);
     if (filterState === 'published') {
       if (!pub.isPublished) return false;
@@ -1002,6 +1024,15 @@ export const ShortsStudioSection: React.FC<ShortsStudioSectionProps> = ({
                   ? '🚶‍♂️ Hoạt hình Người Que Màn Ngang 16:9 (1920×1080 Full HD)'
                   : '🚶‍♂️ Hoạt hình Người Que (Stickman & Nhân vật kể chuyện)'}
               </option>
+              <option value="stickman-explainer">
+                🎓 Thầy Lá kể chuyện khoa học (Người que + ảnh nền AI)
+              </option>
+              <option value="spirit">
+                🕯️ Giải mã tâm linh (Người que kể chuyện lạ rồi giải mã khoa học, nền AI theo thoại)
+              </option>
+              <option value="story">
+                📖 Kể chuyện bằng tranh (Gemini vẽ từng cảnh + clip Veo, giữ nhân vật)
+              </option>
               {!isLongStudio && (
                 <option value="classic">📊 Infographic / Biểu đồ Chuyên sâu (Classic)</option>
               )}
@@ -1045,12 +1076,38 @@ export const ShortsStudioSection: React.FC<ShortsStudioSectionProps> = ({
                 fontWeight: 600,
               }}
             >
+              <option value="auto">🤖 Tự động (AI tính theo độ dài nội dung nhập vào)</option>
               {!isLongStudio && <option value="short">⚡ Ngắn gọn (~35 - 45 giây · 7 câu)</option>}
               {!isLongStudio && <option value="medium">🔥 Chuẩn Viral (1 – 1.5 phút · ~16 câu)</option>}
               <option value="long">🎬 Tiêu chuẩn (2 – 2.5 phút · ~25 câu)</option>
               <option value="story">📚 Kể chuyện / Phân tích dài (3 – 4 phút · ~38 câu)</option>
               <option value="deep">🎙️ Podcast / Giải mã sâu (5 – 6 phút · ~62 câu)</option>
               <option value="epic">🏆 Chuyên đề YouTube Dài (8 – 10 phút · ~105 câu)</option>
+              {isLongStudio && <option value="m15">🎞️ 15 phút</option>}
+              {isLongStudio && <option value="m20">🎞️ 20 phút</option>}
+              {isLongStudio && <option value="m30">🎞️ ~28–30 phút (truyện dài)</option>}
+            </select>
+          </div>
+
+          <div>
+            <div style={{ fontSize: '11px', color: '#8b949e', marginBottom: '4px' }}>🧠 Model AI (Kịch bản + Đạo diễn hình)</div>
+            <select
+              value={aiModel}
+              onChange={(e) => setAiModel(e.target.value)}
+              style={{
+                width: '100%',
+                background: '#0b0f17',
+                border: '1px solid #263042',
+                borderRadius: '8px',
+                padding: '8px 10px',
+                color: '#e6edf3',
+                fontSize: '13px',
+                fontWeight: 600,
+              }}
+            >
+              <option value="claude-opus-5-5-medium">💎 Opus 5.5 Medium — đẹp nhất, chậm nhất</option>
+              <option value="claude-opus-5-5-low">⚖️ Opus 5.5 Low — nhanh hơn một chút</option>
+              <option value="claude-sonnet-5-5-medium">⚡ Sonnet 5.5 — nhanh nhất</option>
             </select>
           </div>
 
@@ -1364,6 +1421,12 @@ export const ShortsStudioSection: React.FC<ShortsStudioSectionProps> = ({
                       onClick={() => {
                         setTopic(item.prompt);
                         setCustomId(item.id);
+                        // ghost stories → spirit style, length from the full story
+                        if ((item as any).cat === 'spirit') {
+                          setStyle('spirit');
+                          setDuration('auto');
+                          setVoice('vieneu:Anh Minh');
+                        }
                       }}
                       title={
                         isLive
@@ -1630,6 +1693,27 @@ export const ShortsStudioSection: React.FC<ShortsStudioSectionProps> = ({
               })}
             </div>
           </div>
+
+          <select
+            value={styleFilter}
+            onChange={(e) => setStyleFilter(e.target.value)}
+            title="Lọc theo loại video"
+            style={{ background: '#141922', border: '1px solid #263042', borderRadius: '8px', padding: '6px 10px', color: '#e6edf3', fontSize: '12px' }}
+          >
+            {[
+              ['all', 'Tất cả loại'],
+              ['stickman', '🚶 Người que'],
+              ['spirit', '🕯️ Giải mã tâm linh'],
+              ['story', '📖 Kể chuyện bằng tranh'],
+              ['stickman-explainer', '🎓 Thầy Lá'],
+              ['classic', '📊 Infographic'],
+              ['other', 'Khác'],
+            ].map(([k, label]) => (
+              <option key={k} value={k}>
+                {label} ({k === 'all' ? formatScopedVideos.length : formatScopedVideos.filter((v) => (v.style || 'other') === k).length})
+              </option>
+            ))}
+          </select>
 
           <input
             type="text"

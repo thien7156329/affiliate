@@ -6,7 +6,6 @@ build/
 data/
 *.log
 .DS_Store
-shorts-kit/
 shorts-kit/briefs/*.md
 shorts-kit/src/videos/*
 shorts-kit/out/
