@@ -32,8 +32,6 @@ out/
 *.webm
 .venv-mflux/
 public/img/explainer/
-public/img/bg-library/
-public/img/story/
 
 # Heavy / local-only (vendored into the affiliate repo)
 out-long/

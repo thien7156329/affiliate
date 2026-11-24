@@ -1727,5 +1727,28 @@
         ]
       }
     ]
+  },
+  {
+    "id": "f-studio-chao-cac-bac-kh",
+    "claim": "Chào các bác , không biết còn bác nào nhớ em không ạ 😁 , em đợt này cũng rảnh lên quyết định lên bài, kể thêm một ít mẩu truyện ngắn về tâm",
+    "value": "chao-cac-bac-khong-biet-con-bac-nao",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-24",
+    "usedIn": [
+      {
+        "video": "chao-cac-bac-khong-biet-con-bac-nao",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
   }
 ]
