@@ -65,14 +65,15 @@ const NotePage: React.FC<{note: StoryNote; reveal: number; opacity: number; widt
 };
 
 /** Shot sizes. The zoom origin sits ON the character, so the framed character never leaves the picture. */
-const SCALE = {wide: 1, medium: 1.16, closeup: 1.32} as const;
-const EASE = 16;
+const SCALE = {wide: 1, medium: 1.5, closeup: 1.95} as const;
+// Shot-size changes are hard cuts (like the reference stories): a 3-frame snap, not a slide.
+const EASE = 3;
 
 /** Face position of each slot as a fraction of the frame (portrait / landscape stage layouts). */
 const TARGET = {
   // origin ≈ the character's chest, so the whole upper body stays in frame after the zoom
   portrait: {left: [0.24, 0.74], right: [0.74, 0.74], center: [0.5, 0.74]},
-  landscape: {left: [0.29, 0.74], right: [0.71, 0.74], center: [0.5, 0.74]},
+  landscape: {left: [0.4, 0.72], right: [0.6, 0.72], center: [0.5, 0.72]},
 } as const;
 
 type Side = "left" | "right" | "center";
@@ -116,24 +117,38 @@ export const StoryCamera: React.FC<{acts: StickmanSceneAct[]; voice: Voice; chil
     if (b?.left?.speak) return "medium_left";
     if (b?.right?.speak) return "medium_right";
     if ((b as any)?.third?.speak) return "medium_center";
+    // story mode: when one character carries the line (the other is hidden or absent), frame that person, never an empty stage
+    if (b?.left && !b.left.hidden && (!b.right || b.right.hidden)) return "medium_left";
+    if (b?.right && !b.right.hidden && (!b.left || b.left.hidden)) return "medium_right";
     return "wide";
   };
   const lineLen = Math.max(1, Math.round(((voice.lines[g]?.end ?? 0) - (voice.lines[g]?.start ?? 0)) * fps));
   const lineP = Math.min(1, Math.max(0, (f - lineStart) / lineLen));
   const scaleOf = (c: Cam, p: number) =>
     c === "wide" ? 1 : c === "push" ? 1 + 0.1 * p : c.startsWith("medium") ? SCALE.medium : SCALE.closeup;
-  const originOf = (c: Cam): readonly number[] =>
-    c === "wide" ? [0.5, 0.5] : c === "push" ? layout.center : layout[c.split("_")[1] as Side];
+  const actOf = (gi: number) => acts.find((a) => a.id === voice.lines[gi]?.scene);
+  const originOf = (c: Cam, gi: number): readonly number[] => {
+    if (c === "wide") return [0.5, 0.5];
+    if (c === "push") return layout.center;
+    const side = c.split("_")[1] as Side;
+    // a solo character stands in the middle of the stage, so the camera aims at the middle
+    const a = actOf(gi);
+    if (side === "left" && (a?.mode === "solo" || a?.charRight === "")) return layout.center;
+    return layout[side];
+  };
   const c0 = camOf(prev);
   const c1 = camOf(now);
   // a barely visible drift keeps wide shots alive
   const drift = 1 + 0.015 * (0.5 + 0.5 * Math.sin(t / 5));
   // The scene is a fixed stage: the camera never zooms, pans or drifts — only the characters move inside it.
   void drift;
-  void scaleOf;
-  const s = 1;
-  const o0 = originOf(c0);
-  const o1 = originOf(c1);
+  // Story shots: eased zoom between shot sizes plus a slow push-in while a line plays (the picture is never frozen).
+  const s0 = scaleOf(c0, 1);
+  const s1 = scaleOf(c1, lineP);
+  const creep = 1 + 0.02 * lineP; // held shots stay nearly still, like the reference
+  const s = (s0 + (s1 - s0) * e) * (c1 === "wide" ? creep : 1);
+  const o0 = originOf(c0, g - 1);
+  const o1 = originOf(c1, g);
   const ox = o0[0] + (o1[0] - o0[0]) * e;
   const oy = o0[1] + (o1[1] - o0[1]) * e;
 

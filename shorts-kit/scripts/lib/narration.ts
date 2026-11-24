@@ -39,7 +39,8 @@ export type Narration = {
   visual: string[];
   language: string;
   voice: NarrationVoice;
-  pause: {line: number; scene: number};
+  /** `adaptive`: the line gap follows the sentence (?, !, …, short beat, long breath, speaker change) instead of one fixed value. */
+  pause: {line: number; scene: number; adaptive?: boolean};
   outroHold: number;
   pronounce?: Record<string, string>;
   spelling?: Record<string, string>;
@@ -134,17 +135,36 @@ export const lineWords = (
   });
 };
 
+/** Adaptive line gap: a story teller breathes by meaning, not by a metronome. */
+const lineGap = (n: Narration, lines: FlatLine[], i: number) => {
+  const base = n.pause.line;
+  if (!n.pause.adaptive) return base;
+  const cur = lines[i];
+  const next = lines[i + 1];
+  const text = cur.display.trim();
+  const words = text.split(/\s+/).filter(Boolean).length;
+  let k = 1;
+  if (/(…|\.{3})["”')\]]*$/.test(text)) k = 1.6; // trailing off: let it hang
+  else if (/[?]["”')\]]*$/.test(text)) k = 1.25; // question: give the listener a beat
+  else if (/[!]["”')\]]*$/.test(text)) k = 1.15;
+  if (words <= 6) k *= 1.25; // short punchy sentence = dramatic beat
+  else if (words >= 20) k *= 1.1; // long sentence: breathe after it
+  const spokenBy = (l?: FlatLine) => l?.voice ?? "";
+  if (spokenBy(cur) !== spokenBy(next)) k *= spokenBy(cur) && spokenBy(next) ? 0.85 : 1.15; // dialogue back-and-forth tighter; narrator ↔ character a touch longer
+  return Math.min(2.2, Math.max(0.3, base * k));
+};
+
 /** Gap after line `i`: a scene pause (+ the scene's hold) at a scene change, else a line pause. */
 export const gapAfter = (n: Narration, lines: FlatLine[], i: number) => {
   const next = lines[i + 1];
   if (!next) return 0;
   const extra = lines[i].holdAfter ?? 0;
-  if (extra > 0) return (next.scene !== lines[i].scene ? n.pause.scene : n.pause.line) + extra;
+  if (extra > 0) return (next.scene !== lines[i].scene ? n.pause.scene : lineGap(n, lines, i)) + extra;
   if (next.scene !== lines[i].scene) {
     const hold = n.scenes.find((s) => s.id === lines[i].scene)?.hold ?? 0;
     return n.pause.scene + hold;
   }
-  return n.pause.line;
+  return lineGap(n, lines, i);
 };
 
 export const scenesFromLines = (vlines: VoiceLine[]): VoiceScene[] => {

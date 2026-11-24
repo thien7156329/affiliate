@@ -80,15 +80,18 @@ const jaccard = (a: string[], b: string[]) => {
   return inter / Math.max(1, new Set([...a, ...b]).size);
 };
 /** Best library image for these tags (same frame shape and tone), not yet used in this video. */
-const findInLibrary = (tags: string[], aspect: "9:16" | "16:9", tone: string, usedHere: Set<string>): LibEntry | null => {
+const findInLibrary = (tags: string[], aspect: "9:16" | "16:9", tone: string, usedHere: Set<string>, min = LIB_MATCH): LibEntry | null => {
   let best: LibEntry | null = null;
   let score = 0;
+  let spare: LibEntry | null = null; // least-used image of the right shape, for the last-resort fallback
   for (const e of readLib()) {
     if ((e.v ?? 1) < LIB_VERSION || e.aspect !== aspect || e.tone !== tone || usedHere.has(e.file)) continue;
+    if (!spare || e.uses < spare.uses) spare = e;
     const sc = jaccard(tags, e.tags);
     if (sc > score) [best, score] = [e, sc];
   }
-  return score >= LIB_MATCH ? best : null;
+  if (min <= 0) return best ?? spare; // nothing could be drawn: any fitting library image beats an empty stage
+  return score >= min ? best : null;
 };
 export const libraryStats = () => {
   const lib = readLib();
@@ -122,7 +125,7 @@ Stickman characters are drawn ON TOP of your backgrounds, so backgrounds are EMP
 For each beat below write ONE English prompt (20–45 words) that ILLUSTRATES WHAT THE BEAT SAYS — the exact moment, not just the location:
 the place PLUS the thing being described in that line (e.g. "a dark human silhouette standing in the doorway", "two small earth graves with incense smoke", "a firefly glowing on an old man's fingertip" — shown as objects/marks/shadows since the stickmen are drawn separately), time of day, weather, lighting, mood.
 STAGING (important): characters are drawn standing on the floor in the BOTTOM THIRD of the image, about 78% down from the top. So every place must be shown eye-level and straight-on, with an EMPTY walkable floor/ground across the bottom third (floor tiles, packed earth, a yard, a road) and all furniture/objects behind that, against the back wall or in the middle distance. Never put a table, bed, desk or bush in the foreground, never a top-down or close-up view.${opts.aspectRatio === "16:9" ? "" : " Tall vertical composition: main subject in the upper half, open floor in the lower half."}
-${opts.toneHint ? `TONE: ${opts.toneHint}\n` : ""}${opts.recurringSets ? `RECURRING SETS: the story uses only a few fixed LOCATIONS (the family house, the back garden, the pond…). Give every beat a short "loc" key (e.g. "back_garden") and describe the SAME house/garden with the same words each time so it looks like one place. "same" is FORBIDDEN for any line that shows or mentions something visible happening or appearing (a figure, a shadow, a door/window opening, bones, graves, a firefly, a fall, a scream, fire, water…): such a line ALWAYS gets a NEW prompt that puts that thing in the picture. "same" is allowed only for explanation / transition lines with nothing new to see, and never for more than 2 lines in a row.\n` : ""}If a beat clearly stays in the same place as the previous beat, return "same" instead of a prompt (saves images), but change the place at least every 3 beats.
+${opts.toneHint ? `TONE: ${opts.toneHint}\n` : ""}${opts.recurringSets ? `RECURRING SETS: the story uses only a few fixed LOCATIONS (the family house, the back garden, the pond…). Give every beat a short "loc" key (e.g. "back_garden") and describe the SAME house/garden with the same words each time so it looks like one place. STORY ORDER: a place stays on screen for as long as the story stays there (a whole conversation, a whole night in one room) — do NOT change the picture for variety. Return "same" for every line that is only dialogue, a thought, a feeling, an explanation or a transition. Give a NEW prompt only when (a) the story moves to another place or time, or (b) the line makes something NEW and important visible that the picture must show (a figure at the door, graves, a letter, a lit candle…). A line that only talks ABOUT something elsewhere does not move the picture.\nLITERAL FIDELITY: draw only what the story text actually says — never invent a place, object, person or era that is not in it. Modern story (phone, Facetime, hospital, school, highway, lockdown) → modern settings; old village story → thatched/old houses. Never reuse a setting that contradicts the line (no graveyard for a phone call, no bedroom for a school yard).\n` : ""}If a beat clearly stays in the same place as the previous beat, return "same" instead of a prompt (saves images), but ${opts.recurringSets ? "keep the place for as long as the story stays there." : "change the place at least every 3 beats."}
 Use at most ${STICKMAN_BG_MAX} distinct prompts in total.
 For every new prompt also give "tags": 4–8 lowercase English keywords (place type, key objects, time of day, weather, mood),
 e.g. ["village road","banyan tree","night","fog","eerie"] — they are used to reuse backgrounds from the channel library.
@@ -262,6 +265,16 @@ export const renderBackdrops = async (
       lib.push({id: h, file: saved, prompt: p.prompt as string, tags, aspect: aspectRatio, tone, uses: 1, createdAt: new Date().toISOString(), v: LIB_VERSION});
       writeLib(lib);
     }
+    if (!saved) {
+      // Nothing could be drawn (no Cloudflare key, Gemini Chrome closed…): reuse the closest library image rather than an empty stage.
+      const fb = findInLibrary(tags, aspectRatio, tone, usedHere, Number(process.env.BG_FALLBACK_MIN ?? 0.15));
+      if (fb && existsSync(join(REPO, "public", fb.file))) {
+        usedHere.add(fb.file);
+        reused++;
+        saved = fb.file;
+        ui.log(`[Backdrop] Không vẽ được → dùng nền gần nhất trong thư viện cho câu ${p.line + 1}`);
+      }
+    }
     files.set(p.line, saved);
   };
 
@@ -283,13 +296,17 @@ export const renderBackdrops = async (
   let last: string | null = null;
   const locSrc = new Map<string, string>();
   const out = plan.map((p) => {
-    const src = p.prompt ? (files.get(p.line) ?? null) : p.loc && locSrc.has(p.loc) ? (locSrc.get(p.loc) as string) : last;
+    // a beat that could not be drawn or matched keeps the previous picture instead of jumping to an unrelated one
+    const src = p.prompt ? (files.get(p.line) ?? last) : p.loc && locSrc.has(p.loc) ? (locSrc.get(p.loc) as string) : last;
     if (src) {
       last = src;
       if (p.loc && !locSrc.has(p.loc)) locSrc.set(p.loc, src);
     }
     return {line: p.line, src};
   });
+  // the opening beats must not be an empty stage: take the first picture that exists
+  const firstSrc = out.find((o) => o.src)?.src ?? null;
+  if (firstSrc) for (const o of out) if (!o.src) o.src = firstSrc; else break;
   const st = libraryStats();
   ui.log(`[Backdrop] ${todo.length} nền: ${reused} lấy lại từ thư viện, ${drawn} vẽ mới. Thư viện kênh: ${st.total} nền (${st.landscape} ngang, ${st.portrait} dọc)`);
   return out;

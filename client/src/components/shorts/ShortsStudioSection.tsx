@@ -18,12 +18,15 @@ interface ShortsJob {
   topic: string;
   style: string;
   aspectRatio?: '9:16' | '16:9';
-  status: 'running' | 'done' | 'error';
+  status: 'running' | 'review' | 'done' | 'error';
   step: string;
   progress: number;
   logs: string[];
   error?: string;
   startedAt?: number;
+  reviewMode?: 'chapter' | 'all';
+  reviewIndex?: number;
+  chapters?: { n: number; from: number; to: number; url: string | null }[];
 }
 
 interface ShortsVideoEntry {
@@ -292,15 +295,31 @@ export const ShortsStudioSection: React.FC<ShortsStudioSectionProps> = ({
   const targetAspectRatio: '9:16' | '16:9' = isLongStudio ? '16:9' : '9:16';
 
   // Studio Form State
-  const [style, setStyle] = useState('stickman');
-  const [mode, setMode] = useState('auto');
-  const [duration, setDuration] = useState(isLongStudio ? 'story' : 'medium');
+  const [style, setStyle] = useState('spirit');
+  const [mode, setMode] = useState('content');
+  const [duration, setDuration] = useState('auto');
+  // "chapter": pause after every ~2 min chapter for review; "all": create straight through
+  const [reviewMode, setReviewMode] = useState<'chapter' | 'all'>(() => {
+    try {
+      return (localStorage.getItem('shortsStudio.reviewMode') as 'chapter' | 'all') || 'chapter';
+    } catch {
+      return 'chapter';
+    }
+  });
+  const changeReviewMode = (m: 'chapter' | 'all') => {
+    setReviewMode(m);
+    try {
+      localStorage.setItem('shortsStudio.reviewMode', m);
+    } catch {
+      /* private mode */
+    }
+  };
   // AI model for script + visual direction; remembered per browser.
   const [aiModel, setAiModelState] = useState<string>(() => {
     try {
-      return localStorage.getItem('shortsStudio.aiModel') || 'claude-opus-5-5-medium';
+      return localStorage.getItem('shortsStudio.aiModel') || 'claude-sonnet-5-5-medium';
     } catch {
-      return 'claude-opus-5-5-medium';
+      return 'claude-sonnet-5-5-medium';
     }
   });
   const setAiModel = (m: string) => {
@@ -312,7 +331,7 @@ export const ShortsStudioSection: React.FC<ShortsStudioSectionProps> = ({
     }
   };
   const [customId, setCustomId] = useState('');
-  const [voice, setVoice] = useState('vieneu:Mai Bé Phương');
+  const [voice, setVoice] = useState('vieneu:Anh Minh B');
   const [sampleText, setSampleText] = useState('Xin chào các bạn! Hôm nay chúng ta cùng khám phá một sự thật cực kỳ thú vị nhé.');
   const playlistTag = isLongStudio ? '[Video Dài]' : '[Shorts]';
   const defaultStudioPlaylist = `🍿 ${playlistTag} Hóng Hớt & Giải Mã Sự Thật`;
@@ -425,10 +444,12 @@ export const ShortsStudioSection: React.FC<ShortsStudioSectionProps> = ({
           // Detect newly completed job -> trigger S3/DB sync & refresh main gallery
           for (const j of data.jobs as ShortsJob[]) {
             const prevStatus = prevJobStatusRef.current[j.jobId];
-            if (prevStatus === 'running' && j.status === 'done') {
+            if (prevStatus === 'running' && j.status === 'review') {
+              showToast(`📺 Chương ${j.reviewIndex ?? ''} của "${j.videoId}" đã sẵn sàng — xem rồi bấm Tiếp tục`);
+            } else if ((prevStatus === 'running' || prevStatus === 'review') && j.status === 'done') {
               showToast(`🎉 Đã render xong "${j.videoId}" và tự động đồng bộ lên S3 + DB!`);
               onVideoSynced();
-            } else if (prevStatus === 'running' && j.status === 'error') {
+            } else if ((prevStatus === 'running' || prevStatus === 'review') && j.status === 'error') {
               showToast(`❌ Lỗi render "${j.videoId}": ${j.error || 'Xem chi tiết log'}`);
             }
             prevJobStatusRef.current[j.jobId] = j.status;
@@ -603,6 +624,7 @@ export const ShortsStudioSection: React.FC<ShortsStudioSectionProps> = ({
           voiceId: voice,
           voice,
           model: aiModel,
+          reviewMode,
         }),
       });
       const data = await res.json();
@@ -786,7 +808,40 @@ export const ShortsStudioSection: React.FC<ShortsStudioSectionProps> = ({
       setRestartingId(null);
     }
   };
-  const isVideoRunning = (shortId: string) => jobs.some((j) => j.videoId === shortId && j.status === 'running');
+  const [chapterBusy, setChapterBusy] = useState(false);
+  const handleChapterAction = async (shortId: string, action: 'next' | 'redo') => {
+    if (chapterBusy) return;
+    setChapterBusy(true);
+    try {
+      const res = await fetch(`/api/shorts-studio/${action}/${encodeURIComponent(shortId)}`, { method: 'POST' });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || 'Không thể gửi lệnh');
+      showToast(action === 'next' ? '▶ Đang tạo tiếp…' : '🔁 Đang dựng lại chương này…');
+      await loadOverview();
+    } catch (err: any) {
+      showToast('❌ ' + err.message);
+    } finally {
+      setChapterBusy(false);
+    }
+  };
+  const [stoppingId, setStoppingId] = useState<string | null>(null);
+  const handleStopJob = async (shortId: string) => {
+    if (stoppingId) return;
+    if (!window.confirm(`Dừng tạo video "${shortId}"? Có thể bấm "Chạy lại" để làm tiếp sau.`)) return;
+    setStoppingId(shortId);
+    try {
+      const res = await fetch(`/api/shorts-studio/cancel/${encodeURIComponent(shortId)}`, { method: 'POST' });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || 'Không thể dừng');
+      showToast(`⏹ Đã dừng "${shortId}"`);
+      await loadOverview();
+    } catch (err: any) {
+      showToast('❌ Lỗi dừng: ' + err.message);
+    } finally {
+      setStoppingId(null);
+    }
+  };
+  const isVideoRunning = (shortId: string) => jobs.some((j) => j.videoId === shortId && (j.status === 'running' || j.status === 'review'));
 
   const handleTogglePublishedFlag = async (shortId: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
@@ -855,7 +910,7 @@ export const ShortsStudioSection: React.FC<ShortsStudioSectionProps> = ({
   );
   const activeJob =
     (activeJobId && jobs.find((j) => j.jobId === activeJobId)) ||
-    formatScopedJobs.find((j) => j.status === 'running') ||
+    formatScopedJobs.find((j) => j.status === 'running' || j.status === 'review') ||
     null;
 
   // ── "Còn sống" indicators: per-step elapsed timer, ticking every second while running ──
@@ -1086,6 +1141,27 @@ export const ShortsStudioSection: React.FC<ShortsStudioSectionProps> = ({
               {isLongStudio && <option value="m15">🎞️ 15 phút</option>}
               {isLongStudio && <option value="m20">🎞️ 20 phút</option>}
               {isLongStudio && <option value="m30">🎞️ ~28–30 phút (truyện dài)</option>}
+            </select>
+          </div>
+
+          <div>
+            <div style={{ fontSize: '11px', color: '#8b949e', marginBottom: '4px' }}>📋 Chế độ tạo</div>
+            <select
+              value={reviewMode}
+              onChange={(e) => changeReviewMode(e.target.value as 'chapter' | 'all')}
+              style={{
+                width: '100%',
+                background: '#0b0f17',
+                border: '1px solid #263042',
+                borderRadius: '8px',
+                padding: '8px 10px',
+                color: '#e6edf3',
+                fontSize: '13px',
+                fontWeight: 600,
+              }}
+            >
+              <option value="chapter">👀 Duyệt từng chương (~2 phút/chương, bấm Tiếp tục mới tạo tiếp)</option>
+              <option value="all">⚡ Tự động toàn bộ (tạo từ đầu tới cuối, không cần duyệt)</option>
             </select>
           </div>
 
@@ -1543,6 +1619,26 @@ export const ShortsStudioSection: React.FC<ShortsStudioSectionProps> = ({
                   <span style={{ display: 'inline-block', animation: 'sk-spin 1.6s linear infinite', marginRight: '4px' }}>⚙️</span>
                 )}
                 [{activeJob.videoId}] {activeJob.step}
+                {(activeJob.status === 'running' || activeJob.status === 'review') && (
+                  <button
+                    type="button"
+                    disabled={stoppingId === activeJob.videoId}
+                    onClick={() => handleStopJob(activeJob.videoId)}
+                    style={{
+                      marginLeft: '10px',
+                      padding: '3px 10px',
+                      borderRadius: '6px',
+                      border: '1px solid rgba(248, 113, 113, 0.5)',
+                      background: 'rgba(248, 113, 113, 0.12)',
+                      color: '#fca5a5',
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {stoppingId === activeJob.videoId ? '⏳ Đang dừng...' : '⏹ Dừng'}
+                  </button>
+                )}
                 {activeJob.status === 'error' && (
                   <button
                     type="button"
@@ -1601,6 +1697,56 @@ export const ShortsStudioSection: React.FC<ShortsStudioSectionProps> = ({
                 }}
               />
             </div>
+            {activeJob.status === 'review' && (
+              <div style={{ marginTop: '12px', padding: '12px', border: '1px solid #1f6feb', borderRadius: '10px', background: 'rgba(31,111,235,0.08)' }}>
+                {(() => {
+                  const chs = activeJob.chapters || [];
+                  const cur = chs.find((c) => c.n === activeJob.reviewIndex);
+                  const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+                  const isLast = cur ? cur.n === chs.length : false;
+                  return (
+                    <>
+                      <div style={{ fontSize: '13px', fontWeight: 700, color: '#79c0ff', marginBottom: '8px' }}>
+                        ⏸ Chương {cur?.n}/{chs.length} {cur ? `(${fmt(cur.from)} – ${fmt(cur.to)})` : ''} — xem bản nháp, ghi lại chỗ cần sửa rồi chọn:
+                      </div>
+                      {cur?.url ? (
+                        <video key={cur.url} src={cur.url} controls style={{ width: '100%', maxHeight: '420px', borderRadius: '8px', background: '#000' }} />
+                      ) : null}
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '10px' }}>
+                        <button
+                          type="button"
+                          disabled={chapterBusy}
+                          onClick={() => handleChapterAction(activeJob.videoId, 'next')}
+                          style={{ padding: '8px 16px', borderRadius: '8px', border: 'none', background: '#238636', color: '#fff', fontWeight: 700, cursor: 'pointer' }}
+                        >
+                          {isLast ? '✅ Duyệt xong → dựng bản hoàn chỉnh' : '▶ Tiếp tục (Next)'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={chapterBusy}
+                          onClick={() => handleChapterAction(activeJob.videoId, 'redo')}
+                          title="Dựng lại bản nháp chương này (dùng sau khi đã chỉnh sửa)"
+                          style={{ padding: '8px 16px', borderRadius: '8px', border: '1px solid #30363d', background: '#161b22', color: '#c9d1d9', fontWeight: 700, cursor: 'pointer' }}
+                        >
+                          🔁 Dựng lại chương này
+                        </button>
+                      </div>
+                      {chs.filter((c) => c.url && c.n !== activeJob.reviewIndex).length > 0 && (
+                        <div style={{ marginTop: '10px', fontSize: '12px', color: '#8b949e' }}>
+                          Chương đã duyệt:{' '}
+                          {chs.filter((c) => c.url && c.n < (activeJob.reviewIndex ?? 0)).map((c) => (
+                            <a key={c.n} href={c.url as string} target="_blank" rel="noreferrer" style={{ marginRight: '10px', color: '#58a6ff' }}>
+                              Chương {c.n}
+                            </a>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+            )}
+
             {Array.isArray(activeJob.logs) && activeJob.logs.length > 0 && (
               <div
                 style={{
@@ -2004,6 +2150,27 @@ export const ShortsStudioSection: React.FC<ShortsStudioSectionProps> = ({
                         title="Đẩy lại file MP4, ảnh bìa, tiêu đề và nội dung lên S3 & DB"
                       >
                         {isSyncingThis ? '⏳ Sync...' : '☁️ Sync S3'}
+                      </button>
+                    )}
+
+                    {isVideoRunning(v.id) && (
+                      <button
+                        type="button"
+                        disabled={stoppingId === v.id}
+                        onClick={() => handleStopJob(v.id)}
+                        title="Dừng tạo video này (bấm Chạy lại để làm tiếp sau)"
+                        style={{
+                          padding: '6px 12px',
+                          borderRadius: '8px',
+                          border: '1px solid rgba(248, 113, 113, 0.5)',
+                          background: 'rgba(248, 113, 113, 0.12)',
+                          color: '#fca5a5',
+                          fontSize: '12px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {stoppingId === v.id ? '⏳ Đang dừng...' : '⏹ Dừng'}
                       </button>
                     )}
 

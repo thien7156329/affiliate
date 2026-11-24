@@ -30,6 +30,8 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   deleteVideoCompletely,
   listJobs,
+  cancelJob,
+  continueJob,
   startCreateAndRender,
   startRebuildVideo,
   synthesizeVoiceSample,
@@ -1421,6 +1423,24 @@ const route = async (req: Request, url: URL): Promise<Response> => {
   if (method === "GET" && path === "/api/status") return json(status());
   if (method === "GET" && path === "/api/studio/jobs")
     return json({ jobs: listJobs() });
+  {
+    const mCancel = /^\/api\/studio\/cancel\/([^/]+)$/.exec(path);
+    if (method === "POST" && mCancel) {
+      if (req.headers.get("x-sk-preview") !== "1")
+        return json({ error: "missing x-sk-preview header" }, 400);
+      const ok = cancelJob(decodeURIComponent(mCancel[1]));
+      return json({ ok, error: ok ? undefined : "Job không còn chạy" }, ok ? 200 : 404);
+    }
+  }
+  {
+    const mNext = /^\/api\/studio\/(next|redo)\/([^/]+)$/.exec(path);
+    if (method === "POST" && mNext) {
+      if (req.headers.get("x-sk-preview") !== "1")
+        return json({ error: "missing x-sk-preview header" }, 400);
+      const ok = continueJob(decodeURIComponent(mNext[2]), mNext[1] === "redo" ? "redo" : "next");
+      return json({ ok, error: ok ? undefined : "Job không đang chờ duyệt" }, ok ? 200 : 404);
+    }
+  }
   if (method === "GET" && path === "/api/studio/voices")
     return json({ voices: VIENEU_VOICES });
   if (method === "POST" && path === "/api/studio/voice-sample") {
@@ -1452,6 +1472,7 @@ const route = async (req: Request, url: URL): Promise<Response> => {
       aspectRatio?: StudioAspectRatio;
       model?: string;
       voiceId?: string;
+      reviewMode?: "chapter" | "all";
     };
     if (!body.prompt?.trim())
       return json({ error: "Vui lòng nhập nội dung hoặc chủ đề video!" }, 400);
@@ -1464,6 +1485,7 @@ const route = async (req: Request, url: URL): Promise<Response> => {
       aspectRatio: body.aspectRatio === "16:9" ? "16:9" : "9:16",
       model: body.model ?? "claude-opus-5-5-medium",
       voiceId: body.voiceId ?? "vieneu:Mai Bé Phương",
+      reviewMode: body.reviewMode === "chapter" ? "chapter" : "all",
     });
     return json({ job });
   }

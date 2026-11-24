@@ -12,9 +12,13 @@ shorts-kit/out/
 shorts-kit/out-long/
 *.md
 !README.md
+!shorts-kit/docs/**/*.md
 AGENTS.md
 .gpt_memory.md
 *.db
 *.db-journal
 *.db-wal
 scratch/
+
+# secrets copied by hand
+/env

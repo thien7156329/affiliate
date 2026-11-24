@@ -38,6 +38,9 @@ export type StickPose =
   | "sword_slash"
   | "sword_parry"
   | "bow_respect"
+  | "kneel_pray"
+  /** On a phone call: the phone is pressed to the ear, the other arm hangs. */
+  | "phone_call"
   | "laugh_belly";
 
 export type StickMood =
@@ -475,7 +478,9 @@ export const Stickman: React.FC<{
 
   const isJump = pose === "jump" || pose === "cheer";
   const isDance = pose === "dance";
-  const isSeated = pose === "sit" || pose === "sit_eat" || pose === "sit_type" || pose === "drive";
+  const isKneel = pose === "kneel_pray";
+  const isBow = pose === "bow_respect" || isKneel;
+  const isSeated = isKneel || pose === "sit" || pose === "sit_eat" || pose === "sit_type" || pose === "drive";
   const isClimb = pose === "climb";
   const isLocomotion = pose === "walk" || pose === "run" || pose === "dribble_ball";
   const isKick = pose === "kick_ball";
@@ -513,8 +518,10 @@ export const Stickman: React.FC<{
     customRig?.leanX ??
     (pose === "slump" || pose === "crouch_inspect"
       ? 22
-      : pose === "bow_respect"
-        ? 26 + Math.sin(f * 0.14) * 4
+      : isBow
+        ? isKneel
+          ? 24 + Math.sin(f * 0.045) * 10
+          : 26 + Math.sin(f * 0.14) * 4
         : isKick
           ? -kickSwing * 14
           : pose === "boxing_punch"
@@ -545,11 +552,13 @@ export const Stickman: React.FC<{
 
   const hipY =
     customRig?.hipY ??
-    ((isSeated
+    ((isKneel
+      ? -38
+      : isSeated
       ? -48
       : pose === "crouch_inspect"
         ? -50
-        : pose === "slump" || pose === "carry" || pose === "lift_weight" || pose === "bow_respect"
+        : pose === "slump" || pose === "carry" || pose === "lift_weight" || isBow
           ? -58
           : pose === "tired" || pose === "think"
             ? -64
@@ -557,7 +566,7 @@ export const Stickman: React.FC<{
   const shX = leanX;
   const shY =
     hipY -
-    (pose === "crouch_inspect" || pose === "bow_respect"
+    (pose === "crouch_inspect" || isBow
       ? 60
       : pose === "slump"
         ? 64
@@ -566,7 +575,7 @@ export const Stickman: React.FC<{
           : 74);
   const headX =
     shX +
-    (pose === "slump" || pose === "crouch_inspect" || pose === "bow_respect"
+    (pose === "slump" || pose === "crouch_inspect" || isBow
       ? 14
       : pose === "reach"
         ? 10
@@ -581,7 +590,7 @@ export const Stickman: React.FC<{
                 : 1);
   const headY =
     shY -
-    (pose === "slump" || pose === "bow_respect"
+    (pose === "slump" || isBow
       ? 38
       : pose === "read_book" || pose === "write_note" || pose === "check_phone" || pose === "crouch_inspect"
         ? 40
@@ -590,7 +599,7 @@ export const Stickman: React.FC<{
   // Expressive Head Tilt (in degrees) around the chin
   const headTiltDeg =
     customRig?.headTiltDeg ??
-    (pose === "bow_respect"
+    (isBow
       ? 14 + Math.sin(f * 0.14) * 3
       : pose === "laugh_belly"
         ? -12 + Math.sin(f * 0.35) * 4
@@ -625,7 +634,9 @@ export const Stickman: React.FC<{
 
   const lFootX =
     customRig?.lFoot?.[0] ??
-    (isSeated
+    (isKneel
+      ? -20
+      : isSeated
       ? 36
       : isKick
         ? -16
@@ -636,7 +647,9 @@ export const Stickman: React.FC<{
             : -15);
   const rFootX =
     customRig?.rFoot?.[0] ??
-    (isSeated
+    (isKneel
+      ? -6
+      : isSeated
       ? 46
       : isKick
         ? 14 + kickSwing * 46
@@ -647,7 +660,9 @@ export const Stickman: React.FC<{
             : 17);
   const lFootY =
     customRig?.lFoot?.[1] ??
-    (isSeated
+    (isKneel
+      ? -4
+      : isSeated
       ? -6
       : isKick
         ? 0
@@ -658,7 +673,9 @@ export const Stickman: React.FC<{
             : 0);
   const rFootY =
     customRig?.rFoot?.[1] ??
-    (isSeated
+    (isKneel
+      ? -4
+      : isSeated
       ? 0
       : isKick
         ? -Math.max(0, kickSwing + 0.3) * 28
@@ -674,10 +691,10 @@ export const Stickman: React.FC<{
   const legSegLen = 38;
   const lIK = solveLegIK([-8, hipY + 4], [lFootX, lFootY], legSegLen, legSegLen);
   const rIK = solveLegIK([8, hipY + 4], [rFootX, rFootY], legSegLen, legSegLen);
-  const lKneeX = isSeated ? 24 : isClimb ? 18 : pose === "crouch_inspect" ? 14 : isLocomotion ? lIK[0] : -8;
-  const rKneeX = isSeated ? 30 : isClimb ? 28 : pose === "crouch_inspect" ? 24 : isLocomotion ? rIK[0] : 12;
-  const lKneeY = isSeated ? -44 : isClimb ? hipY + 18 + lStep * 10 : pose === "crouch_inspect" ? -26 : isLocomotion ? lIK[1] : (hipY + lFootY) * 0.52;
-  const rKneeY = isSeated ? -40 : isClimb ? hipY + 18 + rStep * 10 : pose === "crouch_inspect" ? -24 : isLocomotion ? rIK[1] : (hipY + rFootY) * 0.52;
+  const lKneeX = isKneel ? 16 : isSeated ? 24 : isClimb ? 18 : pose === "crouch_inspect" ? 14 : isLocomotion ? lIK[0] : -8;
+  const rKneeX = isKneel ? 26 : isSeated ? 30 : isClimb ? 28 : pose === "crouch_inspect" ? 24 : isLocomotion ? rIK[0] : 12;
+  const lKneeY = isKneel ? -3 : isSeated ? -44 : isClimb ? hipY + 18 + lStep * 10 : pose === "crouch_inspect" ? -26 : isLocomotion ? lIK[1] : (hipY + lFootY) * 0.52;
+  const rKneeY = isKneel ? -3 : isSeated ? -40 : isClimb ? hipY + 18 + rStep * 10 : pose === "crouch_inspect" ? -24 : isLocomotion ? rIK[1] : (hipY + rFootY) * 0.52;
 
   // Arms & Hand Gestures (default 3/4 inward posture: both arms angled naturally toward the conversation partner +X!)
   let lElbow: [number, number] = [shX - 10, shY + 28];
@@ -998,7 +1015,7 @@ export const Stickman: React.FC<{
     rHand = [shX + 54, shY + 14 - guardVib];
     rGesture = "grip";
     rHandAngle = -28;
-  } else if (pose === "bow_respect") {
+  } else if (isBow) {
     // Clasped hands in front of chest while bowing respectfully
     lElbow = [shX + 8, shY + 24];
     lHand = [shX + 36, shY + 14];
@@ -1006,6 +1023,16 @@ export const Stickman: React.FC<{
     rElbow = [shX + 18, shY + 24];
     rHand = [shX + 38, shY + 14];
     rGesture = "chest";
+  } else if (pose === "phone_call") {
+    // Phone against the ear (right hand), left arm relaxed — not a phone held out in front of the body
+    rElbow = [shX + 34, shY + 22];
+    rHand = [headX + 30, headY + 6];
+    rGesture = "grip";
+    rHandAngle = 70;
+    lElbow = [shX - 14, shY + 30];
+    lHand = [shX - 6, shY + 56];
+    lGesture = "open";
+    lHandAngle = 20;
   } else if (pose === "laugh_belly") {
     // Holding belly with left hand while pointing/laughing with right hand
     const laughShake = Math.sin(f * 0.4) * 4;
@@ -1036,11 +1063,12 @@ export const Stickman: React.FC<{
           ? "notebook"
           : pose === "read_book"
             ? "book"
-            : pose === "check_phone"
+            : pose === "check_phone" || pose === "phone_call"
               ? "phone"
               : "none";
   const isHoldingAnyProp = hasCustomPropSvg || activeProp !== "none";
   const isSpecialPropPose =
+    pose === "phone_call" ||
     pose === "drive" ||
     pose === "sit_eat" ||
     pose === "carry" ||
@@ -2198,7 +2226,13 @@ export const Stickman: React.FC<{
             />
           </g>
         )}
-        {activeProp === "phone" && (
+        {pose === "phone_call" && (
+          <g transform={`translate(${rHand[0] + 3} ${rHand[1] - 4}) rotate(8)`}>
+            <rect x={-6} y={-20} width={12} height={34} rx={4} fill="#0F172A" stroke="#111827" strokeWidth={3} />
+            <rect x={-3} y={-15} width={6} height={22} rx={2} fill="#38BDF8" opacity={0.75} />
+          </g>
+        )}
+        {activeProp === "phone" && pose !== "phone_call" && (
           <g transform={`translate(${Math.max(propX + 4, shX + 52)} ${Math.max(propY, shY + 26)}) rotate(-15)`}>
             <rect x={-11} y={-22} width={22} height={38} rx={4} fill="#0F172A" stroke="#111827" strokeWidth={3} />
             <rect x={-8} y={-16} width={16} height={26} rx={2} fill="#38BDF8" opacity={0.8 + Math.sin(f * 0.25) * 0.2} />

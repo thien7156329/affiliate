@@ -253,6 +253,15 @@ export function registerShortsStudioRoutes(app: any, deps: ShortsStudioDeps) {
         logs: j.logs || [],
         error: j.error,
         startedAt: j.startedAt,
+        reviewMode: j.reviewMode || "all",
+        reviewIndex: j.reviewIndex,
+        chapters: (j.chapters || []).map((c: any) => ({
+          n: c.n,
+          from: c.from,
+          to: c.to,
+          // ready once its draft has been rendered (v is set then)
+          url: c.v ? `/api/shorts-studio/file/${c.file}?v=${c.v}` : null,
+        })),
       }));
     } catch {
       return [];
@@ -369,7 +378,7 @@ export function registerShortsStudioRoutes(app: any, deps: ShortsStudioDeps) {
     try {
       const format = String(req.query.format || "short");
       const [dbList, jobs, voices] = await Promise.all([deps.loadMetadata(), listJobsSafe(), getVoices()]);
-      const running = new Set(jobs.filter((j) => j.status === "running").map((j) => j.videoId));
+      const running = new Set(jobs.filter((j) => j.status === "running" || j.status === "review").map((j) => j.videoId));
       const videos = listStudioIds()
         .map((id) => buildEntry(id, dbList, running))
         .filter((v) => (format === "long" ? v.aspectRatio === "16:9" : v.aspectRatio !== "16:9"))
@@ -397,6 +406,7 @@ export function registerShortsStudioRoutes(app: any, deps: ShortsStudioDeps) {
         // UI may pick Opus / Opus low / Sonnet; the preview server validates it against its allowlist.
         model: b.model || process.env.SCRIPTWRITER_MODEL || "claude-opus-5-5-medium",
         voiceId,
+        reviewMode: b.reviewMode === "chapter" ? "chapter" : "all",
       });
       const j = data.job;
       saveRequest(j.id, {
@@ -407,8 +417,31 @@ export function registerShortsStudioRoutes(app: any, deps: ShortsStudioDeps) {
         aspectRatio: b.aspectRatio,
         voiceId,
         model: b.model,
+        reviewMode: b.reviewMode === "chapter" ? "chapter" : "all",
       });
       res.json({ ok: true, job: { jobId: j.id, videoId: j.id, topic: j.prompt, style: j.style, aspectRatio: j.aspectRatio, status: j.status, step: j.step, progress: j.progress, logs: j.logs } });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // ── Chapter review: Next (continue) or Re-render the chapter draft ──────
+  for (const action of ["next", "redo"] as const) {
+    app.post(`/api/shorts-studio/${action}/:id`, async (req: any, res: any) => {
+      try {
+        await preview("post", `/api/studio/${action}/${encodeURIComponent(req.params.id)}`, {});
+        res.json({ ok: true });
+      } catch (err: any) {
+        res.status(500).json({ ok: false, error: err.message });
+      }
+    });
+  }
+
+  // ── Stop a running job (kills claude/agy/tts/render child processes) ────
+  app.post("/api/shorts-studio/cancel/:id", async (req: any, res: any) => {
+    try {
+      await preview("post", `/api/studio/cancel/${encodeURIComponent(req.params.id)}`, {});
+      res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err.message });
     }
@@ -420,7 +453,7 @@ export function registerShortsStudioRoutes(app: any, deps: ShortsStudioDeps) {
       const id = req.params.id;
       if (!ID_RE.test(id)) return res.status(400).json({ ok: false, error: "ID không hợp lệ" });
       const jobs = await listJobsSafe();
-      if (jobs.some((j) => j.videoId === id && j.status === "running")) {
+      if (jobs.some((j) => j.videoId === id && (j.status === "running" || j.status === "review"))) {
         return res.status(409).json({ ok: false, error: "Video này đang chạy rồi" });
       }
       const toJob = (j: any) => ({ jobId: j.id, videoId: j.id, topic: j.prompt, aspectRatio: j.aspectRatio, status: j.status, step: j.step, progress: j.progress, logs: j.logs });

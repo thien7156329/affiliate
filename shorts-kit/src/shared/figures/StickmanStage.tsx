@@ -4216,8 +4216,9 @@ export const StickmanStage: React.FC<{
     // story mode: cast closer to the centre and kept inside 10–90 % of the width, whatever the moves add up to
     const clampX = (x: number) => (minimalUi ? Math.min(lw * 0.9, Math.max(lw * 0.1, x)) : x);
     const moveGain = minimalUi ? 3.2 : 1.4; // story mode: steps you can actually see across a 1920 px stage
-    const wideLeftX = clampX((minimalUi ? (isSolo ? 760 : 560) : isSolo ? 460 : 295) + leftBeatX * moveGain);
-    const wideRightX = clampX((minimalUi ? 1360 : 1625) + rightBeatX * moveGain);
+    // Story mode: a lone character stands in the middle; two people who talk stand close together near the middle.
+    const wideLeftX = clampX((minimalUi ? (isSolo ? 960 : 770) : isSolo ? 460 : 295) + leftBeatX * moveGain);
+    const wideRightX = clampX((minimalUi ? 1150 : 1625) + rightBeatX * moveGain);
     const badgeText = activeAct?.badge || `PHẦN ${activeSceneIdx + 1}`;
     const badgeW = Math.max(240, Math.min(440, badgeText.length * 14 + 48));
 

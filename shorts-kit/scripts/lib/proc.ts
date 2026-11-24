@@ -2,6 +2,33 @@
  * Every external process goes through here, with a hard timeout. A hung
  * process (a TTS socket, a render) must fail loudly, not wait forever.
  */
+import {existsSync, readdirSync} from "node:fs";
+import {delimiter, join, resolve} from "node:path";
+
+// Machines without system ffmpeg/ffprobe (e.g. a fresh Windows box): fall back to binaries already in node_modules and put
+// them on PATH for this process and every child it spawns. ffmpeg: the full `ffmpeg-static` build (Remotion's own ffmpeg is
+// stripped: no raw f32le muxer). ffprobe: Remotion's compositor package ships one.
+{
+  const exe = process.platform === "win32" ? ".exe" : "";
+  const has = (tool: string) => (process.env.PATH ?? "").split(delimiter).some((d) => d && existsSync(join(d, `${tool}${exe}`)));
+  const dirs: string[] = [];
+  if (!has("ffprobe")) {
+    const base = resolve(import.meta.dir, "../../node_modules/@remotion");
+    const pkg = existsSync(base) ? readdirSync(base).find((n) => n.startsWith("compositor-") && existsSync(join(base, n, `ffprobe${exe}`))) : undefined;
+    if (pkg) dirs.push(join(base, pkg));
+  }
+  if (!has("ffmpeg")) {
+    for (const c of ["../../node_modules/ffmpeg-static", "../../../node_modules/ffmpeg-static"]) {
+      const d = resolve(import.meta.dir, c);
+      if (existsSync(join(d, `ffmpeg${exe}`))) {
+        dirs.unshift(d); // before Remotion's stripped ffmpeg
+        break;
+      }
+    }
+  }
+  if (dirs.length) process.env.PATH = `${dirs.join(delimiter)}${delimiter}${process.env.PATH ?? ""}`;
+}
+
 export type RunResult = {code: number; stdout: Buffer; stderr: string; timedOut: boolean};
 
 export const run = async (

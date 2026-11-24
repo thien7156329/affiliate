@@ -33,7 +33,7 @@ import {
   statSync,
   renameSync,
 } from "fs";
-import { execSync } from "child_process";
+import { execSync, execFileSync } from "child_process";
 import { createRequire } from "module";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -191,8 +191,12 @@ function extractVideoThumbnailSync(
 ): boolean {
   try {
     const ffmpeg = getFfmpegCmd();
-    execSync(
-      `"${ffmpeg}" -y -ss 00:00:01 -i "${videoPath}" -vframes 1 -q:v 2 "${outputPath}" 2>/dev/null`,
+    // No shell: "2>/dev/null" is invalid in cmd.exe, so on Windows every call failed and was retried
+    // on each request (a blocking execSync per video per poll → the server spun at 100% CPU).
+    execFileSync(
+      ffmpeg,
+      ["-y", "-ss", "00:00:01", "-i", videoPath, "-vframes", "1", "-q:v", "2", outputPath],
+      { stdio: "ignore", timeout: 30_000 },
     );
     return existsSync(outputPath);
   } catch (err: any) {

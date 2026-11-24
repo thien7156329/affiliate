@@ -30,6 +30,7 @@
     "still": "bun scripts/remotion.ts still",
     "render": "bun scripts/remotion.ts render",
     "cover": "bun scripts/remotion.ts cover",
+    "chapter": "bun scripts/remotion.ts chapter",
     "normalize": "bun scripts/normalize.ts",
     "encode": "bun scripts/encode.ts",
     "preview": "export PATH=\"$HOME/.bun/bin:/opt/homebrew/bin:$PATH\" && (lsof -ti:7788 | xargs kill -9 2>/dev/null || true) && bun --watch scripts/preview.ts",

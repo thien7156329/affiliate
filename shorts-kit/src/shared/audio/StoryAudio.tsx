@@ -9,7 +9,7 @@ import React from "react";
 import {Html5Audio, Sequence, interpolate, staticFile, useVideoConfig} from "remotion";
 import type {Voice} from "../timings";
 
-export const STORY_MUSIC = ["music_ambient", "music_piano", "music_drone", "music_suspense"] as const;
+export const STORY_MUSIC = ["music_ambient", "music_drone", "music_suspense"] as const;
 export const STORY_AMBIENCE = ["crickets", "rain", "wind", "clock"] as const;
 export type StoryAmbience = (typeof STORY_AMBIENCE)[number] | "none";
 
@@ -56,7 +56,19 @@ export const StoryAudio: React.FC<{
         loop
         loopVolumeCurveBehavior="extend"
         volume={(f) =>
-          interpolate(f, [0, 60, Math.max(61, softFrom - 45), Math.max(62, softFrom + 45)], [0, 0.22, 0.22, 0.08], {
+          interpolate(f, [0, 60, Math.max(61, softFrom - 45), Math.max(62, softFrom + 45)], [0, 0.15, 0.15, 0.1], {
+            extrapolateLeft: "clamp",
+            extrapolateRight: "clamp",
+          })
+        }
+      />
+      {/* Constant eerie layer (low, whole video): the creepy "ma mị" undertone for every story */}
+      <Html5Audio
+        src={staticFile("sfx/horror/ambience_eerie.mp3")}
+        loop
+        loopVolumeCurveBehavior="extend"
+        volume={(f) =>
+          interpolate(f, [0, 90, Math.max(91, durationInFrames - 60), durationInFrames], [0, 0.11, 0.11, 0], {
             extrapolateLeft: "clamp",
             extrapolateRight: "clamp",
           })

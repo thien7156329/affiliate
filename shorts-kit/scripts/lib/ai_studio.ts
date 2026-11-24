@@ -1,7 +1,9 @@
+import "./proc"; // side effect: puts a bundled ffmpeg/ffprobe on PATH when the system has none
 import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -438,16 +440,36 @@ export type StudioJob = {
   aspectRatio?: StudioAspectRatio;
   voiceId: string;
   prompt: string;
-  status: "running" | "done" | "error";
+  /** "review" = paused, waiting for the user to watch a finished chapter and press Next. */
+  status: "running" | "review" | "done" | "error";
   step: string;
   progress: number;
   logs: string[];
   startedAt: number;
   finishedAt?: number;
   error?: string;
+  /** "chapter": stop after every ~2 min chapter draft and wait for Next; "all" (default): run start to end. */
+  reviewMode?: "chapter" | "all";
+  /** Draft chapters for review (file is relative to shorts-kit/; v busts the browser cache after a re-render). */
+  chapters?: { n: number; from: number; to: number; file: string; v: number }[];
+  /** 1-based chapter currently waiting for review. */
+  reviewIndex?: number;
 };
 
 const jobs = new Map<string, StudioJob>();
+
+// ── Chapter review gate: the job waits here until the user presses Next / Re-render / Stop ──
+type GateAnswer = "next" | "redo";
+const gates = new Map<string, { resolve: (a: GateAnswer) => void; reject: (e: Error) => void }>();
+
+/** Resume a job that is waiting for chapter review. */
+export const continueJob = (id: string, action: GateAnswer = "next"): boolean => {
+  const g = gates.get(id);
+  if (!g) return false;
+  gates.delete(id);
+  g.resolve(action);
+  return true;
+};
 
 export const listJobs = (): StudioJob[] =>
   [...jobs.values()].sort((a, b) => b.startedAt - a.startedAt);
@@ -619,7 +641,54 @@ const writeAiPids = () => {
     /* best effort */
   }
 };
-const trackAiProc = (proc: { pid: number; kill: () => void; exited: Promise<number> }) => {
+// ── Dừng job: mọi tiến trình con của job được ghi lại để nút "Dừng" kill được ──
+type KillableProc = { pid: number; kill: (sig?: any) => void; exited: Promise<number> };
+const jobProcs = new Map<string, Set<KillableProc>>();
+const cancelledJobs = new Set<string>();
+const isCancelled = (job?: StudioJob) => Boolean(job && cancelledJobs.has(job.id));
+const attachJobProc = (job: StudioJob | undefined, proc: KillableProc) => {
+  if (!job) return;
+  let set = jobProcs.get(job.id);
+  if (!set) jobProcs.set(job.id, (set = new Set()));
+  set.add(proc);
+  proc.exited.finally(() => set!.delete(proc));
+};
+/** Kill a process and everything it spawned (remotion → chrome, ffmpeg, python TTS…). */
+const killTree = (pid: number) => {
+  try {
+    if (process.platform === "win32") {
+      Bun.spawnSync(["taskkill", "/PID", String(pid), "/T", "/F"]);
+      return;
+    }
+    const kids = Bun.spawnSync(["pgrep", "-P", String(pid)]).stdout.toString().split(/\s+/).filter(Boolean);
+    for (const k of kids) killTree(Number(k));
+    process.kill(pid, "SIGKILL");
+  } catch {
+    /* already gone */
+  }
+};
+const throwIfCancelled = (job: StudioJob) => {
+  if (cancelledJobs.has(job.id)) throw new Error("Đã dừng theo yêu cầu");
+};
+
+/** Stop a running job: kill its child processes; the job ends as "error" (so "Chạy lại" can resume it). */
+export const cancelJob = (id: string): boolean => {
+  const job = jobs.get(id);
+  if (!job || (job.status !== "running" && job.status !== "review")) return false;
+  cancelledJobs.add(id);
+  const gate = gates.get(id);
+  if (gate) {
+    gates.delete(id);
+    gate.reject(new Error("Đã dừng theo yêu cầu"));
+  }
+  job.logs.push("[Dừng] Người dùng bấm Dừng — đang tắt các tiến trình đang chạy…");
+  job.step = "Đang dừng…";
+  for (const p of jobProcs.get(id) ?? []) killTree(p.pid);
+  return true;
+};
+
+const trackAiProc = (proc: { pid: number; kill: () => void; exited: Promise<number> }, job?: StudioJob) => {
+  attachJobProc(job, proc);
   liveAiProcs.set(proc.pid, proc);
   writeAiPids();
   proc.exited.finally(() => {
@@ -686,6 +755,19 @@ const resolveClaudeBin = (): string => {
     "/usr/local/bin/claude",
   ].filter(Boolean) as string[];
   for (const c of candidates) if (existsSync(c)) return c;
+  // No `claude` on PATH (typical on Windows): use the binary bundled with the VS Code extension.
+  try {
+    const extDir = join(home || process.env.USERPROFILE || "", ".vscode", "extensions");
+    const ext = readdirSync(extDir)
+      .filter((n) => n.startsWith("anthropic.claude-code-"))
+      .sort()
+      .reverse()
+      .map((n) => join(extDir, n, "resources", "native-binary", process.platform === "win32" ? "claude.exe" : "claude"))
+      .find((f) => existsSync(f));
+    if (ext) return ext;
+  } catch {
+    /* no extension dir */
+  }
   return "claude";
 };
 
@@ -694,7 +776,9 @@ const runClaudePrompt = async (
   fullPrompt: string,
   model: string,
   timeoutSec: number,
+  job?: StudioJob,
 ): Promise<string | null> => {
+  if (isCancelled(job)) return null;
   const m = /^(claude-[a-z]+-\d+-\d+)(?:-(low|medium|high|xhigh|max))?$/.exec(model);
   const baseModel = m?.[1] ?? model;
   const effort = m?.[2] ?? "medium";
@@ -715,7 +799,7 @@ const runClaudePrompt = async (
       ],
       { cwd: REPO, stdin: new Blob([fullPrompt]), stdout: "pipe", stderr: "pipe" },
     );
-    trackAiProc(proc);
+    trackAiProc(proc, job);
     const timer = setTimeout(() => proc.kill(), timeoutSec * 1000);
     const [out] = await Promise.all([
       new Response(proc.stdout).text(),
@@ -753,7 +837,8 @@ const runAiPromptInner = async (
     // Opus viết JSON hoạt cảnh 7 cảnh + SVG có thể mất 8–12 phút → cho tối đa CLAUDE_TIMEOUT_SEC (mặc định 30 phút)
     const claudeTimeout = Math.max(timeoutSec + 120, Number(process.env.CLAUDE_TIMEOUT_SEC || 1800));
     const t0 = Date.now();
-    const viaClaude = await runClaudePrompt(fullPrompt, model, claudeTimeout);
+    const viaClaude = await runClaudePrompt(fullPrompt, model, claudeTimeout, job);
+    if (isCancelled(job)) return null;
     if (viaClaude) {
       job?.logs.push(`[Claude Code] ${model} xong sau ${Math.round((Date.now() - t0) / 1000)}s`);
       return viaClaude;
@@ -767,6 +852,7 @@ const runAiPromptInner = async (
     }
     return runAiPromptInner(fullPrompt, GEMINI_FALLBACK_MODEL, timeoutSec, job);
   }
+  if (isCancelled(job)) return null;
   const bin = resolveAgyBin();
   try {
     const proc = Bun.spawn(
@@ -785,7 +871,7 @@ const runAiPromptInner = async (
       ],
       { cwd: REPO, stdout: "pipe", stderr: "pipe", stdin: "ignore" },
     );
-    trackAiProc(proc);
+    trackAiProc(proc, job);
     const [out, errOut] = await Promise.all([
       new Response(proc.stdout).text(),
       new Response(proc.stderr).text(),
@@ -812,6 +898,9 @@ const runAiPromptInner = async (
 type ScriptOnlyResult = {
   caption: string;
   pinned: string;
+  coverKicker?: string;
+  coverLine1?: string;
+  coverLine2?: string;
   scenes: GeneratedPlan["scenes"];
 };
 
@@ -861,10 +950,14 @@ Hãy xử lý thông minh dựa trên nội dung người dùng nhập vào:
 QUY TẮC BẮT BUỘC:
 1. Mỗi phần tử (mỗi câu) trong mảng của từng phân cảnh ${style === "spirit" ? "dài từ 5 đến 22 chữ tiếng Việt (xen câu rất ngắn ở đoạn căng)" : "phải dài từ 14 đến 22 chữ tiếng Việt"}. TUYỆT ĐỐI KHÔNG dùng dấu hai chấm (:) hay dấu gạch ngang (-, —, –). DÙNG dấu phẩy (,) ở chỗ người kể tự nhiên sẽ ngắt hơi (liệt kê, sau cụm mở đầu, trước "nhưng/mà/nên"): 1–3 dấu phẩy mỗi câu dài, giọng đọc AI sẽ ngắt đúng ở đó thay vì đọc một mạch.
 2. Với độ dài hiện tại (${durationLabelOf(duration)} ≈ ${targetWords} chữ${style === "spirit" ? `; GIỚI HẠN CỨNG: TỔNG TOÀN BỘ kịch bản KHÔNG VƯỢT QUÁ ${Math.round(targetWords * 1.1)} chữ — tư liệu gốc dài thì CHỌN LỌC vài tình tiết rợn nhất, bỏ bớt, không kể hết` : ""}), mỗi phân cảnh (hook, problem, layer1, layer2, hardest, payoff) hãy viết mảng gồm nhiều câu nối tiếp nhau thành mạch chuyện rõ ràng, có con số, tình huống đời thực và ví dụ cụ thể đúng theo yêu cầu: ${sentencesPerScene}.
-3. Trả về DUY NHẤT 1 JSON object hợp lệ (không bọc markdown) gồm lời kịch bản theo đúng cấu trúc:
+3. TIÊU ĐỀ & ẢNH BÌA PHẢI NÓI ĐÚNG NỘI DUNG CHÍNH: "caption" (dòng 1), "coverKicker", "coverLine1", "coverLine2" phải tóm đúng nhân vật/sự việc/hiện tượng trung tâm của TOÀN BỘ câu chuyện hoặc bài viết (ví dụ chuyện lục địa minh bị nghỉ xả hơi → tiêu đề nói về chuyện đó). TUYỆT ĐỐI KHÔNG lấy câu mở đầu, câu dẫn chuyện hay chi tiết phụ không liên quan làm tiêu đề, và không dùng tiêu đề chung chung kiểu "Sự thật về điều này".
+4. Trả về DUY NHẤT 1 JSON object hợp lệ (không bọc markdown) gồm lời kịch bản theo đúng cấu trúc:
 {
   "caption": "Tiêu đề hấp dẫn dòng 1\\n\\nMô tả chi tiết và ${hashtagGuide}",
   "pinned": "Câu hỏi tương tác ghim dưới bình luận 👇",
+  "coverKicker": "Nhãn ngắn về chủ đề chính của chuyện (tối đa 18 ký tự, viết hoa)",
+  "coverLine1": "Tiêu đề ảnh bìa dòng 1 (tối đa 14 ký tự, viết hoa)",
+  "coverLine2": "Tiêu đề ảnh bìa dòng 2 (tối đa 12 ký tự, viết hoa)",
   "scenes": {
     "hook": ["Câu mở đầu gây tò mò từ 15 đến 21 chữ, có dấu phẩy ở chỗ ngắt hơi, không có hai chấm."],
     "problem": ["Câu nêu vấn đề hoặc nghịch lý thú vị dài khoảng 16 đến 21 chữ."],
@@ -963,17 +1056,28 @@ QUY TẮC BẮT BUỘC:
     style,
   );
   const fb = buildFallbackPlan(prompt);
+  // The scriptwriter read the whole story: its cover title wins over the visual director's guess.
+  const cleanCover = (s?: string) => (typeof s === "string" ? s.replace(/\s+/g, " ").trim().toUpperCase() : "");
+  const scriptCover =
+    cleanCover(scriptObj.coverLine1) && cleanCover(scriptObj.coverLine2)
+      ? {
+          coverKicker: cleanCover(scriptObj.coverKicker) || vis.coverKicker || fb.coverKicker,
+          coverLine1: cleanCover(scriptObj.coverLine1),
+          coverLine2: cleanCover(scriptObj.coverLine2),
+        }
+      : {};
 
   return {
     ...fb,
     ...vis,
+    ...scriptCover,
     caption: scriptObj.caption || fb.caption,
     pinned: scriptObj.pinned || fb.pinned,
     scenes: scriptObj.scenes,
   };
 };
 
-const POSE_SET = new Set(["stand","walk","run","wave","point","explain","think","jump","cheer","dance","shrug","sit","tired","present_check","drive","sit_eat","sit_type","climb","analyze","carry","read_book","write_note","check_phone","reach","slump","crouch_inspect","step_back","kick_ball","dribble_ball","cook_toss","lift_weight","boxing_punch","sword_slash","sword_parry","bow_respect","laugh_belly"]);
+const POSE_SET = new Set(["stand","walk","run","wave","point","explain","think","jump","cheer","dance","shrug","sit","tired","present_check","drive","sit_eat","sit_type","climb","analyze","carry","read_book","write_note","check_phone","reach","slump","crouch_inspect","step_back","kick_ball","dribble_ball","cook_toss","lift_weight","boxing_punch","sword_slash","sword_parry","bow_respect","kneel_pray","phone_call","laugh_belly"]);
 const MOOD_SET = new Set(["happy","shock","serious","sad","cool","idea","celebrate","confused","scheming"]);
 const PROP_SET = new Set(["none","phone","money","coffee","laptop","chart","question","bulb","peach","scroll","fan","sword","checklist","magnifier","pointer","gold","bowl","wheel","book","notebook","megaphone","soccer_ball","frying_pan","dumbbell","microphone","trophy","soda_can","water_bottle"]);
 const MOVE_SET = new Set(["stay","forward","back","left","right","near","far"]);
@@ -1016,6 +1120,8 @@ const sanitizeLineBeats = (raw: unknown): StickmanSceneAct["lineBeats"] => {
   })) as any;
 };
 
+const noAoDai = (o: any): any => (o === "ao_dai" ? "ao_ba_ba" : o);
+
 const AGES = new Set(["child", "teen", "adult", "elder"]);
 const pickAgeGender = (p: any) => {
   const o: Record<string, string> = {};
@@ -1043,23 +1149,29 @@ const SPIRIT_VISUAL_RULES = `
 PHONG CÁCH "GIẢI MÃ TÂM LINH":
 - KHÔNG CẦN VẼ SVG: phong cách này ẩn khung minh họa — để "customSvg": "" và "customSvgBeats": [] ở mọi phân cảnh (bối cảnh do ảnh nền AI đảm nhận). Dồn công sức vào nhân vật và "lineBeats".
 - bgTheme: hook/problem/layer1 "night_street" hoặc "dramatic_dark"; layer2/hardest/payoff "indoor_warm" (vẫn trong nhà/làng của truyện).
+- KHÔNG BAO GIỜ đặt 2 nhân vật đứng hai bên sân khấu làm "hình nền" chính, nhất là ở phân cảnh mở đầu (hook). Mặc định mỗi phân cảnh "mode": "solo" (1 nhân vật đang được kể, đặt ở giữa); hook có thể chỉ có cảnh nền không người. Chỉ dùng "duo" ở những câu truyện thật sự có 2 người ở cạnh nhau (và khi đó họ đứng sát nhau).
 - DIỄN THEO TRUYỆN, KHÔNG ĐỐI ĐÁP: đây KHÔNG phải 2 người đứng nói chuyện qua lại. Lời là của NGƯỜI KỂ (giọng đọc); nhân vật DIỄN đúng hành động câu đang kể (đi ra vườn → walk + move; cúi nhìn mộ → crouch_inspect; nghe tiếng động → step_back + shock + shake; ngồi hiên → sit; sợ hãi → slump/shake…).
   · "hidden": true cho nhân vật KHÔNG có mặt ở câu đó (họ mờ ra khỏi sân khấu, quay lại khi truyện nhắc tới). Chỉ nhân vật đang được kể mới đứng trên sân khấu — nhiều câu chỉ có 1 người.
   · "speak": true CHỈ ở câu thoại trực tiếp của chính nhân vật đó (câu bắt đầu bằng {Tên vai} trong kịch bản); các câu khác nhân vật không nhép miệng.
   · "dialogues" để chuỗi rỗng — không có bong bóng thoại.
-  · KHÔNG dùng "shake" (không rung lắc) và KHÔNG dùng pose "step_back": sợ hãi thể hiện bằng mood shock/sad + pose slump/crouch_inspect/think. Mọi di chuyển là ĐI BỘ từ điểm A tới điểm B (mặt hướng về đích): "move" left/right (ngang), "near" (đi lại gần, về phía người xem), "far" (đi ra xa, vào sâu trong cảnh); "back"/"forward" chỉ là đổi chỗ ngang.
-  · DI CHUYỂN LIÊN TỤC, CÓ MỤC ĐÍCH: cứ 2–3 câu nhân vật phải đổi chỗ ("move": left/right/near/far) đúng theo truyện (bước tới nhìn, lùi lại vì sợ, đi ra cửa, quay về chỗ cũ); không để ai đứng im một chỗ quá 3 câu. Mỗi câu chọn pose khác câu trước nếu hành động thay đổi; không đổi pose lung tung khi nhân vật chỉ đang nghe.
+  · KHÔNG dùng "shake" (không rung lắc) và KHÔNG dùng pose "step_back": sợ hãi thể hiện bằng nét mặt (mood shock/sad), thân người đứng yên. TUYỆT ĐỐI KHÔNG dùng pose think / slump / crouch_inspect / analyze (tay đặt lên mặt, cằm, trán) trừ khi truyện nói rõ nhân vật đang suy nghĩ, ôm đầu hay cúi xuống xem xét thứ gì. Mọi di chuyển là ĐI BỘ từ điểm A tới điểm B (mặt hướng về đích): "move" left/right (ngang), "near" (đi lại gần, về phía người xem), "far" (đi ra xa, vào sâu trong cảnh); "back"/"forward" chỉ là đổi chỗ ngang.
+  · NHỊP CHẬM, TỪ TỐN: mọi hành động chậm rãi, điềm đạm. CHỈ đổi chỗ ("move") khi truyện NÓI RÕ nhân vật đi/đến/lùi/ra cửa/vào nhà; không đi qua đi lại vô nghĩa, không đổi pose liên tục. Nhân vật chỉ đang nghe thì đứng yên, không đổi pose lung tung.
+  · CẢNH KHÔNG CÓ NGƯỜI: câu tả khung cảnh, không khí, thời gian, thư từ / tin nhắn / bài viết, tiếng động, hoặc việc xảy ra ở nơi nhân vật không có mặt thì đặt "hidden": true cho TẤT CẢ nhân vật ở câu đó, để bối cảnh (hoặc tờ "note") đứng một mình. KHÔNG bắt nhân vật xuất hiện ở mọi câu.
+  · KHÔNG DI CHUYỂN VÔ NGHĨA: nhân vật KHÔNG đi lại, bước tới bước lui, quay qua quay lại khi truyện không nói. Đứng yên là mặc định; chỉ khi truyện nói "đi vào / bước ra / chạy tới / lại gần" mới dùng "move".
+  · ĐỒ VẬT & ĐIỆN THOẠI: tay không là mặc định. Chỉ cầm vật khi CÂU ĐÓ nói tới vật ấy. Nói chuyện điện thoại / gọi / nghe máy → pose "phone_call" (điện thoại áp lên TAI), không cầm điện thoại giơ ra trước. Xem điện thoại / đọc tin nhắn → pose "check_phone". Không có vật vô cớ trên tay.
+  · HAI NGƯỜI NÓI CHUYỆN PHẢI Ở GẦN NHAU: khi có đối thoại giữa 2 nhân vật (câu {Tên vai}, hoặc người kể đang kể việc họ trò chuyện), cả hai phải cùng có mặt (không hidden), đứng SÁT cạnh nhau, quay mặt vào nhau — dùng "move": "near" cho người đứng xa để lại gần TRƯỚC khi nói. TUYỆT ĐỐI không để một người đi ngang qua mặt người kia hoặc đứng cách xa nói vọng.
+  · HÀNH ĐỘNG SÁT NỘI DUNG TRUYỆN: mỗi câu diễn đúng việc câu đó kể, không thêm hành động truyện không nhắc. Thắp hương/chắp tay vái đứng → "bow_respect"; QUỲ LẠY / quỳ xin / dập đầu / ngồi bái → pose "kneel_pray" (quỳ gối, chắp tay, cúi lạy chậm); ngồi (hiên, ghế, giường, đất) → "sit". KHÔNG dùng "kneel_pray" nếu truyện không nhắc quỳ/lạy.
 - GIẤY TỜ VIẾT TAY: nếu truyện có di chúc, lá thư, bài thơ/văn thơ để lại, tờ giấy ghi chú, bùa chú viết trên giấy… thì ở (các) câu người kể đọc nội dung đó, thêm vào lineBeats "note": {"date": "Rằm tháng Bảy, 1980" (nếu có), "title": "Út ơi." (lời mở đầu, nếu có), "lines": ["dòng 1", "dòng 2", …]} — tối đa 6 dòng ngắn, đúng lời trong truyện (không bịa thêm); màn hình hiện tờ giấy viết tay, các dòng hiện dần theo giọng đọc. Lặp lại cùng "note" cho các câu liền nhau đang đọc tờ giấy.
 - THỜI ĐẠI: MẶC ĐỊNH là làng quê thời xưa ("xưa") — chỉ chọn "cũ"/"nay" khi truyện nói rõ có điện, xe máy, điện thoại… Xác định truyện xảy ra thời nào (ngày xưa / thời ông bà, chưa có điện → "xưa"; thập niên 70–90 ở quê → "cũ"; hiện nay → "nay") và giữ nhất quán.
-- TRANG PHỤC theo thời đại (leftOutfit/rightOutfit): truyện "xưa"/"cũ" → "ao_ba_ba" (áo bà ba, cả nam lẫn nữ), "ao_dai" (phụ nữ trang trọng, đám giỗ, lễ), "ao_the" + leftHat/rightHat "khan_dong" (ông cụ, chức sắc làng); nón lá "non_la" khi ra đồng/đi đường. Truyện "nay" → "office_shirt", "hoodie". leftAccessory "none". KHÔNG dùng "suit"/"necktie"/"doctor_coat" trong truyện tâm linh.
+- TRANG PHỤC theo thời đại (leftOutfit/rightOutfit): truyện "xưa"/"cũ" → "ao_ba_ba" (áo bà ba, cả nam lẫn nữ, kể cả đám giỗ/lễ — TUYỆT ĐỐI KHÔNG dùng "ao_dai": hình váy dài bị lỗi), "ao_the" + leftHat/rightHat "khan_dong" (ông cụ, chức sắc làng); nón lá "non_la" khi ra đồng/đi đường. Truyện "nay" → "office_shirt", "hoodie". leftAccessory "none". KHÔNG dùng "suit"/"necktie"/"doctor_coat" trong truyện tâm linh.
 - TUỔI: luôn ghi leftAge/rightAge/thirdAge đúng vai (ông bà, cụ → elder: tóc bạc, râu, lưng còng; con nít → child: nhỏ hẳn; thanh niên → teen) và Gender (nữ có tóc dài).
 - ĐỒ CẦM TAY: mặc định TAY KHÔNG. Chỉ đặt "prop" trong lineBeats ở đúng câu mà cốt truyện nhắc nhân vật cầm/dùng vật gì (cầm sách, cầm điện thoại gọi…); không đặt leftProp/rightProp/leftCustomPropSvg cho cả phân cảnh. Hành động thể hiện bằng "pose"/"move"/"shake" theo diễn biến truyện.
 - BIỂU CẢM: TUYỆT ĐỐI không dùng mood "happy", "cool", "celebrate" trong phần kể chuyện; dùng serious, sad, shock, confused, scheming. Không pose cheer/dance/laugh_belly.
 - TIẾNG MÔI TRƯỜNG theo cảnh (lineBeats "ambience", đặt ở câu MỞ ĐẦU mỗi cảnh, giữ tới khi đổi): crickets (vườn/ruộng/sân ban đêm) | rain (trời mưa) | wind (CHỈ khi truyện nói có gió/bão) | clock (trong nhà đêm khuya, tĩnh lặng) | none (yên lặng). Không phải cảnh nào cũng có gió.
 - TIẾNG ĐỘNG THẬT (chỉ thêm vào lineBeats ở câu thật sự cần, tối đa ~1 tiếng / 5 câu): "sfx": stinger | footsteps | knock | creak | scream | howl | owl | bell | whisper | heartbeat | thud, và "sfxPause": số giây GIỌNG ĐỌC IM LẶNG sau câu đó để tiếng động vang một mình (1.5–2.5 cho footsteps/clatter/knock/creak/whisper ở đoạn rợn; 0 nếu chỉ lót nhẹ dưới giọng). Câu ngay trước khoảng lặng nên kết thúc lửng ("…rồi từ ngoài vườn vọng lại").
-- MÁY QUAY & KHÔNG KHÍ (thêm vào lineBeats): "camera": medium_left | medium_right | medium_center (trung cảnh, khi tập trung vào 1 người), closeup_left | closeup_right | closeup_center (cận cảnh, câu cảm xúc/giật mình), push (đẩy máy chậm ở đoạn căng dần); bỏ trống = toàn cảnh. Phân bổ: ~50% toàn cảnh, ~25% trung cảnh, ~15% cận cảnh, ~10% push; phía camera PHẢI trùng phía nhân vật đang được kể; "tension": 0–3 tăng dần khi truyện rợn hơn (cảnh đời thường 0, điềm báo 1, có chuyện lạ 2, cao trào 3; phần giải mã về 0); "card": thẻ thời gian/địa điểm ngắn khi truyện chuyển mốc ("Rằm tháng Bảy – 2022", "Ba năm sau"), tối đa 1 thẻ mỗi phân cảnh.
+- MÁY QUAY & KHÔNG KHÍ (thêm vào lineBeats): "camera": medium_left | medium_right | medium_center (trung cảnh, khi tập trung vào 1 người), closeup_left | closeup_right | closeup_center (cận cảnh, câu cảm xúc/giật mình), push (đẩy máy chậm ở đoạn căng dần); bỏ trống = toàn cảnh. NHỊP CẮT KIỂU PHIM HOẠT HÌNH KỂ CHUYỆN: câu ĐẦU của mỗi địa điểm/phân cảnh để TOÀN CẢNH (cho người xem thấy cả căn phòng, bàn thờ, sân, các nhân vật), rồi CẮT THẲNG (không trượt, không zoom dần) vào TRUNG CẢNH / CẬN CẢNH người đang nói hoặc đang được kể tới; giữ mỗi cỡ cảnh 3–6 giây (2–3 câu) rồi mới đổi; chỉ đổi cỡ cảnh khi sang người khác hoặc sang ý khác, không đổi mỗi câu; cận cảnh dành cho câu cảm xúc, lời thoại quan trọng, lúc giật mình; "push" rất hiếm (tối đa 1 lần/phân cảnh); phía camera PHẢI trùng phía nhân vật đang được kể; "tension": 0–3 tăng dần khi truyện rợn hơn (cảnh đời thường 0, điềm báo 1, có chuyện lạ 2, cao trào 3; phần giải mã về 0); "card": thẻ thời gian/địa điểm ngắn khi truyện chuyển mốc ("Rằm tháng Bảy – 2022", "Ba năm sau"), tối đa 1 thẻ mỗi phân cảnh.
 - BỐI CẢNH CỐ ĐỊNH: giữ cùng một nơi trong nhiều câu liền (như sân khấu kịch), nhân vật đi ra đi vào; chỉ đổi nơi khi truyện thật sự chuyển cảnh.
-- Nhân vật: CHỈ người trong truyện (dân làng, cô dì, ông bà…), KHÔNG có nhân vật "Chuyên gia" hay người mặc vest. Phần giải mã do người kể nói bằng giọng đọc; trên sân khấu các nhân vật trong truyện minh họa đúng điều đang được giải thích (dì Út nằm/ngồi cứng đơ khi nói về bóng đè; mọi người ngồi lại bình tĩnh khi nói về cách phòng tránh). Diễn xuất nửa đầu nhiều shock/step_back/shake; nửa sau calm: think, sit, slump nhẹ.
+- Nhân vật: CHỈ người trong truyện (dân làng, cô dì, ông bà…), KHÔNG có nhân vật "Chuyên gia" hay người mặc vest. Phần giải mã do người kể nói bằng giọng đọc; trên sân khấu các nhân vật trong truyện minh họa đúng điều đang được giải thích (dì Út nằm/ngồi cứng đơ khi nói về bóng đè; mọi người ngồi lại bình tĩnh khi nói về cách phòng tránh). Diễn xuất điềm tĩnh, ít động tác, chậm rãi; nửa sau calm: think, sit, slump nhẹ.
 `;
 
 const designVisualsFromScenes = async (
@@ -1186,6 +1298,11 @@ const buildFallbackPlan = (prompt: string): GeneratedPlan => {
 
   const topic = rawLines[0]?.slice(0, 60) || "Bí mật thú vị ít người biết";
   const shortWords = topic.split(/\s+/).slice(0, 4).join(" ").toUpperCase();
+  // No AI available: cover title = the topic/title line itself, split over the two cover lines (not a generic tail).
+  const titleWords = topic.replace(/[.!?…]+$/, "").split(/\s+/).filter(Boolean).slice(0, 6);
+  const half = Math.ceil(titleWords.length / 2);
+  const coverTitle1 = titleWords.length >= 2 ? titleWords.slice(0, half).join(" ").toUpperCase().slice(0, 18) : "";
+  const coverTitle2 = titleWords.length >= 2 ? titleWords.slice(half).join(" ").toUpperCase().slice(0, 16) : "";
 
   // Split either by lines or by sentences (. ! ?) so pasting a long paragraph or multi-line script keeps 100% of the content
   const sentences = rawLines
@@ -1236,8 +1353,8 @@ const buildFallbackPlan = (prompt: string): GeneratedPlan => {
     }
     return {
       coverKicker: "KHÁM PHÁ THÚ VỊ",
-      coverLine1: shortWords.slice(0, 18) || "SỰ THẬT VỀ",
-      coverLine2: "ĐIỀU NÀY?",
+      coverLine1: coverTitle1 || shortWords.slice(0, 18) || "SỰ THẬT VỀ",
+      coverLine2: coverTitle2 || "ĐIỀU NÀY?",
       chip1: "Phân tích thực tế",
       chip2: "Kết quả bất ngờ",
       headlineKicker: "ĐIỂM ĐÁNG CHÚ Ý",
@@ -1257,8 +1374,8 @@ const buildFallbackPlan = (prompt: string): GeneratedPlan => {
 
   return {
     coverKicker: "GÓC GIẢI MÃ",
-    coverLine1: shortWords.slice(0, 18) || "VÌ SAO LẠI",
-    coverLine2: "THẾ NÀY?",
+    coverLine1: coverTitle1 || shortWords.slice(0, 18) || "VÌ SAO LẠI",
+    coverLine2: coverTitle2 || "THẾ NÀY?",
     chip1: "Nguyên nhân cốt lõi",
     chip2: "Tác động thực tế",
     headlineKicker: "ĐIỂM MẤU CHỐT",
@@ -1313,7 +1430,7 @@ const buildFallbackPlan = (prompt: string): GeneratedPlan => {
   };
 };
 
-const buildDefaultStickmanActs = (plan: GeneratedPlan): StickmanSceneAct[] => {
+const buildDefaultStickmanActs = (plan: GeneratedPlan, soloDefault = false): StickmanSceneAct[] => {
   const fullText = Object.values(plan.scenes).flat().join(" ").toLowerCase();
   const isStreetVendorOrMarket =
     /hàng rong|vỉa hè|xe đẩy|bán xôi|hàng nước|trà đá|bánh mì|gánh hàng|chợ cóc|buôn gánh/.test(
@@ -1607,7 +1724,10 @@ const buildDefaultStickmanActs = (plan: GeneratedPlan): StickmanSceneAct[] => {
       isTravelOrEv ||
       /2 người|hai người|đối thoại/.test(fullText);
 
-    const defaultMode: "solo" | "duo" | "trio" | "crowd" = isCrowdScene
+    // Ghost stories: one figure on stage by default; the AI director adds a second only when the story has two people together.
+    const defaultMode: "solo" | "duo" | "trio" | "crowd" = soloDefault
+      ? "solo"
+      : isCrowdScene
       ? "crowd"
       : isTrioScene
         ? "trio"
@@ -1727,9 +1847,10 @@ const buildDefaultStickmanActs = (plan: GeneratedPlan): StickmanSceneAct[] => {
       thirdHat: provided?.thirdHat,
       leftAccessory: provided?.leftAccessory,
       rightAccessory: provided?.rightAccessory,
-      leftOutfit: provided?.leftOutfit,
-      rightOutfit: provided?.rightOutfit,
-      thirdOutfit: (provided as any)?.thirdOutfit,
+      // "ao_dai" renders as a stiff tube → use the soft áo bà ba instead
+      leftOutfit: noAoDai(provided?.leftOutfit),
+      rightOutfit: noAoDai(provided?.rightOutfit),
+      thirdOutfit: noAoDai((provided as any)?.thirdOutfit),
       leftProp: provided?.leftProp,
       rightProp: provided?.rightProp,
       thirdProp: provided?.thirdProp,
@@ -1787,7 +1908,7 @@ const writeStickmanFiles = (
   /** spirit: storytelling look — no chapter card / SVG panel, eerie faces */
   minimalUi = false,
 ) => {
-  const acts = buildDefaultStickmanActs(plan);
+  const acts = buildDefaultStickmanActs(plan, minimalUi);
   // AI backdrops are filled in after TTS (renderStickmanBackdrops); start empty so the video always builds.
   if (!existsSync(join(dir, "backdrops.json"))) writeFileSync(join(dir, "backdrops.json"), "[]\n");
   const world = `import React from "react";
@@ -1934,7 +2055,52 @@ export const Cover: React.FC<{safe: boolean}> = ({safe}) => (
 
   writeFileSync(join(dir, "World.tsx"), world);
   writeFileSync(join(dir, "scenes.tsx"), scenes);
-  writeFileSync(join(dir, "Cover.tsx"), cover);
+  // Ghost stories: no stick figures on the thumbnail; the title sits over the best (most tense) backdrop of the video itself.
+  let coverOut = cover;
+  if (minimalUi) {
+    let g = 0;
+    let bestLine = -1;
+    let bestT = 0;
+    let totalLines = 0;
+    for (const a of acts) {
+      const n = (plan.scenes as any)[a.id]?.length ?? 0;
+      ((a as any).lineBeats ?? []).forEach((b: any, i: number) => {
+        const t = Number(b?.tension) || 0;
+        if (t > bestT) {
+          bestT = t;
+          bestLine = g + i;
+        }
+      });
+      g += n;
+    }
+    totalLines = g;
+    if (bestLine < 0) bestLine = Math.floor(totalLines * 0.35); // nothing flagged tense: a scene a third of the way in
+    coverOut = cover
+      .replace(/^[ \t]*<Stickman [^\n]*\n/gm, "")
+      .replace(/^[ \t]*<ellipse [^\n]*\n/gm, "")
+      .replace(/^[ \t]*<rect x=\{0\} y=\{HORIZON_Y\}[^\n]*\n/gm, "")
+      .replace(/^[ \t]*<line x1=\{0\} y1=\{HORIZON_Y\}[^\n]*\n/gm, "")
+      .replace(
+        'import {AbsoluteFill} from "remotion";',
+        `import {AbsoluteFill, Img, staticFile} from "remotion";
+import backdropItems from "./backdrops.json";
+
+/** Backdrop of the most tense moment (else the first drawn one): the thumbnail shows a real scene of this video. */
+const COVER_IMG: string | null = (() => {
+  const items = (backdropItems as {line: number; src: string | null}[]).filter((b) => b.src);
+  if (!items.length) return null;
+  const at = items.filter((b) => b.line <= ${bestLine});
+  return (at.length ? at[at.length - 1] : items[0]).src;
+})();`,
+      )
+      .replace(
+        /(<SafeCheck safe=\{safe\} cover>\n[ \t]*<AbsoluteFill style=\{\{background:[^\n]*\n)/,
+        `$1      {COVER_IMG ? <Img src={staticFile(COVER_IMG)} style={{position: "absolute", left: 0, top: 0, width: "100%", height: "100%", objectFit: "cover", transform: "scale(1.08)", transformOrigin: "30% 30%"}} /> : null}
+      {COVER_IMG ? <AbsoluteFill style={{background: "linear-gradient(180deg, rgba(4,6,12,0.55) 0%, rgba(4,6,12,0.18) 38%, rgba(4,6,12,0.78) 100%)"}} /> : null}
+`,
+      );
+  }
+  writeFileSync(join(dir, "Cover.tsx"), coverOut);
   writeEntryTsx(dir, aspectRatio);
 };
 
@@ -2134,7 +2300,9 @@ export const World: React.FC = () => {
 const SPIRIT_PERSONA = `
 PHONG CÁCH KÊNH "GIẢI MÃ TÂM LINH" (bắt buộc):
 - GIỌNG KỂ: ưu tiên NGÔI THỨ NHẤT ("tôi", "má tôi", "ba tôi") như người trong nhà kể lại; câu NGẮN, dứt khoát, nhiều câu 5–10 chữ ở đoạn căng ("Nó đi, rồi nó về."), xen câu dài hơn ở đoạn kể bình thường.
-- Nửa đầu (hook, problem, layer1) KỂ một câu chuyện tâm linh/hiện tượng lạ cụ thể, có nhân vật, thời gian, địa điểm, chi tiết giác quan (tiếng động, ánh sáng, cảm giác lạnh gáy). Kể như chuyện truyền miệng ("người ta kể", "theo lời bà con"), KHÔNG khẳng định là có thật.
+- BÁM SÁT NỘI DUNG ĐƯỢC ĐƯA VÀO (quan trọng nhất): chỉ KỂ LẠI đúng câu chuyện người dùng cung cấp — giữ nguyên nhân vật, tên, địa danh, thời gian, thứ tự sự kiện, lời thoại. KHÔNG tự chế thêm nhân vật, tình tiết, chi tiết, kết cục hay lời thoại không có trong nội dung gốc; chỉ được rút gọn, bỏ bớt cho vừa độ dài. Chỉ khi người dùng thật sự không đưa câu chuyện (chỉ có chủ đề) mới được dựng truyện mới.
+- GIỌNG VĂN CHẬM, TỪ TỐN: câu rõ ràng, nhịp đều, không dồn dập, không giật gân.
+- Nửa đầu (hook, problem, layer1) KỂ lại câu chuyện tâm linh/hiện tượng lạ cụ thể, có nhân vật, thời gian, địa điểm, chi tiết giác quan (tiếng động, ánh sáng, cảm giác lạnh gáy). Kể như chuyện truyền miệng ("người ta kể", "theo lời bà con"), KHÔNG khẳng định là có thật.
 - layer2 LẬT lại: "nhưng có một điều lạ…" và đưa con số/hiện tượng phổ biến khiến người xem tò mò.
 - hardest GIẢI MÃ bằng khoa học (tâm lý học, thần kinh học, vật lý, sinh học): cơ chế rõ ràng, dễ hiểu, có số liệu hoặc nghiên cứu được biết đến rộng rãi.
 - payoff: điều người xem nên làm/biết trong đời thực. share: một câu hỏi gợi bình luận ("Bạn từng gặp chưa?").
@@ -2550,6 +2718,7 @@ const runStepCmd = async (
   progress: number,
   args: string[],
 ) => {
+  throwIfCancelled(job);
   job.step = label;
   job.progress = progress;
   job.logs.push(`$ bun ${args.join(" ")}`);
@@ -2560,16 +2729,22 @@ const runStepCmd = async (
     stdin: "ignore",
     env: {
       ...process.env,
-      PATH: `/Users/letrongthien/.bun/bin:/opt/homebrew/bin:${process.env.PATH ?? ""}`,
+      // mac dev-box paths only on mac/linux (":" would corrupt a Windows PATH, which uses ";")
+      PATH:
+        process.platform === "win32"
+          ? (process.env.PATH ?? "")
+          : `/Users/letrongthien/.bun/bin:/opt/homebrew/bin:${process.env.PATH ?? ""}`,
       FORCE_COLOR: "0",
       NO_COLOR: "1",
     },
   });
+  attachJobProc(job, proc);
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
   ]);
   const code = await proc.exited;
+  throwIfCancelled(job);
   const out = `${stdout}\n${stderr}`.trim();
   if (out) job.logs.push(out.slice(-600));
   if (code !== 0)
@@ -2740,6 +2915,63 @@ const runStoryCreate = async (
   job.finishedAt = Date.now();
 };
 
+/** Cut the narration into chapters of about `targetSec` seconds, always at a line boundary. */
+export const planChapters = (lines: { start: number; end: number }[], total: number, targetSec = 120): { from: number; to: number }[] => {
+  if (!lines.length) return [{ from: 0, to: total }];
+  const out: { from: number; to: number }[] = [];
+  let from = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const last = i === lines.length - 1;
+    if (last || lines[i].end - from >= targetSec) {
+      const to = last ? total : (lines[i].end + lines[i + 1].start) / 2;
+      out.push({ from, to });
+      from = to;
+    }
+  }
+  // a short tail is folded into the previous chapter
+  if (out.length > 1 && out[out.length - 1].to - out[out.length - 1].from < targetSec * 0.35) {
+    const tail = out.pop()!;
+    out[out.length - 1].to = tail.to;
+  }
+  return out;
+};
+
+/** Render a half-size draft per chapter and wait for the user's Next after each one. */
+const reviewChapters = async (job: StudioJob, id: string, aspectRatio: StudioAspectRatio) => {
+  const vpath = join(REPO, "src", "videos", id, "voice.json");
+  const voice = JSON.parse(readFileSync(vpath, "utf8")) as { duration: number; lines: { start: number; end: number }[] };
+  const plan = planChapters(voice.lines, voice.duration);
+  const folder = aspectRatio === "16:9" ? "out-long" : "out";
+  job.chapters = plan.map((c, i) => ({
+    n: i + 1,
+    from: Math.round(c.from * 10) / 10,
+    to: Math.round(c.to * 10) / 10,
+    file: `${folder}/${id}/chapters/ch${String(i + 1).padStart(2, "0")}.mp4`,
+    v: 0,
+  }));
+  job.logs.push(`[Duyệt chương] ${plan.length} chương (~2 phút/chương): ${job.chapters.map((c) => `${c.from}–${c.to}s`).join(", ")}`);
+  for (let i = 0; i < plan.length; i++) {
+    const ch = job.chapters[i];
+    for (;;) {
+      throwIfCancelled(job);
+      job.status = "running";
+      job.reviewIndex = undefined;
+      await runStepCmd(job, `Đang dựng bản xem thử chương ${ch.n}/${plan.length} (${ch.from}–${ch.to}s)…`, 64, [
+        "run", "chapter", id, `--from=${ch.from}`, `--to=${ch.to}`, `--n=${ch.n}`,
+      ]);
+      ch.v = Date.now();
+      job.status = "review";
+      job.reviewIndex = ch.n;
+      job.step = `⏸ Chương ${ch.n}/${plan.length} đã xong, xem rồi bấm "Tiếp tục" (hoặc "Dựng lại chương")`;
+      const answer = await new Promise<GateAnswer>((resolve, reject) => gates.set(id, { resolve, reject }));
+      if (answer === "next") break;
+    }
+  }
+  job.status = "running";
+  job.reviewIndex = undefined;
+  job.logs.push("[Duyệt chương] Đã duyệt hết các chương, đang dựng bản hoàn chỉnh…");
+};
+
 export const startCreateAndRender = (opts: {
   id?: string;
   prompt: string;
@@ -2749,6 +2981,8 @@ export const startCreateAndRender = (opts: {
   aspectRatio?: StudioAspectRatio;
   voiceId?: string;
   model?: string;
+  /** "chapter": pause after every ~2 min draft chapter until the user presses Next. */
+  reviewMode?: "chapter" | "all";
 }): StudioJob => {
   const style: StudioStyle = opts.style ?? "stickman";
   const mode: StudioMode = opts.mode ?? "ai";
@@ -2761,7 +2995,8 @@ export const startCreateAndRender = (opts: {
   const auto = opts.duration === "auto" ? resolveAutoDuration(opts.prompt, opts.style ?? "stickman", aspectRatio) : null;
   let duration: StudioDuration = auto?.duration ?? opts.duration ?? (aspectRatio === "16:9" ? "story" : "medium");
   const voiceId = opts.voiceId ?? "vieneu:Mai Bé Phương";
-  const chosenVoice = parseVoiceOption(voiceId);
+  // Ghost-story flow: Anh Minh B is ALWAYS the narrator, whatever the dropdown says.
+  const chosenVoice = parseVoiceOption(style === "spirit" ? "vieneu:Anh Minh B" : voiceId);
 
   let id = opts.id
     ? slugify(opts.id)
@@ -2783,12 +3018,14 @@ export const startCreateAndRender = (opts: {
     progress: 5,
     logs: [],
     startedAt: Date.now(),
+    reviewMode: opts.reviewMode === "chapter" ? "chapter" : "all",
   };
   if (auto) {
     job.logs.push(
       `[Thời lượng tự động] ${auto.words} chữ đầu vào → ~${auto.minutes.toFixed(1)} phút → chọn "${durationLabelOf(auto.duration)}"`,
     );
   }
+  cancelledJobs.delete(id);
   jobs.set(id, job);
 
   (async () => {
@@ -2911,11 +3148,11 @@ export const startCreateAndRender = (opts: {
         voice: {
           engine: chosenVoice.engine,
           voice: chosenVoice.voice,
-          tempo: style === "spirit" ? 0.92 : 1.0,
+          tempo: style === "spirit" ? 0.86 : 1.0,
           // deeper narrator for ghost stories — except cloned voices, which already sound as recorded
           ...(style === "spirit" && !isClonedVoice(chosenVoice.voice) ? { pitch: Number(process.env.SPIRIT_NARRATOR_PITCH || 0.9) } : {}),
         },
-        pause: { line: 0.35, scene: 0.65 },
+        pause: style === "spirit" ? { line: 0.6, scene: 1.0, adaptive: true } : { line: 0.35, scene: 0.65 },
         outroHold: 0,
         pronounce: {},
         spelling: {},
@@ -3006,6 +3243,7 @@ export const startCreateAndRender = (opts: {
       syncStoryboard(id);
       if (style === "stickman-explainer") await renderExplainerBackgrounds(id, job, 50, 64);
       if (style === "stickman" || style === "spirit") await buildStickmanBackdrops(id, opts.prompt, job, visualModel, aspectRatio, style, 50, 64);
+      if (job.reviewMode === "chapter") await reviewChapters(job, id, aspectRatio);
 
       await runStepCmd(
         job,
@@ -3042,6 +3280,8 @@ export const startCreateAndRender = (opts: {
         "Đang đẩy video, ảnh bìa & tiêu đề/nội dung lên S3 + Database…";
       job.progress = 99;
       try {
+        // Test runs set STUDIO_SKIP_SYNC=1 so a throw-away video never lands in the real S3 bucket / database.
+        if (process.env.STUDIO_SKIP_SYNC === "1") throw new Error("bỏ qua theo STUDIO_SKIP_SYNC=1");
         const mainPort =
           process.env.MAIN_SERVER_PORT || process.env.PORT || "3400";
         const syncRes = await fetch(
@@ -3123,6 +3363,7 @@ export const startRebuildVideo = (
     logs: [],
     startedAt: Date.now(),
   };
+  cancelledJobs.delete(id);
   jobs.set(id, job);
 
   (async () => {
