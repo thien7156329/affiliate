@@ -36,7 +36,8 @@
     "satellite": "bun scripts/satellite.ts",
     "geo": "bun scripts/geo.ts",
     "bg": "bun scripts/bg.ts",
-    "check": "bun scripts/check-boundaries.ts && tsc --noEmit"
+    "check": "bun scripts/check-boundaries.ts && tsc --noEmit",
+    "setup:vieneu": "bash scripts/setup-vieneu.sh"
   },
   "dependencies": {
     "@react-three/fiber": "9.8.2",
