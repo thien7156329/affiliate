@@ -44,7 +44,30 @@ def patch_hub(cache: Path) -> None:
     huggingface_hub.snapshot_download = snapshot_download
 
 
+CUSTOM_PRESETS = Path(__file__).resolve().parents[3] / "voices" / "trained" / "vieneu_custom_presets.json"
+
+
+def restore_custom_presets() -> None:
+    """Put the channel's trained voices back into the installed vieneu package (a fresh install loses them)."""
+    if not CUSTOM_PRESETS.exists():
+        return
+    try:
+        import vieneu
+
+        target = Path(vieneu.__file__).parent / "assets" / "voices_v3_turbo.json"
+        data = json.loads(target.read_text("utf8"))
+        custom = json.loads(CUSTOM_PRESETS.read_text("utf8")).get("presets", {})
+        missing = {k: v for k, v in custom.items() if k not in data.get("presets", {})}
+        if missing:
+            data.setdefault("presets", {}).update(missing)
+            target.write_text(json.dumps(data, ensure_ascii=False), "utf8")
+            print(f"[vieneu] restored trained voices: {', '.join(missing)}", file=sys.stderr)
+    except Exception as exc:  # never block synthesis on this
+        print(f"[vieneu] could not restore trained voices: {exc}", file=sys.stderr)
+
+
 def load(mode: str, cache: Path):
+    restore_custom_presets()
     patch_hub(cache)
     from vieneu import Vieneu
 

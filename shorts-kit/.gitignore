@@ -34,7 +34,6 @@ out/
 public/img/explainer/
 public/img/bg-library/
 public/img/story/
-voices/
 
 # Heavy / local-only (vendored into the affiliate repo)
 out-long/
@@ -44,3 +43,5 @@ public/sfx/real/
 public/img/stickman-bg/
 *.wav
 !public/sfx/**/*.wav
+!voices/
+!voices/**
