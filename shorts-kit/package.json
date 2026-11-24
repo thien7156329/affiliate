@@ -37,7 +37,9 @@
     "geo": "bun scripts/geo.ts",
     "bg": "bun scripts/bg.ts",
     "check": "bun scripts/check-boundaries.ts && tsc --noEmit",
-    "setup:vieneu": "bash scripts/setup-vieneu.sh"
+    "setup:vieneu": "bash scripts/setup-vieneu.sh",
+    "props:sync": "bun scripts/props-sync.ts",
+    "props:pull": "bun scripts/props-pull.ts"
   },
   "dependencies": {
     "@react-three/fiber": "9.8.2",
