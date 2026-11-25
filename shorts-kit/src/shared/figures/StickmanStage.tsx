@@ -4548,7 +4548,7 @@ export const StickmanStage: React.FC<{
 
     return (
       <div style={{position: "absolute", inset: 0, overflow: "hidden", background: `linear-gradient(180deg, ${pal.top} 0%, ${pal.mid} 74%, ${pal.floor} 100%)`}}>
-        {hasAiBg ? <AiBackdrop items={backdrops ?? []} voice={voice} dim={0.22} still={minimalUi} /> : null}
+        {hasAiBg ? <AiBackdrop items={backdrops ?? []} voice={voice} dim={0.22} still={minimalUi} stageFloor={(floorY - 6) / lh} /> : null}
         <svg
           width={lw}
           height={lh}
@@ -6037,7 +6037,7 @@ export const StickmanStage: React.FC<{
         );
       })}
 
-      {hasAiBg ? <AiBackdrop items={backdrops ?? []} voice={voice} still={minimalUi} /> : null}
+      {hasAiBg ? <AiBackdrop items={backdrops ?? []} voice={voice} still={minimalUi} stageFloor={FLOOR_Y / H} /> : null}
 
       {/* Unified Top Storyboard Card (y = 240..520) — Never overlaps characters or bottom subtitles */}
       <svg

@@ -26,6 +26,8 @@ export type PropEntry = {
   tags?: string[];
   prompt?: string;
   tone?: string;
+  /** measured ground line (fraction of height) for backgrounds */
+  floor?: number;
   source: string; // path relative to the affiliate repo
   addedAt: string;
 };
@@ -84,7 +86,7 @@ export const putProp = async (
   idx: PropsIndex,
   abs: string,
   category: string,
-  meta: Partial<Pick<PropEntry, "aspect" | "tags" | "prompt" | "tone">> = {},
+  meta: Partial<Pick<PropEntry, "aspect" | "tags" | "prompt" | "tone" | "floor">> = {},
 ): Promise<{entry: PropEntry; uploaded: boolean}> => {
   const buf = readFileSync(abs);
   const sha1 = createHash("sha1").update(buf).digest("hex");

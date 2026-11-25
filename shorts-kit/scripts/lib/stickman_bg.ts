@@ -58,7 +58,7 @@ const LIB_DIR = join(REPO, "public", "img", "bg-library");
 const LIB_INDEX = join(LIB_DIR, "index.json");
 /** Tag overlap (Jaccard) needed to reuse a library image instead of drawing a new one. */
 const LIB_MATCH = Number(process.env.BG_LIBRARY_MATCH || 0.6);
-type LibEntry = {id: string; file: string; prompt: string; tags: string[]; aspect: "9:16" | "16:9"; tone: string; uses: number; createdAt: string; v?: number; remote?: string};
+type LibEntry = {id: string; file: string; prompt: string; tags: string[]; aspect: "9:16" | "16:9"; tone: string; uses: number; createdAt: string; v?: number; remote?: string; floor?: number};
 /** Bump when the drawing rules change so older images (e.g. no empty floor for the cast) are no longer reused. */
 const LIB_VERSION = 2;
 
@@ -107,7 +107,7 @@ const mergeRemoteLibrary = async (log?: Log) => {
       if (e.category !== "bg-library" || !e.aspect || !e.tags?.length) continue;
       const name = e.source.split("/").pop() as string;
       if (have.has(name)) continue;
-      lib.push({id: e.sha1.slice(0, 12), file: `img/bg-library/${name}`, prompt: e.prompt ?? "", tags: e.tags, aspect: e.aspect, tone: e.tone ?? "default", uses: 0, createdAt: e.addedAt, v: LIB_VERSION, remote: e.url});
+      lib.push({id: e.sha1.slice(0, 12), file: `img/bg-library/${name}`, prompt: e.prompt ?? "", tags: e.tags, aspect: e.aspect, tone: e.tone ?? "default", uses: 0, createdAt: e.addedAt, v: LIB_VERSION, remote: e.url, ...(e.floor ? {floor: e.floor} : {})});
       have.add(name);
       added++;
     }
@@ -138,13 +138,13 @@ const ensureLocal = async (hit: LibEntry): Promise<boolean> => {
 
 /** New drawings go to S3 + the catalogue in the background; uploads are queued one after another. */
 let uploadQueue: Promise<unknown> = Promise.resolve();
-const shareToS3 = (absFile: string, meta: {tags: string[]; prompt: string; aspect: "9:16" | "16:9"; tone: string}, log?: Log) => {
+const shareToS3 = (absFile: string, meta: {tags?: string[]; prompt?: string; aspect?: "9:16" | "16:9"; tone?: string; floor?: number}, log?: Log) => {
   if (!propsConfigured()) return;
   uploadQueue = uploadQueue
     .then(async () => {
       const idx = await loadIndex();
-      const r = await putProp(idx, absFile, "bg-library", meta);
-      if (r.uploaded) await saveIndex(idx);
+      await putProp(idx, absFile, "bg-library", meta);
+      await saveIndex(idx); // new image or updated info (e.g. its measured floor)
     })
     .catch((e) => log?.(`[Backdrop] đẩy S3 lỗi: ${(e as Error).message}`));
 };
@@ -255,7 +255,9 @@ export const renderBackdrops = async (
   to: number,
   /** Library bucket: images are only reused between videos of the same tone ("spirit" vs "default"). */
   tone = "default",
-): Promise<{line: number; src: string | null}[]> => {
+  /** Measures a picture's ground line (0..1 from the top); used to stand the cast ON the ground. */
+  floorOf?: (absFile: string) => Promise<number | null>,
+): Promise<{line: number; src: string | null; floor?: number}[]> => {
   mkdirSync(LIB_DIR, {recursive: true});
   const todo = plan.map((p, i) => ({...p, i})).filter((p) => p.prompt);
   const useCf = Boolean(envKey("CLOUDFLARE_ACCOUNT_ID") && envKey("CLOUDFLARE_API_TOKEN"));
@@ -365,6 +367,31 @@ export const renderBackdrops = async (
   // the opening beats must not be an empty stage: take the first picture that exists
   const firstSrc = out.find((o) => o.src)?.src ?? null;
   if (firstSrc) for (const o of out) if (!o.src) o.src = firstSrc; else break;
+  // ground line per used picture: measured once, then remembered in the library (+ S3 catalogue)
+  const floors = new Map<string, number>();
+  if (floorOf) {
+    const lib = readLib();
+    const used = [...new Set(out.map((o) => o.src).filter(Boolean))] as string[];
+    for (let i = 0; i < used.length; i += 3) {
+      await Promise.all(
+        used.slice(i, i + 3).map(async (src) => {
+          const e = lib.find((x) => x.file === src);
+          let fl = e?.floor;
+          if (fl === undefined) {
+            fl = (await floorOf(join(REPO, "public", src)).catch(() => null)) ?? undefined;
+            if (fl !== undefined && e) {
+              e.floor = fl;
+              shareToS3(join(REPO, "public", src), {floor: fl}, ui.log);
+            }
+          }
+          if (fl !== undefined) floors.set(src, fl);
+        }),
+      );
+    }
+    writeLib(lib);
+    ui.log(`[Backdrop] mặt đất đã canh cho ${floors.size}/${used.length} nền`);
+  }
+  for (const o of out as {line: number; src: string | null; floor?: number}[]) if (o.src && floors.has(o.src)) o.floor = floors.get(o.src);
   const st = libraryStats();
   ui.log(`[Backdrop] ${todo.length} nền: ${reused} lấy lại từ thư viện, ${drawn} vẽ mới. Thư viện kênh: ${st.total} nền (${st.landscape} ngang, ${st.portrait} dọc)`);
   return out;

@@ -2816,10 +2816,38 @@ const buildStickmanBackdrops = async (
       perLine: style === "spirit",
     });
     if (!plan.length) return;
-    const items = await renderBackdrops(id, plan, aspectRatio, ui, from + 2, to, style === "spirit" ? "spirit" : "default");
+    const items = await renderBackdrops(id, plan, aspectRatio, ui, from + 2, to, style === "spirit" ? "spirit" : "default", analyzeFloor);
     writeBackdrops(dir, items);
   } catch (e) {
     job.logs.push(`[Backdrop] bỏ qua nền AI: ${(e as Error).message}`);
+  }
+};
+
+/**
+ * Look at a background and return where its ground line is (0..1 from the top): the open floor nearest the viewer,
+ * where a standing figure's feet go. Uses Claude with read access to that one image file; null when unsure.
+ */
+const FLOOR_MODEL = process.env.FLOOR_MODEL || "claude-sonnet-5-5";
+const analyzeFloor = async (absImage: string): Promise<number | null> => {
+  const prompt =
+    `Read the image file ${absImage}. It is a background for a 2D cartoon; small stick figures will be drawn standing on it.\n` +
+    `Find the open, walkable ground/floor area nearest the viewer (yard, road, floorboards, earth) that is NOT covered by furniture, beds, walls, water or bushes.\n` +
+    `Answer with ONE number only, between 0 and 1: the vertical position (fraction of the image height, 0 = top, 1 = bottom) ` +
+    `where a person standing in the middle of that open floor area would put their feet. No other text.`;
+  try {
+    const proc = Bun.spawn(
+      [resolveClaudeBin(), "-p", "--model", FLOOR_MODEL, "--tools", "Read", "--allowedTools", "Read", "--output-format", "text", "--no-session-persistence"],
+      { cwd: REPO, stdin: new Blob([prompt]), stdout: "pipe", stderr: "pipe" },
+    );
+    const timer = setTimeout(() => proc.kill(), 120_000);
+    const out = await new Response(proc.stdout).text();
+    clearTimeout(timer);
+    // the answer may come with a sentence of reasoning: take the LAST 0.xx number
+    const all = out.match(/\b0?\.\d{1,4}\b/g) ?? [];
+    const v = all.length ? Number(all[all.length - 1]) : NaN;
+    return Number.isFinite(v) && v >= 0.35 && v <= 0.99 ? Math.round(v * 1000) / 1000 : null;
+  } catch {
+    return null;
   }
 };
 
