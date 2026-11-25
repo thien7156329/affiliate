@@ -1152,5 +1152,221 @@
   "uses": 1,
   "createdAt": "2026-11-24T09:32:20.441Z",
   "v": 2
+ },
+ {
+  "id": "de5a69e94621",
+  "file": "img/bg-library/t-de5a69e94621.png",
+  "prompt": "Grand empty lecture hall at night, huge chalkboard covered in glowing equations and a large '$1,000,000' prize banner, a glowing computer server rack facing it, dramatic spotlight, empty wooden floor across bottom third",
+  "tags": [
+   "lecture hall",
+   "chalkboard",
+   "server rack",
+   "night",
+   "dramatic",
+   "prize"
+  ],
+  "aspect": "9:16",
+  "tone": "default",
+  "uses": 1,
+  "createdAt": "2026-11-25T04:24:13.915Z",
+  "v": 2
+ },
+ {
+  "id": "1f6bba5f780f",
+  "file": "img/bg-library/t-1f6bba5f780f.png",
+  "prompt": "Quiet cluttered study at night, desk against back wall piled with handwritten manuscript pages and a stamped envelope ready to send, single desk lamp glowing, wall clock ticking, empty wooden floor in bottom third",
+  "tags": [
+   "study room",
+   "manuscript",
+   "desk lamp",
+   "night",
+   "tense",
+   "envelope"
+  ],
+  "aspect": "9:16",
+  "tone": "default",
+  "uses": 1,
+  "createdAt": "2026-11-25T04:24:27.765Z",
+  "v": 2
+ },
+ {
+  "id": "0418887c4c11",
+  "file": "img/bg-library/t-0418887c4c11.png",
+  "prompt": "Old 19th-century European study, candlelit, quill and yellowed paper dated 1859 on a desk against the back wall, framed portrait silhouette, dusty bookshelves, warm dim light, empty parquet floor in bottom third",
+  "tags": [
+   "old study",
+   "1859",
+   "candle",
+   "quill",
+   "historical",
+   "warm"
+  ],
+  "aspect": "9:16",
+  "tone": "default",
+  "uses": 1,
+  "createdAt": "2026-11-25T04:24:41.485Z",
+  "v": 2
+ },
+ {
+  "id": "9c969155b12f",
+  "file": "img/bg-library/t-9c969155b12f.png",
+  "prompt": "Futuristic tech office lobby, giant wall screen showing an AI logo and a question mark over equations, cool blue light, glass walls, evening, polished empty floor across bottom third",
+  "tags": [
+   "tech office",
+   "screen",
+   "ai",
+   "evening",
+   "blue light",
+   "question"
+  ],
+  "aspect": "9:16",
+  "tone": "default",
+  "uses": 1,
+  "createdAt": "2026-11-25T04:24:55.179Z",
+  "v": 2
+ },
+ {
+  "id": "e575626c1393",
+  "file": "img/bg-library/t-e575626c1393.png",
+  "prompt": "Dark cosmic space with a long glowing number line stretching across the upper half, prime numbers 2, 3, 5, 7 shining brighter than others, subtle hidden wave pattern, mysterious mood, flat glowing ground plane in bottom third",
+  "tags": [
+   "number line",
+   "prime numbers",
+   "space",
+   "glowing",
+   "mysterious",
+   "abstract"
+  ],
+  "aspect": "9:16",
+  "tone": "default",
+  "uses": 1,
+  "createdAt": "2026-11-25T04:25:09.007Z",
+  "v": 2
+ },
+ {
+  "id": "9bffed774836",
+  "file": "img/bg-library/t-9bffed774836.png",
+  "prompt": "Modern city street at dusk, bank building facade behind with glowing padlock symbol and ATM screens showing password fields, neon reflections, light drizzle, empty wet pavement across bottom third",
+  "tags": [
+   "city street",
+   "bank",
+   "padlock",
+   "dusk",
+   "rain",
+   "security"
+  ],
+  "aspect": "9:16",
+  "tone": "default",
+  "uses": 1,
+  "createdAt": "2026-11-25T04:25:22.640Z",
+  "v": 2
+ },
+ {
+  "id": "c82e348cebb1",
+  "file": "img/bg-library/t-c82e348cebb1.png",
+  "prompt": "Split scene: left half a warm library with stacked academic journals, right half a cold blue data center with blinking servers, a race finish line ribbon across the middle, empty floor in bottom third",
+  "tags": [
+   "library",
+   "data center",
+   "race",
+   "split",
+   "contrast",
+   "competition"
+  ],
+  "aspect": "9:16",
+  "tone": "default",
+  "uses": 1,
+  "createdAt": "2026-11-25T04:25:36.334Z",
+  "v": 2
+ },
+ {
+  "id": "70e23a7c60d8",
+  "file": "img/bg-library/t-70e23a7c60d8.png",
+  "prompt": "Empty debate stage with two podiums against the back wall, a giant name plaque left blank between a lightbulb icon and a robot arm icon, harsh stage lights, empty stage floor in bottom third",
+  "tags": [
+   "debate stage",
+   "podiums",
+   "spotlight",
+   "conflict",
+   "credit",
+   "indoor"
+  ],
+  "aspect": "9:16",
+  "tone": "default",
+  "uses": 1,
+  "createdAt": "2026-11-25T04:25:49.957Z",
+  "v": 2
+ },
+ {
+  "id": "78cbc196fba4",
+  "file": "img/bg-library/t-78cbc196fba4.png",
+  "prompt": "Conference auditorium in 2018, projection screen showing a crossed-out proof slide, rows of empty chairs in middle distance, dim grey light, somber mood, empty carpeted aisle floor in bottom third",
+  "tags": [
+   "auditorium",
+   "projector",
+   "2018",
+   "rejected",
+   "somber",
+   "conference"
+  ],
+  "aspect": "9:16",
+  "tone": "default",
+  "uses": 1,
+  "createdAt": "2026-11-25T04:26:03.598Z",
+  "v": 2
+ },
+ {
+  "id": "d7584eea67d7",
+  "file": "img/bg-library/t-d7584eea67d7.png",
+  "prompt": "Archive room with tall shelves of thick binders, calendar pages flying off the back wall, magnifying glass and red stamps on a back desk, slow dusty afternoon light, empty tiled floor in bottom third",
+  "tags": [
+   "archive",
+   "calendar",
+   "review",
+   "afternoon",
+   "patience",
+   "papers"
+  ],
+  "aspect": "9:16",
+  "tone": "default",
+  "uses": 1,
+  "createdAt": "2026-11-25T04:26:17.665Z",
+  "v": 2
+ },
+ {
+  "id": "a1f9768f827d",
+  "file": "img/bg-library/t-a1f9768f827d.png",
+  "prompt": "Rooftop at night under starry sky, a glowing completed proof floating in the sky like a constellation, distant city lights, contemplative quiet mood, empty concrete rooftop floor across bottom third",
+  "tags": [
+   "rooftop",
+   "night",
+   "stars",
+   "proof",
+   "contemplative",
+   "city"
+  ],
+  "aspect": "9:16",
+  "tone": "default",
+  "uses": 1,
+  "createdAt": "2026-11-25T04:26:31.692Z",
+  "v": 2
+ },
+ {
+  "id": "6f4334682520",
+  "file": "img/bg-library/t-6f4334682520.png",
+  "prompt": "Cozy café at golden hour, chalkboard menu on back wall doodled with math symbols and a small robot, warm sunlight through windows, cheerful mood, empty wooden floor in bottom third",
+  "tags": [
+   "cafe",
+   "chalkboard",
+   "golden hour",
+   "warm",
+   "friendly",
+   "math"
+  ],
+  "aspect": "9:16",
+  "tone": "default",
+  "uses": 1,
+  "createdAt": "2026-11-25T04:26:45.601Z",
+  "v": 2
  }
 ]

@@ -1750,5 +1750,51 @@
         ]
       }
     ]
+  },
+  {
+    "id": "f-studio-luc-dich-minh-d",
+    "claim": "Lúc dịch, mình đang được nghỉ xả hơi, có cô em gọi kể lể lúc nửa đêm, tưởng nó bị mộng du. Mình bảo: \"Mày gọi qua Facetime anh xem nào.\" Khi",
+    "value": "luc-dich-minh-dang-duoc-nghi-xa-hoi",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-24",
+    "usedIn": [
+      {
+        "video": "luc-dich-minh-dang-duoc-nghi-xa-hoi",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "f-studio-bai-toan-kho-nh",
+    "claim": "Bài toán khó nhất thế giới thổi bùng cuộc đọ sức giữa con người và AI. Tranh cãi xoay quanh AI tiếp tục nổ ra khi Anthropic thông báo tìm ra",
+    "value": "bai-toan-kho-nhat-the-gioi-thoi",
+    "status": "verified",
+    "sources": [
+      "s-0001"
+    ],
+    "checkedAt": "2026-11-25",
+    "usedIn": [
+      {
+        "video": "bai-toan-kho-nhat-the-gioi-thoi",
+        "scenes": [
+          "hook",
+          "problem",
+          "layer1",
+          "layer2",
+          "hardest",
+          "payoff"
+        ]
+      }
+    ]
   }
 ]

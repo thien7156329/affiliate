@@ -1247,7 +1247,7 @@ export const Stickman: React.FC<{
 
   return (
     <g
-      transform={`translate(${Math.round(x)} ${Math.round(y)}) scale(${scale * AGE_SCALE[age]})${age === "elder" ? " rotate(5)" : ""}`}
+      transform={`translate(${Math.round(x)} ${Math.round(y)}) scale(${scale * (eerie ? AGE_SCALE[age] : 1)})${eerie && age === "elder" ? " rotate(5)" : ""}`}
       opacity={opacity}
       textRendering="geometricPrecision"
     >
@@ -1271,8 +1271,8 @@ export const Stickman: React.FC<{
         )}
 
         {/* Back Leg (trouser colour + dark outline) */}
-        <path d={`M -8 ${hipY + 4} Q ${lKneeX} ${lKneeY} ${lFootX} ${lFootY}`} stroke={LIMB_OUTLINE} strokeWidth={16} strokeLinecap="round" fill="none" />
-        <path d={`M -8 ${hipY + 4} Q ${lKneeX} ${lKneeY} ${lFootX} ${lFootY}`} stroke={bottom === "trousers" ? PANTS_C : SKIN} strokeWidth={12} strokeLinecap="round" fill="none" />
+        <path d={`M -8 ${hipY + 4} Q ${lKneeX} ${lKneeY} ${lFootX} ${lFootY}`} stroke={LIMB_OUTLINE} strokeWidth={eerie ? 16 : 6} strokeLinecap="round" fill="none" />
+        <path d={`M -8 ${hipY + 4} Q ${lKneeX} ${lKneeY} ${lFootX} ${lFootY}`} stroke={eerie ? (bottom === "trousers" ? PANTS_C : SKIN) : LIMB_OUTLINE} strokeWidth={eerie ? 12 : 0} strokeLinecap="round" fill="none" />
         {bottom === "shorts" ? (
           <path d={`M -8 ${hipY + 4} L ${(-8 + lKneeX) / 2} ${(hipY + 4 + lKneeY) / 2}`} stroke={PANTS_C} strokeWidth={14} strokeLinecap="butt" fill="none" />
         ) : null}
@@ -1607,8 +1607,8 @@ export const Stickman: React.FC<{
         })()}
 
         {/* Front Leg (trouser colour + dark outline) */}
-        <path d={`M 8 ${hipY + 4} Q ${rKneeX} ${rKneeY} ${rFootX} ${rFootY}`} stroke={LIMB_OUTLINE} strokeWidth={16} strokeLinecap="round" fill="none" />
-        <path d={`M 8 ${hipY + 4} Q ${rKneeX} ${rKneeY} ${rFootX} ${rFootY}`} stroke={bottom === "trousers" ? PANTS_C : SKIN} strokeWidth={12} strokeLinecap="round" fill="none" />
+        <path d={`M 8 ${hipY + 4} Q ${rKneeX} ${rKneeY} ${rFootX} ${rFootY}`} stroke={LIMB_OUTLINE} strokeWidth={eerie ? 16 : 6} strokeLinecap="round" fill="none" />
+        <path d={`M 8 ${hipY + 4} Q ${rKneeX} ${rKneeY} ${rFootX} ${rFootY}`} stroke={eerie ? (bottom === "trousers" ? PANTS_C : SKIN) : LIMB_OUTLINE} strokeWidth={eerie ? 12 : 0} strokeLinecap="round" fill="none" />
         {bottom === "shorts" ? (
           <path d={`M 8 ${hipY + 4} L ${(8 + rKneeX) / 2} ${(hipY + 4 + rKneeY) / 2}`} stroke={PANTS_C} strokeWidth={14} strokeLinecap="butt" fill="none" />
         ) : null}
@@ -1646,7 +1646,7 @@ export const Stickman: React.FC<{
         {/* Large Expressive Cartoon Head with 3D Crescent Shading & Subtle Nod */}
         <g transform={`rotate(${(headTiltDeg * 0.35).toFixed(2)} ${headX} ${headY + 34})`}>
           {/* Women's long hair BEHIND the head: falls to the shoulders without covering the face */}
-          {hair === "none" && gender === "f" && (age === "adult" || age === "teen") ? (
+          {eerie && hair === "none" && gender === "f" && (age === "adult" || age === "teen") ? (
             <path
               transform={`translate(${headX} ${headY})`}
               d="M -46 -18 Q -52 22 -44 58 Q -32 66 -20 58 L 20 58 Q 32 66 44 58 Q 52 22 46 -18 Q 0 -68 -46 -18 Z"
@@ -1688,7 +1688,7 @@ export const Stickman: React.FC<{
           )}
 
           {/* Age / gender hair when no explicit hair style is set */}
-          {hair === "none" && (age !== "adult" || gender) && (() => {
+          {eerie && hair === "none" && (age !== "adult" || gender) && (() => {
             const grey = age === "elder";
             const fill = grey ? "#D1D5DB" : "#111827";
             const f = gender === "f";
@@ -2165,14 +2165,14 @@ export const Stickman: React.FC<{
         <path
           d={`M ${shX - 14} ${shY + 8} Q ${lElbow[0]} ${lElbow[1]} ${lHand[0]} ${lHand[1]}`}
           stroke={LIMB_OUTLINE}
-          strokeWidth={16}
+          strokeWidth={eerie ? 16 : 6}
           strokeLinecap="round"
           fill="none"
         />
         <path
           d={`M ${shX - 14} ${shY + 8} Q ${lElbow[0]} ${lElbow[1]} ${lHand[0]} ${lHand[1]}`}
           stroke={SLEEVE_BACK}
-          strokeWidth={12}
+          strokeWidth={eerie ? 12 : 0}
           strokeLinecap="round"
           fill="none"
         />
@@ -2199,14 +2199,14 @@ export const Stickman: React.FC<{
         <path
           d={`M ${shX + 12} ${shY + 10} Q ${rElbow[0]} ${rElbow[1]} ${rHand[0]} ${rHand[1]}`}
           stroke={LIMB_OUTLINE}
-          strokeWidth={16}
+          strokeWidth={eerie ? 16 : 6}
           strokeLinecap="round"
           fill="none"
         />
         <path
           d={`M ${shX + 12} ${shY + 10} Q ${rElbow[0]} ${rElbow[1]} ${rHand[0]} ${rHand[1]}`}
           stroke={SLEEVE}
-          strokeWidth={12}
+          strokeWidth={eerie ? 12 : 0}
           strokeLinecap="round"
           fill="none"
         />

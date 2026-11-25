@@ -1250,7 +1250,7 @@ Trả về DUY NHẤT 1 JSON object hợp lệ (không bọc markdown):
   ]
 }`;
 
-  const visualFullPrompt = `${visualSys}\n\n${LINE_BEATS_RULES}${style === "spirit" ? SPIRIT_VISUAL_RULES : ""}\n\nCHỦ ĐỀ / KỊCH BẢN GỐC: ${prompt.slice(0, 300)}\n\nKỊCH BẢN 7 PHÂN CẢNH:\n${JSON.stringify(scenes, null, 2)}`;
+  const visualFullPrompt = `${visualSys}\n\n${style === "spirit" ? LINE_BEATS_RULES + SPIRIT_VISUAL_RULES : ""}\n\nCHỦ ĐỀ / KỊCH BẢN GỐC: ${prompt.slice(0, 300)}\n\nKỊCH BẢN 7 PHÂN CẢNH:\n${JSON.stringify(scenes, null, 2)}`;
   let rawVisual = await runAgyPrompt(visualFullPrompt, argonModel, 600, job);
   const carbonFallback = process.env.CARBON_MODEL || "gemini-4-carbon-low";
   if (process.env.SCRIPTWRITER_FALLBACK === "1" && !rawVisual && argonModel !== carbonFallback) {

@@ -3870,11 +3870,13 @@ export const StickmanStage: React.FC<{
       : rawActRightProp !== "none"
         ? rawActRightProp
         : autoContextualRightProp;
-  const lineBeat: StickmanLineBeat | undefined = activeAct?.lineBeats?.[sceneLineIdx];
+  // per-line acting (lineBeats) belongs to the story style only; the classic stickman keeps its own choreography
+  const lineBeat: StickmanLineBeat | undefined = minimalUi ? activeAct?.lineBeats?.[sceneLineIdx] : undefined;
   // first line of a scene continues from the LAST beat of the previous scene (no pop-in / blink at scene changes)
   const prevActBeats = acts[activeSceneIdx - 1]?.lineBeats;
-  const prevLineBeat: StickmanLineBeat | undefined =
-    sceneLineIdx > 0 ? activeAct?.lineBeats?.[sceneLineIdx - 1] : prevActBeats?.[prevActBeats.length - 1];
+  const prevLineBeat: StickmanLineBeat | undefined = !minimalUi
+    ? undefined
+    : sceneLineIdx > 0 ? activeAct?.lineBeats?.[sceneLineIdx - 1] : prevActBeats?.[prevActBeats.length - 1];
   // Story mode: characters enter/leave with the story and only move their lips on their own quoted line.
   const visBlend = Math.min(1, Math.max(0, sentenceLocalFrame / (minimalUi ? 22 : 12)));
   const visOf = (now?: StickmanCharBeat, prev?: StickmanCharBeat) => {
@@ -4167,7 +4169,7 @@ export const StickmanStage: React.FC<{
   const prevRightPose: StickPose | undefined = rightMoved && arrived(rightWalking)
     ? "walk"
     : prevLineBeat?.right?.pose ?? (minimalUi ? "stand" : undefined);
-  const hasBeats = Boolean(activeAct?.lineBeats?.length);
+  const hasBeats = minimalUi && Boolean(activeAct?.lineBeats?.length);
   const portraitGain = minimalUi ? 1.8 : 1;
   // walkers face where they go (a reversed walk cycle reads as moon-walking); "back" keeps facing forward
   const leftFaceFlip = minimalUi && leftWalking && leftDxNow < leftDxPrev;
