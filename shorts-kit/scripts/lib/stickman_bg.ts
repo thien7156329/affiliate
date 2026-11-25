@@ -12,6 +12,7 @@
 import {createHash} from "node:crypto";
 import {existsSync, mkdirSync, readFileSync, writeFileSync} from "node:fs";
 import {join, resolve} from "node:path";
+import {loadIndex, propsConfigured, putProp, saveIndex} from "./props_s3";
 
 const REPO = resolve(import.meta.dir, "../..");
 const MAIN = () => `http://127.0.0.1:${process.env.MAIN_SERVER_PORT || process.env.PORT || "3400"}`;
@@ -57,7 +58,7 @@ const LIB_DIR = join(REPO, "public", "img", "bg-library");
 const LIB_INDEX = join(LIB_DIR, "index.json");
 /** Tag overlap (Jaccard) needed to reuse a library image instead of drawing a new one. */
 const LIB_MATCH = Number(process.env.BG_LIBRARY_MATCH || 0.6);
-type LibEntry = {id: string; file: string; prompt: string; tags: string[]; aspect: "9:16" | "16:9"; tone: string; uses: number; createdAt: string; v?: number};
+type LibEntry = {id: string; file: string; prompt: string; tags: string[]; aspect: "9:16" | "16:9"; tone: string; uses: number; createdAt: string; v?: number; remote?: string};
 /** Bump when the drawing rules change so older images (e.g. no empty floor for the cast) are no longer reused. */
 const LIB_VERSION = 2;
 
@@ -93,6 +94,61 @@ const findInLibrary = (tags: string[], aspect: "9:16" | "16:9", tone: string, us
   if (min <= 0) return best ?? spare; // nothing could be drawn: any fitting library image beats an empty stage
   return score >= min ? best : null;
 };
+// ───────────── shared library on S3 ("đạo cụ tạo video") ─────────────
+/** Pull background entries other machines put in the S3 catalogue into the local library index (files download lazily). */
+const mergeRemoteLibrary = async (log?: Log) => {
+  if (!propsConfigured()) return;
+  try {
+    const idx = await loadIndex();
+    const lib = readLib();
+    const have = new Set(lib.map((e) => e.file.split("/").pop()));
+    let added = 0;
+    for (const e of Object.values(idx.items)) {
+      if (e.category !== "bg-library" || !e.aspect || !e.tags?.length) continue;
+      const name = e.source.split("/").pop() as string;
+      if (have.has(name)) continue;
+      lib.push({id: e.sha1.slice(0, 12), file: `img/bg-library/${name}`, prompt: e.prompt ?? "", tags: e.tags, aspect: e.aspect, tone: e.tone ?? "default", uses: 0, createdAt: e.addedAt, v: LIB_VERSION, remote: e.url});
+      have.add(name);
+      added++;
+    }
+    if (added) {
+      writeLib(lib);
+      log?.(`[Backdrop] +${added} nền từ thư viện S3 (máy khác đã vẽ)`);
+    }
+  } catch (e) {
+    log?.(`[Backdrop] không đọc được danh mục S3: ${(e as Error).message}`);
+  }
+};
+
+/** A library hit whose file is not on this machine yet: download it from S3. */
+const ensureLocal = async (hit: LibEntry): Promise<boolean> => {
+  const abs = join(REPO, "public", hit.file);
+  if (existsSync(abs)) return true;
+  if (!hit.remote) return false;
+  try {
+    const r = await fetch(hit.remote);
+    if (!r.ok) return false;
+    mkdirSync(LIB_DIR, {recursive: true});
+    writeFileSync(abs, Buffer.from(await r.arrayBuffer()));
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** New drawings go to S3 + the catalogue in the background; uploads are queued one after another. */
+let uploadQueue: Promise<unknown> = Promise.resolve();
+const shareToS3 = (absFile: string, meta: {tags: string[]; prompt: string; aspect: "9:16" | "16:9"; tone: string}, log?: Log) => {
+  if (!propsConfigured()) return;
+  uploadQueue = uploadQueue
+    .then(async () => {
+      const idx = await loadIndex();
+      const r = await putProp(idx, absFile, "bg-library", meta);
+      if (r.uploaded) await saveIndex(idx);
+    })
+    .catch((e) => log?.(`[Backdrop] đẩy S3 lỗi: ${(e as Error).message}`));
+};
+
 export const libraryStats = () => {
   const lib = readLib();
   return {total: lib.length, landscape: lib.filter((e) => e.aspect === "16:9").length, portrait: lib.filter((e) => e.aspect === "9:16").length};
@@ -209,13 +265,14 @@ export const renderBackdrops = async (
   let reused = 0;
   let drawn = 0;
   const files = new Map<number, string | null>();
+  await mergeRemoteLibrary(ui.log);
   const usedHere = new Set<string>();
 
   const drawOne = async (p: (typeof todo)[number]) => {
     const tags = p.tags?.length ? p.tags : normTags((p.prompt as string).split(/[,.]/).slice(0, 6));
     // 1) channel library: same kind of place already drawn for an earlier video → reuse it
     const hit = findInLibrary(tags, aspectRatio, tone, usedHere);
-    if (hit && existsSync(join(REPO, "public", hit.file))) {
+    if (hit && (await ensureLocal(hit))) {
       usedHere.add(hit.file);
       reused++;
       const lib = readLib();
@@ -263,12 +320,13 @@ export const renderBackdrops = async (
       usedHere.add(saved);
       const lib = readLib();
       lib.push({id: h, file: saved, prompt: p.prompt as string, tags, aspect: aspectRatio, tone, uses: 1, createdAt: new Date().toISOString(), v: LIB_VERSION});
+      shareToS3(join(REPO, "public", saved), {tags, prompt: p.prompt as string, aspect: aspectRatio, tone}, ui.log);
       writeLib(lib);
     }
     if (!saved) {
       // Nothing could be drawn (no Cloudflare key, Gemini Chrome closed…): reuse the closest library image rather than an empty stage.
       const fb = findInLibrary(tags, aspectRatio, tone, usedHere, Number(process.env.BG_FALLBACK_MIN ?? 0.15));
-      if (fb && existsSync(join(REPO, "public", fb.file))) {
+      if (fb && (await ensureLocal(fb))) {
         usedHere.add(fb.file);
         reused++;
         saved = fb.file;

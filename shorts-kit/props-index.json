@@ -1,5 +1,5 @@
 {
- "updatedAt": "2026-11-24T13:08:08.226Z",
+ "updatedAt": "2026-11-25T04:40:33.987Z",
  "bucket": "s3-affiliate",
  "prefix": "dao-cu-tao-video/",
  "items": {
@@ -5674,6 +5674,246 @@
    "bytes": 190537,
    "source": "data/long-downloads/long_nuoc-ngot-khong-duong-zero-calo/nuoc-ngot-khong-duong-zero-calo-upload_thumb.jpg",
    "addedAt": "2026-11-24T13:08:07.685Z"
+  },
+  "0339529b8597ae0e8f04dc93bddaf1076bdc5c11": {
+   "key": "dao-cu-tao-video/bg-library/0339529b85-t-6f4334682520.png",
+   "url": "https://s3-affiliate.s3.us-east-1.amazonaws.com/dao-cu-tao-video/bg-library/0339529b85-t-6f4334682520.png",
+   "category": "bg-library",
+   "sha1": "0339529b8597ae0e8f04dc93bddaf1076bdc5c11",
+   "bytes": 1993719,
+   "tags": [
+    "cafe",
+    "chalkboard",
+    "golden hour",
+    "warm",
+    "friendly",
+    "math"
+   ],
+   "prompt": "Cozy café at golden hour, chalkboard menu on back wall doodled with math symbols and a small robot, warm sunlight through windows, cheerful mood, empty wooden floor in bottom third",
+   "aspect": "9:16",
+   "tone": "default",
+   "source": "shorts-kit/public/img/bg-library/t-6f4334682520.png",
+   "addedAt": "2026-11-25T04:39:49.066Z"
+  },
+  "7c9f6c01aa145951e59c871c9d65f32f62018d44": {
+   "key": "dao-cu-tao-video/bg-library/7c9f6c01aa-t-a1f9768f827d.png",
+   "url": "https://s3-affiliate.s3.us-east-1.amazonaws.com/dao-cu-tao-video/bg-library/7c9f6c01aa-t-a1f9768f827d.png",
+   "category": "bg-library",
+   "sha1": "7c9f6c01aa145951e59c871c9d65f32f62018d44",
+   "bytes": 1966621,
+   "tags": [
+    "rooftop",
+    "night",
+    "stars",
+    "proof",
+    "contemplative",
+    "city"
+   ],
+   "prompt": "Rooftop at night under starry sky, a glowing completed proof floating in the sky like a constellation, distant city lights, contemplative quiet mood, empty concrete rooftop floor across bottom third",
+   "aspect": "9:16",
+   "tone": "default",
+   "source": "shorts-kit/public/img/bg-library/t-a1f9768f827d.png",
+   "addedAt": "2026-11-25T04:39:53.286Z"
+  },
+  "1ba7011ce7ca49ed63ceb27762724a9c48e19a43": {
+   "key": "dao-cu-tao-video/bg-library/1ba7011ce7-t-d7584eea67d7.png",
+   "url": "https://s3-affiliate.s3.us-east-1.amazonaws.com/dao-cu-tao-video/bg-library/1ba7011ce7-t-d7584eea67d7.png",
+   "category": "bg-library",
+   "sha1": "1ba7011ce7ca49ed63ceb27762724a9c48e19a43",
+   "bytes": 1836258,
+   "tags": [
+    "archive",
+    "calendar",
+    "review",
+    "afternoon",
+    "patience",
+    "papers"
+   ],
+   "prompt": "Archive room with tall shelves of thick binders, calendar pages flying off the back wall, magnifying glass and red stamps on a back desk, slow dusty afternoon light, empty tiled floor in bottom third",
+   "aspect": "9:16",
+   "tone": "default",
+   "source": "shorts-kit/public/img/bg-library/t-d7584eea67d7.png",
+   "addedAt": "2026-11-25T04:39:58.648Z"
+  },
+  "38314070b25eab590c4a9a68eb7e586324423c36": {
+   "key": "dao-cu-tao-video/bg-library/38314070b2-t-c82e348cebb1.png",
+   "url": "https://s3-affiliate.s3.us-east-1.amazonaws.com/dao-cu-tao-video/bg-library/38314070b2-t-c82e348cebb1.png",
+   "category": "bg-library",
+   "sha1": "38314070b25eab590c4a9a68eb7e586324423c36",
+   "bytes": 1952340,
+   "tags": [
+    "library",
+    "data center",
+    "race",
+    "split",
+    "contrast",
+    "competition"
+   ],
+   "prompt": "Split scene: left half a warm library with stacked academic journals, right half a cold blue data center with blinking servers, a race finish line ribbon across the middle, empty floor in bottom third",
+   "aspect": "9:16",
+   "tone": "default",
+   "source": "shorts-kit/public/img/bg-library/t-c82e348cebb1.png",
+   "addedAt": "2026-11-25T04:40:01.546Z"
+  },
+  "c058e473137be1206ad8c657a2b621e311195339": {
+   "key": "dao-cu-tao-video/bg-library/c058e47313-t-9bffed774836.png",
+   "url": "https://s3-affiliate.s3.us-east-1.amazonaws.com/dao-cu-tao-video/bg-library/c058e47313-t-9bffed774836.png",
+   "category": "bg-library",
+   "sha1": "c058e473137be1206ad8c657a2b621e311195339",
+   "bytes": 1794957,
+   "tags": [
+    "city street",
+    "bank",
+    "padlock",
+    "dusk",
+    "rain",
+    "security"
+   ],
+   "prompt": "Modern city street at dusk, bank building facade behind with glowing padlock symbol and ATM screens showing password fields, neon reflections, light drizzle, empty wet pavement across bottom third",
+   "aspect": "9:16",
+   "tone": "default",
+   "source": "shorts-kit/public/img/bg-library/t-9bffed774836.png",
+   "addedAt": "2026-11-25T04:40:05.539Z"
+  },
+  "1f9a3148c0ee84af6601435f98e131ac5a019843": {
+   "key": "dao-cu-tao-video/bg-library/1f9a3148c0-t-9c969155b12f.png",
+   "url": "https://s3-affiliate.s3.us-east-1.amazonaws.com/dao-cu-tao-video/bg-library/1f9a3148c0-t-9c969155b12f.png",
+   "category": "bg-library",
+   "sha1": "1f9a3148c0ee84af6601435f98e131ac5a019843",
+   "bytes": 1819783,
+   "tags": [
+    "tech office",
+    "screen",
+    "ai",
+    "evening",
+    "blue light",
+    "question"
+   ],
+   "prompt": "Futuristic tech office lobby, giant wall screen showing an AI logo and a question mark over equations, cool blue light, glass walls, evening, polished empty floor across bottom third",
+   "aspect": "9:16",
+   "tone": "default",
+   "source": "shorts-kit/public/img/bg-library/t-9c969155b12f.png",
+   "addedAt": "2026-11-25T04:40:07.261Z"
+  },
+  "ea040adb745e6b81042e7e79cb0e824c0b5e20d2": {
+   "key": "dao-cu-tao-video/bg-library/ea040adb74-t-e575626c1393.png",
+   "url": "https://s3-affiliate.s3.us-east-1.amazonaws.com/dao-cu-tao-video/bg-library/ea040adb74-t-e575626c1393.png",
+   "category": "bg-library",
+   "sha1": "ea040adb745e6b81042e7e79cb0e824c0b5e20d2",
+   "bytes": 1868339,
+   "tags": [
+    "number line",
+    "prime numbers",
+    "space",
+    "glowing",
+    "mysterious",
+    "abstract"
+   ],
+   "prompt": "Dark cosmic space with a long glowing number line stretching across the upper half, prime numbers 2, 3, 5, 7 shining brighter than others, subtle hidden wave pattern, mysterious mood, flat glowing ground plane in bottom third",
+   "aspect": "9:16",
+   "tone": "default",
+   "source": "shorts-kit/public/img/bg-library/t-e575626c1393.png",
+   "addedAt": "2026-11-25T04:40:10.736Z"
+  },
+  "bb703b261128f86183d42704b902151b8f43813c": {
+   "key": "dao-cu-tao-video/bg-library/bb703b2611-t-70e23a7c60d8.png",
+   "url": "https://s3-affiliate.s3.us-east-1.amazonaws.com/dao-cu-tao-video/bg-library/bb703b2611-t-70e23a7c60d8.png",
+   "category": "bg-library",
+   "sha1": "bb703b261128f86183d42704b902151b8f43813c",
+   "bytes": 1792442,
+   "tags": [
+    "debate stage",
+    "podiums",
+    "spotlight",
+    "conflict",
+    "credit",
+    "indoor"
+   ],
+   "prompt": "Empty debate stage with two podiums against the back wall, a giant name plaque left blank between a lightbulb icon and a robot arm icon, harsh stage lights, empty stage floor in bottom third",
+   "aspect": "9:16",
+   "tone": "default",
+   "source": "shorts-kit/public/img/bg-library/t-70e23a7c60d8.png",
+   "addedAt": "2026-11-25T04:40:13.826Z"
+  },
+  "e1c792a5cd31f2c23352c0d01d8ee23ced76a539": {
+   "key": "dao-cu-tao-video/bg-library/e1c792a5cd-t-0418887c4c11.png",
+   "url": "https://s3-affiliate.s3.us-east-1.amazonaws.com/dao-cu-tao-video/bg-library/e1c792a5cd-t-0418887c4c11.png",
+   "category": "bg-library",
+   "sha1": "e1c792a5cd31f2c23352c0d01d8ee23ced76a539",
+   "bytes": 1802789,
+   "tags": [
+    "old study",
+    "1859",
+    "candle",
+    "quill",
+    "historical",
+    "warm"
+   ],
+   "prompt": "Old 19th-century European study, candlelit, quill and yellowed paper dated 1859 on a desk against the back wall, framed portrait silhouette, dusty bookshelves, warm dim light, empty parquet floor in bottom third",
+   "aspect": "9:16",
+   "tone": "default",
+   "source": "shorts-kit/public/img/bg-library/t-0418887c4c11.png",
+   "addedAt": "2026-11-25T04:40:14.296Z"
+  },
+  "ff5b99f33982bf8017792b8922bc63f0b369235b": {
+   "key": "dao-cu-tao-video/bg-library/ff5b99f339-t-1f6bba5f780f.png",
+   "url": "https://s3-affiliate.s3.us-east-1.amazonaws.com/dao-cu-tao-video/bg-library/ff5b99f339-t-1f6bba5f780f.png",
+   "category": "bg-library",
+   "sha1": "ff5b99f33982bf8017792b8922bc63f0b369235b",
+   "bytes": 1842938,
+   "tags": [
+    "study room",
+    "manuscript",
+    "desk lamp",
+    "night",
+    "tense",
+    "envelope"
+   ],
+   "prompt": "Quiet cluttered study at night, desk against back wall piled with handwritten manuscript pages and a stamped envelope ready to send, single desk lamp glowing, wall clock ticking, empty wooden floor in bottom third",
+   "aspect": "9:16",
+   "tone": "default",
+   "source": "shorts-kit/public/img/bg-library/t-1f6bba5f780f.png",
+   "addedAt": "2026-11-25T04:40:17.790Z"
+  },
+  "2534da8b455362716cff28e13ad26388f5dc08c5": {
+   "key": "dao-cu-tao-video/bg-library/2534da8b45-t-de5a69e94621.png",
+   "url": "https://s3-affiliate.s3.us-east-1.amazonaws.com/dao-cu-tao-video/bg-library/2534da8b45-t-de5a69e94621.png",
+   "category": "bg-library",
+   "sha1": "2534da8b455362716cff28e13ad26388f5dc08c5",
+   "bytes": 1754802,
+   "tags": [
+    "lecture hall",
+    "chalkboard",
+    "server rack",
+    "night",
+    "dramatic",
+    "prize"
+   ],
+   "prompt": "Grand empty lecture hall at night, huge chalkboard covered in glowing equations and a large '$1,000,000' prize banner, a glowing computer server rack facing it, dramatic spotlight, empty wooden floor across bottom third",
+   "aspect": "9:16",
+   "tone": "default",
+   "source": "shorts-kit/public/img/bg-library/t-de5a69e94621.png",
+   "addedAt": "2026-11-25T04:40:18.062Z"
+  },
+  "45e897cbafc966b89bd24fd70db62bb3e3754737": {
+   "key": "dao-cu-tao-video/bg-library/45e897cbaf-t-78cbc196fba4.png",
+   "url": "https://s3-affiliate.s3.us-east-1.amazonaws.com/dao-cu-tao-video/bg-library/45e897cbaf-t-78cbc196fba4.png",
+   "category": "bg-library",
+   "sha1": "45e897cbafc966b89bd24fd70db62bb3e3754737",
+   "bytes": 1717078,
+   "tags": [
+    "auditorium",
+    "projector",
+    "2018",
+    "rejected",
+    "somber",
+    "conference"
+   ],
+   "prompt": "Conference auditorium in 2018, projection screen showing a crossed-out proof slide, rows of empty chairs in middle distance, dim grey light, somber mood, empty carpeted aisle floor in bottom third",
+   "aspect": "9:16",
+   "tone": "default",
+   "source": "shorts-kit/public/img/bg-library/t-78cbc196fba4.png",
+   "addedAt": "2026-11-25T04:40:21.573Z"
   }
  }
 }
