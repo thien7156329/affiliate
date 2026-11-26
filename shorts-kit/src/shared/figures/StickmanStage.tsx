@@ -5948,7 +5948,7 @@ export const StickmanStage: React.FC<{
             prop={wideLeftProp}
             hat={finalLeftHat}
             flip={leftFaceFlip}
-            colorKey={minimalUi ? finalCharLeft : undefined}
+            colorKey={finalCharLeft}
             age={activeAct?.leftAge}
             gender={activeAct?.leftGender}
             accessory={finalLeftAccessory}
@@ -5963,6 +5963,7 @@ export const StickmanStage: React.FC<{
             seed={1}
             swapFrames={swapFrames}
             eerie={minimalUi}
+            storyLook
             moodFx={!minimalUi}
             opacity={leftVis}
             customPropSvg={effectiveLeftCustomPropSvg}
@@ -5979,7 +5980,7 @@ export const StickmanStage: React.FC<{
               mood={rightMood}
               prop={wideRightProp}
               hat={finalRightHat}
-            colorKey={minimalUi ? finalCharRight : undefined}
+            colorKey={finalCharRight}
             age={activeAct?.rightAge}
             gender={activeAct?.rightGender}
               accessory={finalRightAccessory}
@@ -5995,6 +5996,7 @@ export const StickmanStage: React.FC<{
               seed={2}
               swapFrames={swapFrames}
             eerie={minimalUi}
+            storyLook
             moodFx={!minimalUi}
             opacity={rightVis}
               customPropSvg={effectiveRightCustomPropSvg}
@@ -6164,6 +6166,7 @@ export const StickmanStage: React.FC<{
             seed={4}
             swapFrames={swapFrames}
             eerie={minimalUi}
+            storyLook
           />
         )}
 
@@ -6176,7 +6179,7 @@ export const StickmanStage: React.FC<{
           prop={finalLeftProp}
           hat={finalLeftHat}
             flip={leftFaceFlip}
-            colorKey={minimalUi ? finalCharLeft : undefined}
+            colorKey={finalCharLeft}
             age={activeAct?.leftAge}
             gender={activeAct?.leftGender}
           accessory={finalLeftAccessory}
@@ -6191,6 +6194,7 @@ export const StickmanStage: React.FC<{
           seed={1}
           swapFrames={swapFrames}
             eerie={minimalUi}
+            storyLook
             moodFx={!minimalUi}
             opacity={leftVis}
           customPropSvg={effectiveLeftCustomPropSvg}
@@ -6207,7 +6211,7 @@ export const StickmanStage: React.FC<{
             mood={rightMood}
             prop={finalRightProp}
             hat={finalRightHat}
-            colorKey={minimalUi ? finalCharRight : undefined}
+            colorKey={finalCharRight}
             age={activeAct?.rightAge}
             gender={activeAct?.rightGender}
             accessory={finalRightAccessory}
@@ -6223,6 +6227,7 @@ export const StickmanStage: React.FC<{
             seed={2}
             swapFrames={swapFrames}
             eerie={minimalUi}
+            storyLook
             moodFx={!minimalUi}
             opacity={rightVis}
             customPropSvg={effectiveRightCustomPropSvg}
@@ -6240,7 +6245,7 @@ export const StickmanStage: React.FC<{
             mood={thirdMood}
             prop={thirdProp}
             hat={thirdHat}
-            colorKey={minimalUi ? thirdLabel : undefined}
+            colorKey={thirdLabel}
             age={activeAct?.thirdAge}
             gender={activeAct?.thirdGender}
             outfit={activeAct?.thirdOutfit ?? (isInspectionMoment ? "uniform" : "hoodie")}
@@ -6252,6 +6257,7 @@ export const StickmanStage: React.FC<{
             seed={3}
             swapFrames={swapFrames}
             eerie={minimalUi}
+            storyLook
             moodFx={!minimalUi}
             opacity={thirdVis}
           />

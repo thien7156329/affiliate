@@ -105,6 +105,18 @@ export type StickHair = "none" | "side_swoop";
 /** Life stage: size, proportions, hair colour and posture. */
 export type StickAge = "child" | "teen" | "adult" | "elder";
 export type StickGender = "m" | "f";
+
+const nameHas = (n: string, words: string[]) => words.some((w) => new RegExp(`(^|\\s)${w}(\\s|$)`, "i").test(n));
+/** Best guess of life stage / gender from a Vietnamese role name. */
+export const guessAgeGender = (name: string): {age?: StickAge; gender?: StickGender} => {
+  const n = name.normalize("NFC").trim();
+  const elder = nameHas(n, ["ông", "bà", "cụ", "lão", "ngoại", "nội"]);
+  const child = nameHas(n, ["bé", "cháu", "con", "nhóc", "cu"]);
+  const teen = nameHas(n, ["em", "cậu"]) && !elder;
+  const f = nameHas(n, ["chị", "cô", "bà", "dì", "mợ", "thím", "mẹ", "má", "nàng", "nữ", "bác sĩ nữ"]) && !nameHas(n, ["ông"]);
+  const m = nameHas(n, ["anh", "chú", "ông", "bác", "cậu", "ba", "bố", "chàng", "nam"]);
+  return {age: elder ? "elder" : child ? "child" : teen ? "teen" : undefined, gender: f ? "f" : m ? "m" : undefined};
+};
 const AGE_SCALE: Record<StickAge, number> = {child: 0.7, teen: 0.87, adult: 1, elder: 0.96};
 
 export type StickAccessory = "none" | "gold_chain" | "scammer_bling" | "necktie";
@@ -391,6 +403,8 @@ export const Stickman: React.FC<{
   age?: StickAge;
   /** Ghost-story look: never smiling, tired eye bags, a paler body. */
   eerie?: boolean;
+  /** Story body look (thick clothed limbs, mitten hands, age/gender hair) without the ghost-story face. */
+  storyLook?: boolean;
   /** Character identity for colours (e.g. the character's name): same key → same shirt/trouser colours. */
   colorKey?: string;
   /** Hair style hint when no hair/hat is set: "f" gets a bun / pigtails. */
@@ -429,9 +443,10 @@ export const Stickman: React.FC<{
   talking = false,
   mouth,
   backHandOnHip = false,
-  age = "adult",
-  gender,
+  age: ageProp,
+  gender: genderProp,
   eerie = false,
+  storyLook = false,
   colorKey,
   moodFx = true,
   color = "#FFFFFF",
@@ -453,6 +468,11 @@ export const Stickman: React.FC<{
   // eerie: smiles/cool/celebrate read wrong in a ghost story → serious; body a touch paler
   if (eerie && (mood === "happy" || mood === "cool" || mood === "celebrate" || mood === "idea" || mood === "scheming")) mood = "serious";
   if (eerie && color === "#FFFFFF") color = "#E7E5E4";
+  const look = eerie || storyLook;
+  // no age/gender from the script → read it from the Vietnamese name ("Chị Lan", "Cụ Ông", "Bé Na")
+  const guessed = look && colorKey ? guessAgeGender(colorKey) : {};
+  const age: StickAge = ageProp ?? guessed.age ?? "adult";
+  const gender: StickGender | undefined = genderProp ?? guessed.gender;
   const colorSeed = colorKey ? hashKey(colorKey) : seed;
   // everyday shirts get a per-character colour; costume outfits use their own palettes indexed by the same seed
   const SLEEVE =
@@ -1105,7 +1125,7 @@ export const Stickman: React.FC<{
     rHand = [rHand[0] + Math.sin(a + 2.1) * 1.4, rHand[1] + Math.sin(a * 0.8 + 3) * 1.1];
   }
   // story mode walking: arms hang close to the hips with a small swing (no big arm-flailing walk cycle)
-  if (eerie && isLocomotion) {
+  if (look && isLocomotion) {
     const sw = Math.sin(f * 0.22) * 5;
     lElbow = [shX - 24, shY + 30];
     lHand = [shX - 26 + sw, hipY - 4];
@@ -1113,13 +1133,13 @@ export const Stickman: React.FC<{
     rHand = [shX + 28 - sw, hipY - 4];
   }
   // story mode: the back hand never crosses over to the front side (no crossed arms / tangled fingers)
-  if (eerie && !isSeated && lHand[0] > shX - 6) {
+  if (look && !isSeated && lHand[0] > shX - 6) {
     lHand = [shX - 16, lHand[1]];
     lElbow = [Math.min(lElbow[0], shX - 22), lElbow[1]];
   }
   // story mode: the front hand stays on its own side too, unless the pose needs it at the face/chest
   if (
-    eerie && !isSeated && rHand[0] < shX + 6 &&
+    look && !isSeated && rHand[0] < shX + 6 &&
     pose !== "think" && pose !== "check_phone" && pose !== "read_book" && pose !== "write_note" && pose !== "bow_respect"
   ) {
     rHand = [shX + 18, rHand[1]];
@@ -1243,11 +1263,11 @@ export const Stickman: React.FC<{
   const bubbleY =
     basePostureHeadY - (hat !== "none" ? 94 : 82) + dampedHeadBounceY + gentleAirFloatY + bubblePopRiseY;
 
-  const showUnderEyeBags = !eerie && (mood === "shock" || mood === "sad" || mood === "confused" || pose === "tired" || pose === "think");
+  const showUnderEyeBags = !look && (mood === "shock" || mood === "sad" || mood === "confused" || pose === "tired" || pose === "think");
 
   return (
     <g
-      transform={`translate(${Math.round(x)} ${Math.round(y)}) scale(${scale * (eerie ? AGE_SCALE[age] : 1)})${eerie && age === "elder" ? " rotate(5)" : ""}`}
+      transform={`translate(${Math.round(x)} ${Math.round(y)}) scale(${scale * (look ? AGE_SCALE[age] : 1)})${look && age === "elder" ? " rotate(5)" : ""}`}
       opacity={opacity}
       textRendering="geometricPrecision"
     >
@@ -1271,8 +1291,8 @@ export const Stickman: React.FC<{
         )}
 
         {/* Back Leg (trouser colour + dark outline) */}
-        <path d={`M -8 ${hipY + 4} Q ${lKneeX} ${lKneeY} ${lFootX} ${lFootY}`} stroke={LIMB_OUTLINE} strokeWidth={eerie ? 16 : 6} strokeLinecap="round" fill="none" />
-        <path d={`M -8 ${hipY + 4} Q ${lKneeX} ${lKneeY} ${lFootX} ${lFootY}`} stroke={eerie ? (bottom === "trousers" ? PANTS_C : SKIN) : LIMB_OUTLINE} strokeWidth={eerie ? 12 : 0} strokeLinecap="round" fill="none" />
+        <path d={`M -8 ${hipY + 4} Q ${lKneeX} ${lKneeY} ${lFootX} ${lFootY}`} stroke={LIMB_OUTLINE} strokeWidth={look ? 16 : 6} strokeLinecap="round" fill="none" />
+        <path d={`M -8 ${hipY + 4} Q ${lKneeX} ${lKneeY} ${lFootX} ${lFootY}`} stroke={look ? (bottom === "trousers" ? PANTS_C : SKIN) : LIMB_OUTLINE} strokeWidth={look ? 12 : 0} strokeLinecap="round" fill="none" />
         {bottom === "shorts" ? (
           <path d={`M -8 ${hipY + 4} L ${(-8 + lKneeX) / 2} ${(hipY + 4 + lKneeY) / 2}`} stroke={PANTS_C} strokeWidth={14} strokeLinecap="butt" fill="none" />
         ) : null}
@@ -1607,8 +1627,8 @@ export const Stickman: React.FC<{
         })()}
 
         {/* Front Leg (trouser colour + dark outline) */}
-        <path d={`M 8 ${hipY + 4} Q ${rKneeX} ${rKneeY} ${rFootX} ${rFootY}`} stroke={LIMB_OUTLINE} strokeWidth={eerie ? 16 : 6} strokeLinecap="round" fill="none" />
-        <path d={`M 8 ${hipY + 4} Q ${rKneeX} ${rKneeY} ${rFootX} ${rFootY}`} stroke={eerie ? (bottom === "trousers" ? PANTS_C : SKIN) : LIMB_OUTLINE} strokeWidth={eerie ? 12 : 0} strokeLinecap="round" fill="none" />
+        <path d={`M 8 ${hipY + 4} Q ${rKneeX} ${rKneeY} ${rFootX} ${rFootY}`} stroke={LIMB_OUTLINE} strokeWidth={look ? 16 : 6} strokeLinecap="round" fill="none" />
+        <path d={`M 8 ${hipY + 4} Q ${rKneeX} ${rKneeY} ${rFootX} ${rFootY}`} stroke={look ? (bottom === "trousers" ? PANTS_C : SKIN) : LIMB_OUTLINE} strokeWidth={look ? 12 : 0} strokeLinecap="round" fill="none" />
         {bottom === "shorts" ? (
           <path d={`M 8 ${hipY + 4} L ${(8 + rKneeX) / 2} ${(hipY + 4 + rKneeY) / 2}`} stroke={PANTS_C} strokeWidth={14} strokeLinecap="butt" fill="none" />
         ) : null}
@@ -1646,7 +1666,7 @@ export const Stickman: React.FC<{
         {/* Large Expressive Cartoon Head with 3D Crescent Shading & Subtle Nod */}
         <g transform={`rotate(${(headTiltDeg * 0.35).toFixed(2)} ${headX} ${headY + 34})`}>
           {/* Women's long hair BEHIND the head: falls to the shoulders without covering the face */}
-          {eerie && hair === "none" && gender === "f" && (age === "adult" || age === "teen") ? (
+          {look && hair === "none" && gender === "f" && (age === "adult" || age === "teen") ? (
             <path
               transform={`translate(${headX} ${headY})`}
               d="M -46 -18 Q -52 22 -44 58 Q -32 66 -20 58 L 20 58 Q 32 66 44 58 Q 52 22 46 -18 Q 0 -68 -46 -18 Z"
@@ -1664,7 +1684,7 @@ export const Stickman: React.FC<{
                 A 39 39 0 0 0 ${headX + 12} ${headY + 37}
                 A 37 40 0 0 1 ${headX - 24} ${headY - 32} Z`}
             fill="#CBD5E1"
-            opacity={eerie ? 0.35 : 0.85}
+            opacity={look ? 0.35 : 0.85}
           />
           {/* Re-stroke head outline cleanly on top of shadow */}
           <circle cx={headX} cy={headY} r={42} fill="none" stroke="#111827" strokeWidth={4.5} />
@@ -1688,7 +1708,7 @@ export const Stickman: React.FC<{
           )}
 
           {/* Age / gender hair when no explicit hair style is set */}
-          {eerie && hair === "none" && (age !== "adult" || gender) && (() => {
+          {look && hair === "none" && (age !== "adult" || gender) && (() => {
             const grey = age === "elder";
             const fill = grey ? "#D1D5DB" : "#111827";
             const f = gender === "f";
@@ -1729,7 +1749,7 @@ export const Stickman: React.FC<{
                   // grandpa (like the reference): short dark moustache right above the mouth + small pointed white goatee
                   // under the chin. The face is 3/4, so the mouth sits at (+15, +21) from the head centre.
                   <>
-                    <path d="M 8 29 Q 15 33 22 29 L 15 50 Z" transform={eerie ? "translate(-15 0)" : undefined} fill="#F3F4F6" stroke="#9CA3AF" strokeWidth={1.8} strokeLinejoin="round" />
+                    <path d="M 8 29 Q 15 33 22 29 L 15 50 Z" transform={look ? "translate(-15 0)" : undefined} fill="#F3F4F6" stroke="#9CA3AF" strokeWidth={1.8} strokeLinejoin="round" />
                   </>
                 ) : null}
                 {f && age === "child" ? (
@@ -1739,7 +1759,7 @@ export const Stickman: React.FC<{
                     <path d="M 38 -14 q 18 6 16 24 q -10 -10 -18 -16 z" fill={fill} stroke="#111827" strokeWidth={2.5} />
                   </>
                 ) : null}
-                {grey && !eerie ? (
+                {grey && !look ? (
                   // wrinkles under the eyes
                   <path d="M -24 14 q 6 4 12 0 M 12 14 q 6 4 12 0" fill="none" stroke="#9CA3AF" strokeWidth={1.6} strokeLinecap="round" opacity={0.6} />
                 ) : null}
@@ -1859,7 +1879,7 @@ export const Stickman: React.FC<{
           )}
 
           {/* story mode: the face looks straight at the viewer — eyes + mouth centred on the head (the default is a 3/4 face) */}
-          <g transform={eerie ? "translate(-15 0)" : undefined}>
+          <g transform={look ? "translate(-15 0)" : undefined}>
           {/* Expressive Cartoon Eyes + Lidded Half-Blink + Pupils + Eyebrows + Under-eye Bags */}
           {mood === "cool" || accessory === "scammer_bling" ? (
             <g>
@@ -1890,7 +1910,7 @@ export const Stickman: React.FC<{
             </g>
           ) : (
             // story mode: whole eye cluster (eyes, pupils, bags, brows) at ~70 % around the midpoint between the eyes
-            <g transform={eerie ? `translate(${headX + 15.5} ${headY - 4}) scale(0.7) translate(${-(headX + 15.5)} ${-(headY - 4)})` : undefined}>
+            <g transform={look ? `translate(${headX + 15.5} ${headY - 4}) scale(0.7) translate(${-(headX + 15.5)} ${-(headY - 4)})` : undefined}>
               {/* Left & Right Sclera with Crisp Cartoon Outline & Natural 4-Frame Blink */}
               {isBlinking ? (
                 <>
@@ -2165,18 +2185,18 @@ export const Stickman: React.FC<{
         <path
           d={`M ${shX - 14} ${shY + 8} Q ${lElbow[0]} ${lElbow[1]} ${lHand[0]} ${lHand[1]}`}
           stroke={LIMB_OUTLINE}
-          strokeWidth={eerie ? 16 : 6}
+          strokeWidth={look ? 16 : 6}
           strokeLinecap="round"
           fill="none"
         />
         <path
           d={`M ${shX - 14} ${shY + 8} Q ${lElbow[0]} ${lElbow[1]} ${lHand[0]} ${lHand[1]}`}
           stroke={SLEEVE_BACK}
-          strokeWidth={eerie ? 12 : 0}
+          strokeWidth={look ? 12 : 0}
           strokeLinecap="round"
           fill="none"
         />
-        {eerie ? (
+        {look ? (
           <circle cx={lHand[0]} cy={lHand[1]} r={9} fill={color} stroke={LIMB_OUTLINE} strokeWidth={3.5} />
         ) : (
           <CartoonHand x={lHand[0]} y={lHand[1]} angle={lHandAngle} gesture={lGesture} />
@@ -2199,14 +2219,14 @@ export const Stickman: React.FC<{
         <path
           d={`M ${shX + 12} ${shY + 10} Q ${rElbow[0]} ${rElbow[1]} ${rHand[0]} ${rHand[1]}`}
           stroke={LIMB_OUTLINE}
-          strokeWidth={eerie ? 16 : 6}
+          strokeWidth={look ? 16 : 6}
           strokeLinecap="round"
           fill="none"
         />
         <path
           d={`M ${shX + 12} ${shY + 10} Q ${rElbow[0]} ${rElbow[1]} ${rHand[0]} ${rHand[1]}`}
           stroke={SLEEVE}
-          strokeWidth={eerie ? 12 : 0}
+          strokeWidth={look ? 12 : 0}
           strokeLinecap="round"
           fill="none"
         />
@@ -2545,7 +2565,7 @@ export const Stickman: React.FC<{
         {customRig?.customPropNode}
 
         {/* Front Cartoon Hand with Fingers */}
-        {eerie ? (
+        {look ? (
           <circle cx={rHand[0]} cy={rHand[1]} r={9} fill={color} stroke={LIMB_OUTLINE} strokeWidth={3.5} />
         ) : (
           <CartoonHand x={rHand[0]} y={rHand[1]} angle={rHandAngle} gesture={rGesture} />

@@ -1132,6 +1132,7 @@ const pickAgeGender = (p: any) => {
   return o;
 };
 
+const AGE_GENDER_RULE = `TUỔI & GIỚI TÍNH NHÂN VẬT: trong mỗi phần tử "stickmanActs" thêm "leftAge" | "rightAge" | "thirdAge": child | teen | adult | elder và "leftGender" | "rightGender" | "thirdGender": m | f — đúng với vai (bác sĩ nữ, chị, cô → f; ông bà → elder; con nhỏ → child). Cùng một vai giữ nguyên tuổi/giới tính ở mọi phân cảnh.`;
 const LINE_BEATS_RULES = `TUỔI & GIỚI TÍNH NHÂN VẬT: trong mỗi phần tử "stickmanActs" thêm "leftAge" | "rightAge" | "thirdAge": child | teen | adult | elder và "leftGender" | "rightGender" | "thirdGender": m | f — đúng với vai (ông bà → elder, má/ba → adult, con nhỏ → child; nữ có búi tóc/bím tóc). Cùng một vai giữ nguyên tuổi/giới tính ở mọi phân cảnh.
 
 BỔ SUNG BẮT BUỘC — DIỄN XUẤT THEO TỪNG CÂU ("lineBeats"):
@@ -1250,7 +1251,7 @@ Trả về DUY NHẤT 1 JSON object hợp lệ (không bọc markdown):
   ]
 }`;
 
-  const visualFullPrompt = `${visualSys}\n\n${style === "spirit" ? LINE_BEATS_RULES + SPIRIT_VISUAL_RULES : ""}\n\nCHỦ ĐỀ / KỊCH BẢN GỐC: ${prompt.slice(0, 300)}\n\nKỊCH BẢN 7 PHÂN CẢNH:\n${JSON.stringify(scenes, null, 2)}`;
+  const visualFullPrompt = `${visualSys}\n\n${style === "spirit" ? LINE_BEATS_RULES + SPIRIT_VISUAL_RULES : AGE_GENDER_RULE}\n\nCHỦ ĐỀ / KỊCH BẢN GỐC: ${prompt.slice(0, 300)}\n\nKỊCH BẢN 7 PHÂN CẢNH:\n${JSON.stringify(scenes, null, 2)}`;
   let rawVisual = await runAgyPrompt(visualFullPrompt, argonModel, 600, job);
   const carbonFallback = process.env.CARBON_MODEL || "gemini-4-carbon-low";
   if (process.env.SCRIPTWRITER_FALLBACK === "1" && !rawVisual && argonModel !== carbonFallback) {
