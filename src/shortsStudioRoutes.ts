@@ -711,15 +711,22 @@ export function registerShortsStudioRoutes(app: any, deps: ShortsStudioDeps) {
       const exIds = new Set(excludeIds);
       const exLabels = new Set(excludeLabels);
       const used = await collectUsedTopics();
-      const seen = new Set<string>();
-      const fresh = results.filter((t) => {
-        if (exIds.has(t.id) || exLabels.has(t.label) || seen.has(t.id)) return false;
-        // Đã làm video (cả 9:16 lẫn 16:9, kể cả video đã xoá khỏi list nhưng còn brief/DB) → chặn
-        if (t.sourceUrl && used.urls.has(normUrl(t.sourceUrl))) return false;
-        if (used.titles.has(normTitle(t.label)) || used.ids.has(t.id)) return false;
-        seen.add(t.id);
-        return true;
-      });
+      // Đã làm video (cả 9:16 lẫn 16:9, kể cả video đã xoá khỏi list nhưng còn brief/DB) → luôn chặn
+      const isUsed = (t: any) =>
+        (t.sourceUrl && used.urls.has(normUrl(t.sourceUrl))) || used.titles.has(normTitle(t.label)) || used.ids.has(t.id);
+      const pickFresh = (skipShown: boolean) => {
+        const seen = new Set<string>();
+        return results.filter((t) => {
+          if (seen.has(t.id) || isUsed(t)) return false;
+          if (skipShown && (exIds.has(t.id) || exLabels.has(t.label))) return false;
+          seen.add(t.id);
+          return true;
+        });
+      };
+      // Each scan excludes what was already shown; an RSS feed only holds a few dozen items, so after a few scans
+      // everything has been shown once → show those again (only topics already made into videos stay blocked).
+      let fresh = pickFresh(true);
+      if (!fresh.length) fresh = pickFresh(false);
       if (!fresh.length) return res.status(502).json({ ok: false, error: "Không lấy được tin mới từ báo (hoặc đã dùng hết)" });
       const shuffled = fresh.sort(() => Math.random() - 0.5);
       const perCat: any[] = [];
