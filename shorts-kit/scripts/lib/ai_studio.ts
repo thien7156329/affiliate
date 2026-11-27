@@ -2101,8 +2101,39 @@ const COVER_IMG: string | null = (() => {
 `,
       );
   }
+  else coverOut = classicCoverOnBackdrop(cover);
   writeFileSync(join(dir, "Cover.tsx"), coverOut);
   writeEntryTsx(dir, aspectRatio);
+};
+
+/** Classic stickman cover: the video's opening backdrop behind the title, cast in the story body standing on its ground. */
+export const classicCoverOnBackdrop = (cover: string): string => {
+  if (cover.includes("COVER_BG") || !cover.includes("<Stickman ")) return cover;
+  const wide = cover.includes("const CW = 1920");
+  const floor = wide ? "(860 - 6) / 1080" : "1520 / 1920";
+  return cover
+    .replace(
+      'import {AbsoluteFill} from "remotion";',
+      `import {AbsoluteFill, Img, staticFile} from "remotion";
+import {fitToFloor} from "../../shared/figures/AiBackdrop";
+import backdropItems from "./backdrops.json";
+
+/** The picture the video opens on (backdrops.json, filled after the plan): same place as the first scene. */
+const COVER_BG = (() => {
+  const items = (backdropItems as {line: number; src: string | null; floor?: number}[]).filter((b) => b.src).sort((a, b) => a.line - b.line);
+  if (!items.length) return null;
+  const fit = items[0].floor ? fitToFloor(items[0].floor, ${floor}) : {s: 1.12, top: 0};
+  return {src: items[0].src as string, ...fit};
+})();`,
+    )
+    .replace(/(^[ \t]*<ellipse [^\n]*\n[ \t]*<rect [^\n]*\n[ \t]*<line [^\n]*\n)/m, "        {COVER_BG ? null : (\n          <>\n$1          </>\n        )}\n")
+    .replace(
+      /(<SafeCheck safe=\{safe\} cover>\n[ \t]*<AbsoluteFill style=\{\{background:[^\n]*\n)/,
+      `$1      {COVER_BG ? <Img src={staticFile(COVER_BG.src)} style={{position: "absolute", left: \`\${-(COVER_BG.s - 1) * 30}%\`, top: \`\${COVER_BG.top * 100}%\`, width: \`\${COVER_BG.s * 100}%\`, height: \`\${COVER_BG.s * 100}%\`, objectFit: "cover"}} /> : null}
+      {COVER_BG ? <AbsoluteFill style={{background: "linear-gradient(180deg, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0.12) 40%, rgba(0,0,0,0.12) 70%, rgba(0,0,0,0.4) 100%)"}} /> : null}
+`,
+    )
+    .replace(/<Stickman ([^\n]*?)label=("(?:[^"\\]|\\.)*")/g, "<Stickman $1storyLook colorKey=$2 label=$2");
 };
 
 const writeVietnamMapFiles = (dir: string, plan: GeneratedPlan) => {

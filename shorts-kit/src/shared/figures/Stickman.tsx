@@ -113,8 +113,8 @@ export const guessAgeGender = (name: string): {age?: StickAge; gender?: StickGen
   const elder = nameHas(n, ["ông", "bà", "cụ", "lão", "ngoại", "nội"]);
   const child = nameHas(n, ["bé", "cháu", "con", "nhóc", "cu"]);
   const teen = nameHas(n, ["em", "cậu"]) && !elder;
-  const f = nameHas(n, ["chị", "cô", "bà", "dì", "mợ", "thím", "mẹ", "má", "nàng", "nữ", "bác sĩ nữ"]) && !nameHas(n, ["ông"]);
-  const m = nameHas(n, ["anh", "chú", "ông", "bác", "cậu", "ba", "bố", "chàng", "nam"]);
+  const f = nameHas(n, ["chị", "cô", "bà", "dì", "mợ", "thím", "mẹ", "má", "vợ", "nàng", "nữ", "bác sĩ nữ"]) && !nameHas(n, ["ông"]);
+  const m = nameHas(n, ["anh", "chú", "ông", "bác", "cậu", "ba", "bố", "chồng", "chàng", "nam"]);
   return {age: elder ? "elder" : child ? "child" : teen ? "teen" : undefined, gender: f ? "f" : m ? "m" : undefined};
 };
 const AGE_SCALE: Record<StickAge, number> = {child: 0.7, teen: 0.87, adult: 1, elder: 0.96};
