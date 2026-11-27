@@ -225,7 +225,7 @@ export function registerShortsStudioRoutes(app: any, deps: ShortsStudioDeps) {
       aspectRatio: aspect,
       state: runningIds.has(id) ? "progress" : f.abs.upload ? "ready" : "attention",
       progress: { done, total: steps.length, nextStep: next },
-      updatedAt: Math.max(mtime(path.join(KIT, "src", "videos", id, "narration.json")), f.abs.upload ? mtime(f.abs.upload) : 0),
+      updatedAt: Math.max(mtime(path.join(KIT, "src", "videos", id, "narration.json")), f.abs.upload ? mtime(f.abs.upload) : 0, f.abs.cover ? mtime(f.abs.cover) : 0), // cover re-render → new poster URL (no stale browser cache)
       files: f.rel,
       title: dbVideo?.title || title || id,
       caption,
